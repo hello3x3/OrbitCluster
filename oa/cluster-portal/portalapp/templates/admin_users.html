@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}用户管理 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>用户管理</h1>
+  <p class="muted">门户实行“管理员代注册”：新用户由管理员在此创建账号。
+    普通用户创建时会自动在集群（admin + 计算节点）建号、设配额；也可为已存在的 OS 账号仅开通门户。</p>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<section class="card">
+  <h2>开通新用户</h2>
+  <form method="post" action="{{ url_for('admin_user_create') }}" id="create-user-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="row">
+      <label>用户名（= OS 账号名）
+        <input name="username" required pattern="[a-z_][a-z0-9_-]{0,31}" maxlength="32"
+               placeholder="例如 alice" title="小写字母开头，字母数字 _ -">
+      </label>
+      <label>姓名/显示名 <input name="display_name" maxlength="64" placeholder="可选"></label>
+      <label>角色
+        <select name="role" id="create-role">
+          <option value="user">普通用户（可申请资源）</option>
+          <option value="admin">管理员（门户管理）</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" id="create-osrow">
+      <label>集群账号方式
+        <select name="os_mode">
+          <option value="provision">自动建号（推荐）</option>
+          <option value="existing">OS 账号已存在，仅开通门户</option>
+        </select>
+      </label>
+      <label>磁盘配额（/share 总量）
+        <select name="quota">
+          {% for q in quota_options %}<option value="{{ q }}" {% if q=='500G' %}selected{% endif %}>{{ q }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>初始门户密码（留空=随机生成，只显示一次）
+        <input type="text" name="password" maxlength="128" placeholder="留空自动生成">
+      </label>
+    </div>
+    <button class="btn btn-primary" type="submit">开通账号</button>
+    <span class="muted small">提交后请立即把初始密码告知用户（仅本次显示）。</span>
+  </form>
+</section>
+
+<section class="card">
+  <h2>用户列表（{{ users|length }}）</h2>
+  <table class="table">
+    <thead><tr>
+      <th>用户名</th><th>显示名</th><th style="min-width:84px">角色</th><th>状态</th>
+      <th title="该用户在“个人资料”里登记的 SSH 公钥条数（写入其 ~/.ssh/authorized_keys，供容器 sshd 认证；未完善则不能申请资源）">SSH密钥</th>
+      <th title="该用户端口池中登记的端口数（10000-65535，全门户唯一，用于容器 sshd 监听）">端口数</th>
+      <th>活跃资源</th>
+      <th title="/share 实际磁盘配额（OS repquota 实读）：已用 / 硬上限">配额（OS 实读）</th>
+      <th>上次登录</th><th>创建时间</th><th>操作</th>
+    </tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td class="mono">{{ u.username }}</td>
+        <td>{{ u.display_name }}</td>
+        <td>{% if u.role == 'admin' %}<span class="badge-admin">管理员</span>{% else %}普通用户{% endif %}</td>
+        <td>{% if u.is_active %}<span class="st st-running">正常</span>{% else %}<span class="st st-cancelled">已停用</span>{% endif %}</td>
+        <td title="SSH 公钥数">{{ u.key_cnt }}</td><td title="端口池登记数">{{ u.port_cnt }}</td><td>{{ u.active_cnt }}</td>
+        <td class="mono small">{% if u.quota_os_present %}{{ u.quota_used }} / {{ u.quota_hard }}{% else %}—{% endif %}</td>
+        <td class="small">{{ u.last_login }}</td>
+        <td class="small">{{ u.created }}</td>
+        <td class="ops">
+          {% if cur_user.username == 'root' and u.username != 'root' %}
+            {% if u.role == 'admin' %}
+            <button class="btn btn-danger btn-sm xact" data-url="{{ url_for('admin_user_role', uid=u.id) }}"
+                    data-msg="撤销 {{ u.username }} 的平台管理员权限？">取消管理员</button>
+            {% else %}
+            <button class="btn btn-ghost btn-sm xact" data-url="{{ url_for('admin_user_role', uid=u.id) }}"
+                    data-msg="授予 {{ u.username }} 平台管理员权限？">设为管理员</button>
+            {% endif %}
+          {% endif %}
+          {% if u.role == 'user' %}
+          <button class="btn btn-ghost btn-sm xact" data-url="{{ url_for('admin_user_resetpwd', uid=u.id) }}"
+                  data-msg="重置后原密码立即失效，新密码仅显示一次。确定？">重置密码</button>
+          <button class="btn btn-ghost btn-sm xact" data-url="{{ url_for('admin_user_toggle', uid=u.id) }}"
+                  data-msg="确定{{ '停用' if u.is_active else '启用' }}用户 {{ u.username }}？">{% if u.is_active %}停用{% else %}启用{% endif %}</button>
+          {% if u.quota_can_edit %}
+          <button class="btn btn-ghost btn-sm act-quota" data-url="{{ url_for('admin_user_quota', uid=u.id) }}"
+                  data-user="{{ u.username }}">改配额</button>
+          {% endif %}
+          {% if u.username != cur_user.username %}
+          <button class="btn btn-danger btn-sm xact" data-url="{{ url_for('admin_user_delete', uid=u.id) }}"
+                  data-msg="确定删除门户账号 {{ u.username }}？{% if u.os_mode == 'provision' %}【注意】该用户由门户建号，将同时注销集群账号：终止其全部作业，并删除 admin/<GPU02>/<GPU03> 上的账号、sacctmgr 关联和 /share 家目录数据，不可恢复！{% else %}该账号未由门户开通集群账号（existing 方式），将保留其 OS 账号与家目录数据。{% endif %}">删除</button>
+          {% endif %}
+          {% else %}
+          {% if u.quota_can_edit %}
+          <button class="btn btn-ghost btn-sm act-quota" data-url="{{ url_for('admin_user_quota', uid=u.id) }}"
+                  data-user="{{ u.username }}">改配额</button>
+          {% endif %}
+          {% if cur_user.username != 'root' %}<span class="muted small">（管理员，由 root 管理）</span>{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">列含义：<b>SSH密钥</b>＝该用户在个人资料里登记的公钥条数（写入其
+    <code>~/.ssh/authorized_keys</code>，容器 sshd 用它认证登录）；<b>端口数</b>＝其端口池登记数
+    （10000-65535，全门户唯一）；<b>活跃资源</b>＝当前排队/运行中的实例数；
+    <b>配额（OS 实读）</b>＝<code>repquota</code> 读出的「已用 / 硬上限」，软=硬即时生效
+    （— 表示该账号在 OS 无配额记录/无同名 OS 账号）；「改配额」对普通用户任何管理员可用，
+    管理员行仅 root 或本人可用，写入即改 OS 配额（非仅门户记录）。</p>
+</section>
+{% endblock %}

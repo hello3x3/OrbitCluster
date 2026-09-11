@@ -1,0 +1,160 @@
+:root{
+  --bg:#f4f6fa; --card:#fff; --line:#e3e8f0; --txt:#1c2733; --muted:#5f6f82;
+  --brand:#2563eb; --brand-d:#1e4fd6; --ok:#0a8f4c; --warn:#c77700; --err:#c62828;
+  --radius:10px; --shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.04);
+}
+*{box-sizing:border-box}
+[hidden]{display:none !important}   /* 确保 hidden 属性优先于 .modal-mask 等 display 规则 */
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+  "Hiragino Sans GB","Microsoft YaHei",sans-serif}
+a{color:var(--brand);text-decoration:none}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em;
+  background:#f0f3f9;padding:1px 5px;border-radius:5px}
+pre{white-space:pre-wrap;word-break:break-all}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 10px}
+h3{font-size:15px;margin:0 0 6px}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.empty{color:var(--muted);padding:14px 4px}
+.mono{background:transparent;padding:0}
+
+/* ---------- top bar ---------- */
+.topbar{display:flex;align-items:center;gap:18px;background:#0f172a;color:#e6edf7;
+  padding:0 22px;height:52px;position:sticky;top:0;z-index:20}
+.topbar .brand a{color:#fff;font-weight:700;font-size:16px;letter-spacing:.2px}
+.nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+.nav a{color:#cbd5e1;padding:6px 11px;border-radius:8px;font-size:13.5px}
+.nav a:hover{background:#1e293b;color:#fff}
+.userbox{display:flex;align-items:center;gap:10px}
+.who{font-size:13.5px;color:#e2e8f0}
+.badge-admin{background:#7c3aed;color:#fff;border-radius:6px;padding:1px 7px;font-size:11px;
+  font-style:normal;margin-left:4px}
+.foot{color:var(--muted);text-align:center;font-size:12px;padding:22px 10px 26px}
+
+/* ---------- layout ---------- */
+.container{max-width:1180px;margin:0 auto;padding:20px 16px 10px}
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;
+  gap:12px;margin:4px 0 16px;flex-wrap:wrap}
+.page-head .actions{display:flex;gap:8px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:16px 18px;margin-bottom:18px}
+.card h2{margin-top:2px}
+.card-inner{margin-top:14px;padding-top:14px;border-top:1px dashed var(--line)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+
+/* ---------- forms ---------- */
+label{display:block;margin-bottom:10px;font-size:13px;color:#33415a;font-weight:600}
+input,select,textarea{width:100%;padding:8px 10px;border:1px solid #ccd5e0;border-radius:8px;
+  font:inherit;background:#fff;color:var(--txt)}
+input:focus,select:focus,textarea:focus{outline:2px solid #bfd3ff;border-color:var(--brand)}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.row>label{flex:1;min-width:150px}
+textarea{resize:vertical}
+
+.btn{display:inline-block;border:1px solid transparent;border-radius:8px;padding:7px 14px;
+  font:inherit;cursor:pointer;background:#eef2f7;color:var(--txt);text-decoration:none}
+.btn:hover{filter:brightness(.96)}
+.btn:disabled,.btn[disabled]{opacity:.45;cursor:not-allowed;filter:grayscale(.9);
+  pointer-events:none;box-shadow:none}
+.btn-primary{background:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-d)}
+.btn-danger{background:#fdecea;color:var(--err);border-color:#f5c6c6}
+.btn-ghost{background:transparent;border-color:#ccd5e0}
+.btn-warn{background:#fff4e0;color:var(--warn);border-color:#f0d9a8}
+.btn-lg{padding:10px 22px;font-size:15px}
+.btn-sm{padding:3px 9px;font-size:12.5px;border-radius:6px}
+
+/* ---------- alerts / toast / flash ---------- */
+.alert{border-radius:8px;padding:9px 13px;margin:8px 0 12px;font-size:13.5px}
+.alert-info{background:#e8f1ff;color:#1c4f9e;border:1px solid #c6dbff}
+.alert-warn{background:#fff4e0;color:#8a5a00;border:1px solid #f0d9a8}
+.flash-wrap{max-width:1180px;margin:12px auto 0;padding:0 16px}
+.flash{border-radius:8px;padding:9px 14px;margin-bottom:8px;font-size:13.5px}
+.flash-ok{background:#e6f6ee;color:#0a6b3d;border:1px solid #bfe6d0}
+.flash-error{background:#fdecea;color:var(--err);border:1px solid #f5c6c6}
+.toast{position:fixed;right:18px;top:64px;z-index:99;max-width:420px;border-radius:10px;
+  padding:11px 16px;box-shadow:0 6px 24px rgba(0,0,0,.18);font-size:13.5px;background:#123;color:#fff}
+.toast.err{background:#7f1d1d}
+.toast.ok{background:#14532d}
+
+/* ---------- tables ---------- */
+.table{width:100%;border-collapse:collapse;font-size:13.5px}
+.table th{text-align:left;color:var(--muted);font-weight:600;font-size:12.5px;
+  border-bottom:2px solid var(--line);padding:7px 8px;white-space:nowrap}
+.table td{border-bottom:1px solid #eef1f6;padding:8px;vertical-align:middle}
+.table tbody tr:hover{background:#f7f9fc}
+.ops{white-space:nowrap}
+.ops .btn{margin-right:4px}
+
+/* ---------- state badges ---------- */
+.st{display:inline-block;border-radius:20px;padding:2px 10px;font-size:12px;white-space:nowrap}
+.st-running,.st-pending{background:#e0f2e9;color:#0a6b3d}
+.st-pending{background:#fff3d6;color:#8a5a00}
+.st-suspended,.st-completing,.st-stopping,.st-requeued{background:#fdeef0;color:#a0233a}
+.st-cancelled,.st-completed{background:#e8ecf3;color:#4b5568}
+.st-failed,.st-timeout,.st-out_of_memory,.st-node_fail,.st-preempted{background:#fdecea;color:var(--err)}
+.st-unknown{background:#f1f3f6;color:var(--muted)}
+
+/* ---------- auth ---------- */
+.auth-card{max-width:400px;margin:60px auto;background:var(--card);padding:28px;
+  border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.auth-card h1{margin-bottom:8px}
+
+/* ---------- key/port rows ---------- */
+.key-list,.port-list{display:flex;flex-direction:column;gap:8px;margin:6px 0 4px}
+.key-row{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:#fafbfd}
+.port-no{font-family:ui-monospace,Menlo,monospace;font-size:19px;color:var(--brand);
+  background:#e8f1ff;padding:2px 9px;border-radius:7px}
+.fp{background:transparent;color:#6b7686}
+.hint{margin-top:10px;font-size:13px;color:var(--muted)}
+.field-hint{color:#c62828;font-size:12px;margin:-4px 0 8px;font-weight:600}
+.txt-err{color:#c62828}
+.key-pub{min-width:0;flex:1;overflow:hidden}
+.key-pub code{display:block;white-space:pre-wrap;word-break:break-all;line-height:1.5;
+  font-size:12px;background:#f4f7fb;border:1px solid #e6ecf4;border-radius:7px;
+  padding:7px 9px;margin-bottom:4px}
+
+/* ---------- apply page ---------- */
+/* 套餐选择：每行一个套餐（单列） */
+.plan-list{display:flex;flex-direction:column;gap:10px}
+.plan-item{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;text-align:left;
+  background:#fff;border:2px solid var(--line);border-radius:10px;padding:12px 14px;
+  cursor:pointer;font:inherit}
+.plan-item:hover{border-color:#b9cdfa}
+.plan-item input[type=radio]{flex:none;width:auto;height:auto;margin:0;accent-color:var(--brand)}
+.plan-main{flex:1 1 260px;display:flex;flex-direction:column;gap:2px;min-width:0;
+  overflow-wrap:break-word}
+.plan-specs{flex:0 1 auto;margin-left:auto;text-align:right;color:#3c4652;white-space:nowrap}
+@media(max-width:760px){.plan-specs{white-space:normal;text-align:left;flex-basis:100%}}
+.tmpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.tmpl-card{text-align:left;background:#fff;border:2px solid var(--line);border-radius:10px;
+  padding:12px 14px;cursor:pointer;font:inherit}
+.tmpl-card:hover{border-color:#b9cdfa}
+.tmpl-card.selected{border-color:var(--brand);background:#f4f8ff}
+.tmpl-card h3{color:var(--brand-d)}
+.tmpl-card code{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  margin-top:8px}
+.cmd-preview{background:#0f172a;color:#cde3ff;border-radius:10px;padding:12px 14px;
+  font-size:12.5px;line-height:1.7;overflow:auto;min-height:70px}
+
+/* ---------- modals ---------- */
+.modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;
+  align-items:center;justify-content:center;z-index:50;padding:20px}
+.modal{background:#fff;border-radius:12px;max-width:860px;width:100%;max-height:86vh;
+  display:flex;flex-direction:column;box-shadow:0 18px 60px rgba(0,0,0,.3)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;
+  border-bottom:1px solid var(--line)}
+.modal-body{padding:14px 18px;overflow:auto}
+.modal-foot{padding:10px 18px;border-top:1px solid var(--line);text-align:right}
+.logbox{background:#0f172a;color:#d7e6ff;border-radius:8px;margin:0;padding:12px;
+  font-size:12.5px;line-height:1.6;overflow:auto;min-height:220px;max-height:56vh;
+  white-space:pre-wrap;word-break:break-all}
+
+/* 申请页：套餐单选卡片 */
+.plan-opt{cursor:pointer}
+.plan-opt:has(input:checked){border-color:var(--brand);background:#f4f8ff}

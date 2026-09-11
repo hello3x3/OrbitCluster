@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}个人资料 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>个人资料</h1>
+  {% if not profile_ok %}
+  <div class="alert alert-warn">
+    ⚠️ 你还需要：<b>至少 1 个 SSH 公钥</b> 和 <b>至少 1 个端口</b> 才能申请资源。
+    完善下方两项即可开始使用。
+  </div>
+  {% endif %}
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="application/json" id="profile-data">{{ profile_payload | safe }}</script>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>① SSH 登录公钥</h2>
+    {% if is_admin and not can_os %}
+    <div class="alert alert-warn">该门户账号（管理员）在集群上没有同名 Linux 账号，公钥无需在此登记；请用「代申请资源」帮用户提交。</div>
+    {% else %}
+    <p class="muted">容器通过 sshd 仅接受公钥认证。公钥会写入你集群同名账号
+      （<code>~/.ssh/authorized_keys</code>）。若集群上没有同名 Linux 账号，将无法登记公钥。
+      {% if is_admin %}（管理员账号只要有同名 OS 账号，也能像普通用户一样申请资源）{% endif %}</p>
+
+    <div class="key-list">
+      {% for k in keys %}
+      <div class="key-row">
+        <div class="key-pub">
+          <code>{{ k.pubkey }}</code>
+          <div class="muted small">添加于 {{ k.added_at[:10] }} · 共 {{ keys|length }} 把</div>
+        </div>
+        <button class="btn btn-danger btn-sm xdel"
+                data-url="{{ url_for('profile_key_del', kid=k.id) }}"
+                data-msg="确定删除这把公钥？（其 SSH 登录将立即失效）">删除</button>
+      </div>
+      {% else %}
+      <p class="empty">还没有公钥。用 <code>ssh-keygen -t ed25519</code> 生成后，
+        把 <code>.pub</code> 文件内容（整行）粘贴到下面。</p>
+      {% endfor %}
+    </div>
+
+    <form class="xform card-inner" data-url="{{ url_for('profile_key_add') }}">
+      <label>粘贴公钥内容（OpenSSH 格式，一整行，例如 <code>ssh-ed25519 AAAA… user@host</code>）
+        <textarea name="pubkey" rows="3" required
+          placeholder="ssh-ed25519 AAAA… user@host"></textarea>
+      </label>
+      <button class="btn btn-primary" type="submit">添加公钥</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>② SSH 端口池</h2>
+    <p class="muted">每个资源（容器）会用你端口池里的一个端口在对应节点上启动 sshd。
+      端口范围 <b>{{ port_min }}-{{ port_max }}</b>，须避开常用/保留端口，且全门户唯一。</p>
+
+    <div class="port-list">
+      {% for p in ports %}
+      <div class="key-row">
+        <div>
+          <b class="port-no">{{ p.port }}</b>
+          <span class="muted small">登记于 {{ p.claimed_at[:10] }}</span>
+        </div>
+        <button class="btn btn-danger btn-sm xdel"
+                data-url="{{ url_for('profile_port_del', pid=p.id) }}"
+                data-msg="确定释放端口 {{ p.port }}？（被运行中资源占用时无法释放）">释放</button>
+      </div>
+      {% else %}
+      <p class="empty">端口池为空。建议登记 1-3 个端口以便同时运行多个资源。</p>
+      {% endfor %}
+    </div>
+
+    <form class="xform card-inner" data-url="{{ url_for('profile_port_add') }}" id="port-form">
+      <label>登记新端口
+        <input name="port" id="port-num" type="number" min="0" max="65535"
+               placeholder="10000-65535" required autocomplete="off">
+      </label>
+      <p class="field-hint" id="port-hint" hidden></p>
+      <button class="btn btn-primary" type="submit" id="btn-port-add" disabled>登记端口</button>
+    </form>
+    <details class="hint">
+      <summary>哪些端口不能申请？</summary>
+      <p class="muted small">除 10000 以下全部端口外，以下常用/服务端口也被保留：</p>
+      <code class="small">{{ common_ports|join(', ') }}</code>
+    </details>
+  </section>
+</div>
+
+<section class="card">
+  <h2>③ 显示名</h2>
+  <p class="muted">显示名会显示在门户右上角与管理员用户列表里，随时可改。</p>
+  <form class="xform" data-url="{{ url_for('profile_name') }}">
+    <div class="row">
+      <label>显示名
+        <input name="display_name" value="{{ cur_user.display_name or cur_user.username }}"
+               maxlength="64" required>
+      </label>
+    </div>
+    <button class="btn btn-primary" type="submit">保存显示名</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>④ 修改登录密码</h2>
+  <form class="xform" data-url="{{ url_for('profile_password') }}">
+    <div class="row">
+      <label>原密码 <input type="password" name="old" required autocomplete="current-password"></label>
+      <label>新密码 <input type="password" name="new" required autocomplete="new-password"></label>
+      <label>确认新密码 <input type="password" name="new2" required autocomplete="new-password"></label>
+    </div>
+    <button class="btn btn-primary" type="submit">修改密码</button>
+  </form>
+</section>
+{% endblock %}

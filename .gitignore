@@ -1,0 +1,76 @@
+# ============================================================================
+# OrbitCluster —— 忽略规则
+# 原则：只跟踪「代码 / 手册 / 快照 / 脚本」四类源文件；
+#       运行时产物、虚拟环境、缓存一律不入库；
+#       明文口令与备份产物严禁入库（本仓库定位是"可交付、不含密钥"）。
+# ============================================================================
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ------------------------------------------------------------ 虚拟环境
+# 本地冒烟测试用（见 oa/cluster-portal/README.md「测试」一节）
+.venv/
+.venv-*/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+
+# ------------------------------------------- 门户运行时数据（PORTAL_DATA）
+# 默认 PORTAL_DATA=<repo>/oa/cluster-portal/var（内含 portal.db 与 secret）
+oa/cluster-portal/var/
+*.db
+*.db-wal
+*.db-shm
+secret
+*.log
+
+# ------------------------------------- 明文口令 / 密钥 / 备份产物（禁入库）
+# 现场唯一明文口令源，只应存在于目标机 /etc/cluster-portal/ 下
+users.passwd
+# 注意：*.passwd 不会匹配 .passwd.example，模板
+# oa/config-snapshot/etc-cluster-portal/users.passwd.example 照常可入库
+*.passwd
+*.tgz
+*.tar.gz
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+known_hosts
+.slurmdb.pass
+.cluster-portal-admin
+
+# ------------------------------------------------- 大文件 / 容器镜像
+# .sqsh 动辄数 GB，只部署在集群 /share/images/，不进仓库
+*.sqsh
+*.sqsh.tmp
+*.sqsh.part
+
+# -------------------------------------------------------- 临时与中间产物
+*.tmp
+*.part
+*.swp
+tmp/
+scratch/
+
+# --------------------------------------------------------- 编辑器 / 系统
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

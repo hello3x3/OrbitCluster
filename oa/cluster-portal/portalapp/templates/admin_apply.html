@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}代申请资源 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>代申请资源（管理员）</h1>
+  <p class="muted">帮某个普通用户提交资源申请：先选「帮谁申请」，再选该用户端口池里的端口。
+    底层以该用户身份提交作业，
+    作业配额/计费归属该用户。普通用户超出套餐 maxtime 的请求也由此办理。</p>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<form id="admin-apply-form" class="card" autocomplete="off">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+  <h2>① 帮谁申请（有集群 OS 账号的普通用户）</h2>
+  <select name="user_id" id="target-sel" required>
+    <option value="">请选择用户…</option>
+  </select>
+
+  <h2>② 任务名称 <span class="muted small">（必填，3-10 个字符）</span></h2>
+  <label>名称 <input name="task_name" id="atask" required placeholder="3-10 个字符"></label>
+  <p class="field-hint" id="atask-hint" hidden></p>
+
+  <h2>③ 镜像 / 套餐</h2>
+  <div class="row">
+    <label>镜像 <span class="muted small">（含该用户的个人镜像）</span>
+      <select name="image" id="aimg-sel" required disabled>
+        <option value="">先选择用户…</option>
+      </select>
+    </label>
+    <label>套餐
+      <select name="plan_id" id="plan-sel" required>
+        {% for pl in plans %}
+        <option value="{{ pl.id }}" data-maxtime="{{ pl.maxtime_h }}">
+          {{ pl.name }}（{% if pl.gpus %}GPU {{ pl.gpu_model }}/1卡{% else %}纯CPU{% endif %} ·
+          {{ pl.cpus }}核 · {{ pl.mem_gb }}G · 最长{{ pl.maxtime_h }}h）
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+
+  <h2>④ 时长</h2>
+  <label>小时数 <input type="number" name="hours" id="ahours" min="1" max="720" value="{{ default_hours }}" required></label>
+  <p class="field-hint" id="ahours-hint" hidden></p>
+
+  <h2>⑤ 节点</h2>
+  <select name="node">
+    <option value="">自动分配（推荐）</option>
+    {% for n in nodes %}
+    <option value="{{ n.name }}">{{ n.name }}（{{ n.state }} · {{ n.cpus_idle }}/{{ n.cpus_total }}核 · {{ (n.mem_mb/1024)|round|int }}G）</option>
+    {% endfor %}
+  </select>
+
+  <h2>⑥ SSH 端口 <span class="muted small">（所选用户端口池；使用中不可选）</span></h2>
+  <select name="port" id="aport" required>
+    <option value="">先在上方选择用户…</option>
+  </select>
+  <p class="field-hint" id="aport-hint" hidden></p>
+
+  <div style="margin-top:14px">
+    <button class="btn btn-primary btn-lg" type="submit" id="btn-admin-submit" disabled>代提交申请</button>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,19 @@
+Description=OrbitCluster Cluster Portal (web)
+After=network-online.target munge.service slurmctld.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=portal
+Group=portal
+WorkingDirectory=/opt/cluster-portal
+Environment=PORTAL_DATA=/var/lib/cluster-portal
+Environment=PORTAL_CTL=/usr/local/sbin/portal-ctl
+Environment=PORTAL_PORT=8000
+ExecStart=/opt/cluster-portal/venv/bin/python /opt/cluster-portal/run.py
+Restart=always
+RestartSec=3
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

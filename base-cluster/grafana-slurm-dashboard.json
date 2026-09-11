@@ -1,0 +1,98 @@
+{
+  "uid": "slurm-realtime",
+  "title": "SLURM 实时调度总览",
+  "tags": ["slurm"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "节点状态", "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "mappings": [], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "targets": [
+        { "refId": "idle", "expr": "count(slurm_node_state{state=\"idle\"}) or on() vector(0)", "legendFormat": "空闲节点", "instant": true },
+        { "refId": "busy", "expr": "count(slurm_node_state{state=~\"alloc|mixed\"}) or on() vector(0)", "legendFormat": "有作业节点", "instant": true },
+        { "refId": "bad", "expr": "count(slurm_node_state{state=~\"drain|down|error|maint\"}) or on() vector(0)", "legendFormat": "异常节点", "instant": true }
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "运行 / 排队作业数", "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" }, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (state) (slurm_job_count)", "legendFormat": "{{state}}" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "GPU 占用率(%)", "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 50 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "targets": [
+        { "refId": "a", "expr": "avg by (host) (nvidia_gpu_utilization_percent)", "legendFormat": "{{host}}" }
+      ]
+    },
+    {
+      "id": 4, "type": "table", "title": "实时队列表（作业 / 用户 / 优先级 / 命令）", "gridPos": { "h": 10, "w": 16, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [] },
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true, "__name__": true, "instance": true, "job": true }, "indexByName": { "job_id": 0, "user": 1, "name": 2, "state": 3, "priority": 4, "partition": 5, "nodes": 6, "cmd": 7 }, "renameByName": { "job_id": "作业号", "user": "用户", "name": "作业名", "state": "状态", "priority": "优先级", "partition": "分区", "nodes": "节点", "cmd": "命令" } } }
+      ],
+      "targets": [
+        { "refId": "A", "expr": "slurm_job_info", "format": "table", "instant": true }
+      ]
+    },
+    {
+      "id": 5, "type": "table", "title": "按用户聚合", "gridPos": { "h": 10, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [] },
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "user": "用户", "state": "状态", "Value": "作业数" } } }
+      ],
+      "targets": [
+        { "refId": "A", "expr": "count by (user, state) (slurm_job_info)", "format": "table", "instant": true, "legendFormat": "{{user}}-{{state}}" }
+      ]
+    },
+    {
+      "id": 6, "type": "table", "title": "节点 CPU 分配 (%)", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 60 }, { "color": "red", "value": 90 } ] } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [] },
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": false }, "renameByName": { "node": "节点", "Value": "已分配%" } } }
+      ],
+      "targets": [
+        { "refId": "A", "expr": "100 * slurm_node_allocated_cpus / slurm_node_total_cpus", "format": "table", "instant": true }
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "GPU 显存占用", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "nvidia_gpu_memory_used_bytes", "legendFormat": "{{host}} 已用" },
+        { "refId": "B", "expr": "nvidia_gpu_memory_total_bytes", "legendFormat": "{{host}} 总量" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "节点内存占用", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "promds" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "used", "expr": "label_replace(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes, \"node\", \"$1\", \"instance\", \"(.*):[0-9]+\")", "legendFormat": "{{node}} 已用" },
+        { "refId": "total", "expr": "label_replace(node_memory_MemTotal_bytes, \"node\", \"$1\", \"instance\", \"(.*):[0-9]+\")", "legendFormat": "{{node}} 总量" }
+      ]
+    }
+  ]
+}

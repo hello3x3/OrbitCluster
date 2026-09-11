@@ -1,0 +1,4 @@
+name|state|alloc/idle/other/total|gres|RealMemoryMB
+admin|idle|0/16/0/16|gpu:3060:1(S:0)|31933
+<GPU02>|idle|0/16/0/16|gpu:3060:1(S:0)|31933
+<GPU03>|idle|0/16/0/16|gpu:3060:1(S:0)|128653

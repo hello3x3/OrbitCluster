@@ -1,0 +1,57 @@
+[
+  {
+    "id": 1,
+    "name": "基础 CPU · 2核/4G",
+    "description": "纯 CPU 小任务（无 GPU），适合调试/轻量任务。",
+    "gpus": 0,
+    "cpus": 2,
+    "mem_gb": 4,
+    "enabled": 1,
+    "gpu_model": "",
+    "maxtime_h": 48
+  },
+  {
+    "id": 2,
+    "name": "均衡 CPU · 4核/8G",
+    "description": "纯 CPU（无 GPU），适合编译/中等任务。",
+    "gpus": 0,
+    "cpus": 4,
+    "mem_gb": 8,
+    "enabled": 1,
+    "gpu_model": "",
+    "maxtime_h": 48
+  },
+  {
+    "id": 3,
+    "name": "GPU 入门 · 1卡/4核/8G",
+    "description": "单卡 RTX 3060，训练/推理入门配置。",
+    "gpus": 1,
+    "cpus": 4,
+    "mem_gb": 8,
+    "enabled": 1,
+    "gpu_model": "RTX 3060",
+    "maxtime_h": 48
+  },
+  {
+    "id": 4,
+    "name": "GPU 标准 · 1卡/8核/16G",
+    "description": "单卡 + 8 核 + 16G 内存，日常训练推荐。",
+    "gpus": 1,
+    "cpus": 8,
+    "mem_gb": 16,
+    "enabled": 1,
+    "gpu_model": "RTX 3060",
+    "maxtime_h": 48
+  },
+  {
+    "id": 5,
+    "name": "GPU 高配 · 1卡/16核/24G",
+    "description": "单卡 + 全核 + 24G 内存（适配 31G 内存节点）。",
+    "gpus": 1,
+    "cpus": 16,
+    "mem_gb": 24,
+    "enabled": 1,
+    "gpu_model": "RTX 3060",
+    "maxtime_h": 48
+  }
+]

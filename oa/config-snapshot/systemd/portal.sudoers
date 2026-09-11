@@ -1,0 +1,2 @@
+portal ALL=(root) NOPASSWD: /usr/local/sbin/portal-ctl
+Defaults:portal !requiretty

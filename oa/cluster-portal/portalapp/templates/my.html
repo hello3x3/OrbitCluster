@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}我的资源 - {{ portal_name }}{% endblock %}
+
+{% macro inst_row(i) -%}
+<tr data-id="{{ i.id }}">
+  <td class="mono">{{ i.job_id }}</td>
+  <td><b>{{ i.res_name }}</b><div class="small muted">{{ i.plan_name }} · {{ i.image_name }}</div>
+    {% if i.last_save %}<div class="small {% if i.saving_now %}muted{% elif '失败' in i.last_save or '异常' in i.last_save %}txt-err{% else %}muted{% endif %}">💾 {{ i.last_save }}</div>{% endif %}</td>
+  <td><span class="st st-{{ i.state|lower }}">{{ i.state_cn }}</span></td>
+  <td class="mono">{{ i.node_cn }}</td>
+  <td class="mono">{{ i.port }}</td>
+  <td class="small">{{ i.gpus }}×GPU · {{ i.cpus }}核 · {{ i.mem_gb }}G</td>
+  <td class="mono small">{{ i.hours }}</td>
+  <td class="small">{{ i.created }}</td>
+  <td class="ops">
+    {% if i.is_running %}
+    <button class="btn btn-ghost btn-sm act-detail" data-id="{{ i.id }}">连接/详情</button>
+    {% if i.saving_now %}
+    <button class="btn btn-ghost btn-sm" disabled title="正在导出容器 rootfs 为 .sqsh（分钟级）">保存中…</button>
+    {% else %}
+    <button class="btn btn-ghost btn-sm act-save" data-id="{{ i.id }}">保存镜像</button>
+    {% endif %}
+    {% endif %}
+    <button class="btn btn-ghost btn-sm act-log" data-id="{{ i.id }}">日志</button>
+    {% if i.can_stop and not i.saving_now %}
+    <button class="btn btn-danger btn-sm act-stop" data-id="{{ i.id }}">停机</button>
+    {% elif not i.can_stop %}
+    <button class="btn btn-ghost btn-sm act-restart" data-id="{{ i.id }}">重新启动</button>
+    <button class="btn btn-danger btn-sm act-delinst" data-id="{{ i.id }}">删除</button>
+    {% endif %}
+  </td>
+</tr>
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1>我的资源</h1>
+  <div class="actions">
+    {% if not profile_ok %}
+    <a class="btn btn-warn" href="{{ url_for('profile') }}">⚠️ 请先完善个人资料（公钥+端口）</a>
+    {% endif %}
+    <a class="btn btn-primary" href="{{ url_for('apply_page') }}">+ 申请资源</a>
+    <button class="btn btn-ghost" id="btn-refresh" type="button">↻ 刷新</button>
+  </div>
+</div>
+
+<div class="alert alert-info">容器登录示例：<code id="ssh-hint">ssh -p &lt;端口&gt; {{ cur_user.username }}@&lt;真实节点IP&gt;</code>
+  （运行中的资源点「连接/详情」会给出**真实 IP** 的 SSH 命令，直接复制即可；
+   客户端需要持有你在门户登记的公钥对应的私钥）</div>
+
+{% if my_quota and my_quota.os_ok %}
+<div class="card">
+  <h2>我的配额 / 额度 <span class="muted small">（磁盘配额 = 集群 OS 实读；Slurm = sacctmgr 实读）</span></h2>
+  <table class="table">
+    <tr>
+      <th style="width:180px">磁盘配额（/share）</th>
+      <td>
+        {% if my_quota.disk %}
+        已用 <b>{{ my_quota.disk.used_h }}</b> ｜ 硬上限 <b>{{ my_quota.disk.hard_h }}</b>
+        {% if my_quota.disk.note %}<div class="muted small">{{ my_quota.disk.note }}</div>{% endif %}
+        {% else %}<span class="txt-err">读取失败：{{ my_quota.disk_err }}</span>{% endif %}
+      </td>
+    </tr>
+    {% if my_quota.slurm %}
+    <tr><th>Slurm 关联</th><td>计费账号 <b>{{ my_quota.slurm.accounts }}</b> ｜ QoS：<b>{{ my_quota.slurm.qos }}</b></td></tr>
+    <tr><th>Slurm 优先级</th><td>关联优先级 <b>{{ my_quota.slurm.assoc_priority }}</b></td></tr>
+    <tr><th>总额度</th><td>{{ my_quota.slurm.total }}（QoS/关联未设 MaxTRES/GrpTRES/作业数/时长限制时显示“不限”）</td></tr>
+    {% elif my_quota.slurm_err %}<tr><th>Slurm 额度</th><td class="txt-err">读取失败：{{ my_quota.slurm_err }}</td></tr>{% endif %}
+  </table>
+  {% if my_quota.slurm %}
+  <p class="muted small" style="margin-top:8px">含义：你的 Slurm 作业挂在<code>{{ my_quota.slurm.accounts }}</code>
+    计费账号下、按 {{ my_quota.slurm.qos }} 进队调度（数值为该 QoS 的调度优先级，越大越优先）；
+    “总额度”是 Slurm 在该 QoS/关联上给你的资源限额，未设置即为不限。</p>
+  {% endif %}
+</div>
+{% elif my_quota %}
+<div class="alert alert-warn">{{ my_quota.note }}</div>
+{% endif %}
+
+<div class="card">
+  <table class="table" id="inst-table">
+    <thead>
+      <tr>
+        <th>作业#</th><th>资源</th><th>状态</th><th>节点</th><th>端口</th>
+        <th>配置</th><th>时长</th><th>申请时间</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="inst-body">
+      {% for i in instances %}
+      {{ inst_row(i) }}
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="empty" id="inst-empty" {% if instances %}hidden{% endif %}>还没有申请任何资源。
+    <a href="{{ url_for('apply_page') }}">去申请 →</a></p>
+</div>
+
+<!-- 日志弹窗 -->
+<div class="modal-mask" id="log-modal" hidden>
+  <div class="modal">
+    <div class="modal-head"><h3>作业日志 <span id="log-title"></span></h3>
+      <button class="btn btn-ghost btn-sm" data-close="log-modal">✕</button></div>
+    <pre class="logbox" id="log-body">加载中…</pre>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" data-close="log-modal">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 详情/连接弹窗 -->
+<div class="modal-mask" id="detail-modal" hidden>
+  <div class="modal">
+    <div class="modal-head"><h3>资源详情 <span id="detail-title"></span></h3>
+      <button class="btn btn-ghost btn-sm" data-close="detail-modal">✕</button></div>
+    <div class="modal-body" id="detail-body"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" data-close="detail-modal">关闭</button>
+    </div>
+  </div>
+</div>
+{% endblock %}

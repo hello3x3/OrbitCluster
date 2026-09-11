@@ -1,0 +1,1012 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 sudoers 白名单调用）
+
+所有命令的输出统一为 JSON（stdout），字段含 ok=True/False。本脚本只做
+"经过严格校验的有限动作"，绝不 eval/拼接任意 shell。web 服务（portal 用户）
+仅能通过 sudo 调用本脚本，无法直接以 root 跑其它命令。
+
+命令一览（见 main()）:
+  ping                健康自检
+  sinfo               节点状态(含 IP / 内存 / gres / 分区)
+  provision-user <u> <quota> [--skip-os]   开通集群账号(admin+计算节点)或仅初始化
+  unprovision-user <u>                     注销集群账号(危险，仅测试/清理用)
+  init-user <u>                            仅初始化已有 OS 用户的 .ssh/.portal 目录
+  user-status <u>                          查看账号在 admin/各节点的状态
+  submit               读取 stdin JSON, 以该用户身份 sbatch 提交容器交互作业
+  kill <u> <jobid>                         停机(校验属主后 scancel)
+  job-state <u> <jobid>                    查单个作业状态(squeue→sacct 回退)
+  log <u> <jobid> [lines]                  读取作业输出日志尾部
+  rm-log <u> <jobid>                      删除某作业日志文件(清理已删除实例残留)
+  save-image <u> <jobid> <name> [force]   把运行中容器的当前状态保存为个人镜像
+                                          (/share/images/<u>/<name>.sqsh, 计入用户配额)
+  images <u>                              列出 /share/images/<u> 下该用户个人镜像
+  get-keys <u> / set-keys <u>              读写 authorized_keys
+  quota <u>                                读取 /share 磁盘配额(实际 OS 值)
+  quota-all                                批量读取 /share 全部用户配额
+  set-quota <u> <大小>                     设置 /share 配额(实际 OS 值, 软=硬)
+  slurm-info <u>                           读取 slurm 关联/QoS/优先级/限额(经 sacctmgr)
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+QUOTA_RE = re.compile(r"^[1-9][0-9]{0,2}[GgTtMm]$")
+HOURS_RE = re.compile(r"^\d{1,3}:\d{2}:\d{2}$")
+IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+PUBKEY_RE = re.compile(
+    r"^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|"
+    r"sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) "
+    r"[A-Za-z0-9+/]{20,}={0,2}( [^\r\n]{0,200})?$"
+)
+RESERVED = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games",
+            "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup",
+            "list", "irc", "_apt", "nobody", "systemd-*"}
+CLUSTER_ADMIN_DIR = "/opt/cluster-admin"
+SHARE_HOME = "/share/home"
+
+
+def user_home(username):
+    """真实 OS 家目录（root 的 /root 等也能正确解析），失败回退 /share/home/<user>。"""
+    r = run(["getent", "passwd", username], timeout=20)
+    parts = r.stdout.split(":")
+    if r.returncode == 0 and len(parts) >= 7 and parts[0] == username and parts[5]:
+        return parts[5]
+    return os.path.join(SHARE_HOME, username)
+CTL = "portal-ctl"
+
+
+def out(obj, code=0):
+    try:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except BrokenPipeError:
+        pass
+    sys.exit(code)
+
+
+def die(msg):
+    out({"ok": False, "error": str(msg)}, code=1)
+
+
+def run(argv, timeout=120, input_text=None, env=None, **kw):
+    """run a command, return CompletedProcess (never raises on rc)."""
+    full_env = dict(os.environ)
+    full_env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if env:
+        full_env.update(env)
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                              input=input_text, env=full_env, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", "timeout after %ss" % timeout)
+
+
+def run_ok(argv, timeout=120, input_text=None):
+    r = run(argv, timeout=timeout, input_text=input_text)
+    return r.returncode == 0
+
+
+def sh_out(argv, timeout=120):
+    r = run(argv, timeout=timeout)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def valid_user(u):
+    return bool(USER_RE.match(u or "")) and u not in RESERVED
+
+
+def name_ok(u):
+    """仅格式校验（不排除 root 等真实 OS 账号；root 不能被建号/注销，另有保留名单保护）。"""
+    return bool(USER_RE.match(u or ""))
+
+
+def reserved_guard(u):
+    """建号/注销类命令的保护：保留用户名（root/portal 等）一律拒绝。"""
+    return u in RESERVED
+
+
+def node_hostname():
+    return sh_out(["hostname", "-s"])
+
+
+def compute_nodes():
+    """admin 上可用的计算节点名（含 admin 自身），按 sinfo 分区实际输出。"""
+    out_txt = sh_out(["sinfo", "-h", "-N", "-o", "%N"], timeout=30)
+    return [x for x in out_txt.split() if x] or ["admin"]
+
+
+def partition_name():
+    p = sh_out(["sinfo", "-h", "-o", "%P"], timeout=30)
+    return (p.split()[0] if p else "gpu").rstrip("*")
+
+
+def nodes_ips():
+    ips = {}
+    try:
+        with open("/etc/hosts", "r", encoding="utf-8") as fh:
+            for ln in fh:
+                ln = ln.split("#")[0].strip()
+                parts = ln.split()
+                if len(parts) >= 2 and parts[1] in ("admin", "<GPU01>", "<GPU02>", "<GPU03>"):
+                    ips[parts[1]] = parts[0]
+    except OSError:
+        pass
+    return ips
+
+
+def ssh_node(node, argv, timeout=60):
+    """在计算节点上以 root 执行 argv（本机直接执行）。"""
+    if node == node_hostname():
+        return run(argv, timeout=timeout)
+    return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                "-o", "StrictHostKeyChecking=accept-new", "-p", "2180",
+                "root@" + node] + argv, timeout=timeout)
+
+
+# ----------------------------------------------------------------------------
+# ping / sinfo
+# ----------------------------------------------------------------------------
+def cmd_ping():
+    out({"ok": True, "whoami": sh_out(["id", "-un"]), "host": node_hostname()})
+
+
+def cmd_sinfo():
+    part = partition_name()
+    raw = sh_out(["sinfo", "-h", "-p", part, "-N", "-o", "%N|%T|%C|%G|%m|%a"],
+                 timeout=30)
+    nodes = []
+    ips = nodes_ips()
+    for ln in raw.splitlines():
+        f = ln.strip().split("|")
+        if len(f) < 6:
+            continue
+        name, state, cpus, gres, mem_mb, avail = f[0], f[1], f[2], f[3], f[4], f[5]
+        ca = ci = co = ct = 0
+        m = re.match(r"^(\d+)/(\d+)/(\d+)/(\d+)$", cpus)
+        if m:
+            ca, ci, co, ct = (int(x) for x in m.groups())
+        try:
+            mem = int(mem_mb)
+        except ValueError:
+            mem = 0
+        nodes.append({
+            "name": name, "state": state, "avail": avail,
+            "cpus_alloc": ca, "cpus_idle": ci, "cpus_other": co, "cpus_total": ct,
+            "mem_mb": mem, "gres": gres,
+            "ip": ips.get(name, ""),
+        })
+    out({"ok": True, "partition": part, "nodes": nodes})
+
+
+# ----------------------------------------------------------------------------
+# 账号开通
+# ----------------------------------------------------------------------------
+def _ensure_admin_scripts():
+    need = ["add-user.sh", "set-quota.sh", "show-quota.sh"]
+    missing = [f for f in need if not os.path.exists(os.path.join(CLUSTER_ADMIN_DIR, f))]
+    if missing:
+        die("缺少 %s，请先安装第 7 章管理脚本到 %s" % (",".join(missing), CLUSTER_ADMIN_DIR))
+
+
+def _copy_scripts_to_nodes(nodes):
+    """把 /opt/cluster-admin/add-user.sh 同步到计算节点（幂等）。"""
+    host = node_hostname()
+    src = os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh")
+    for n in nodes:
+        if n == host:
+            continue
+        # 先确保远程目录存在（幂等），再决定是否拷贝
+        r0 = ssh_node(n, ["mkdir", "-p", CLUSTER_ADMIN_DIR], timeout=30)
+        if r0.returncode != 0:
+            return False, "无法在 %s 创建 %s: %s" % (n, CLUSTER_ADMIN_DIR,
+                                                    r0.stderr.strip()[:200])
+        r1 = ssh_node(n, ["bash", "-c", "test -x %s/add-user.sh" % CLUSTER_ADMIN_DIR],
+                      timeout=30)
+        if r1.returncode == 0:
+            continue  # 已存在
+        rr = run(["scp", "-P", "2180", "-o", "BatchMode=yes",
+                  "-o", "StrictHostKeyChecking=accept-new",
+                  src, "root@%s:%s/add-user.sh" % (n, CLUSTER_ADMIN_DIR)], timeout=60)
+        if rr.returncode != 0:
+            return False, "向 %s 同步 add-user.sh 失败: %s" % (n, rr.stderr.strip()[:300])
+        ssh_node(n, ["chmod", "+x", "%s/add-user.sh" % CLUSTER_ADMIN_DIR], timeout=30)
+    return True, ""
+
+
+def cmd_provision_user(username, quota, skip_os):
+    if not valid_user(username):
+        die("非法用户名")
+    if not QUOTA_RE.match(quota or ""):
+        die("非法配额值: %s（例 500G / 1T）" % quota)
+    host = node_hostname()
+    nodes = compute_nodes()
+
+    if skip_os:
+        # 用户声称 OS 账号已存在 —— 校验并初始化目录
+        r = run(["id", "-u", username])
+        if r.returncode != 0:
+            die("OS 账号 %s 在 %s 不存在，无法按“已存在”开通" % (username, host))
+        uid = r.stdout.strip()
+        if not uid.isdigit():
+            die("读取 %s UID 失败" % username)
+        for n in nodes:
+            if n == host:
+                continue
+            rr = ssh_node(n, ["id", "-u", username])
+            if rr.returncode != 0 or rr.stdout.strip() != uid:
+                die("OS 账号 %s 在 %s 上不存在或 UID(%s)与 admin(%s) 不一致；"
+                    "请先在计算节点建号（add-user.sh %s -u %s）"
+                    % (username, n, rr.stdout.strip() or "?", uid, username, uid))
+        _init_user_dirs(username, uid)
+        out({"ok": True, "mode": "existing", "username": username, "uid": int(uid)})
+        return
+
+    _ensure_admin_scripts()
+    ok, err = _copy_scripts_to_nodes(nodes)
+    if not ok:
+        die(err)
+
+    # 1) admin 建号（建家目录 + 配额 + sacctmgr）
+    r = run([os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"), username, quota], timeout=120)
+    if r.returncode != 0:
+        die("admin 建号失败: %s" % r.stderr.strip()[:400] or r.stdout.strip()[:400])
+    if "已存在，跳过" in r.stdout:
+        die("用户名 %s 已存在于 admin，拒绝重复开通（如需开通已存在账号请勾选“OS 账号已存在”）" % username)
+
+    r = run(["id", "-u", username])
+    if r.returncode != 0:
+        die("读取新用户 UID 失败")
+    uid = r.stdout.strip()
+
+    # 2) 计算节点建号（-u 强制同 UID）
+    for n in nodes:
+        if n == host:
+            continue
+        rr = ssh_node(n, [os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"),
+                          username, "-u", uid], timeout=60)
+        if rr.returncode != 0:
+            die("计算节点 %s 建号失败: %s" % (n, rr.stderr.strip()[:400] or rr.stdout.strip()[:400]))
+
+    _init_user_dirs(username, uid)
+    out({"ok": True, "mode": "new", "username": username, "uid": int(uid),
+         "quota": quota, "nodes": nodes})
+
+
+def _init_user_dirs(username, uid):
+    home = user_home(username)
+    for d in (os.path.join(home, ".ssh"), os.path.join(home, ".portal", "logs")):
+        rr = run(["install", "-d", "-o", username, "-g", username, "-m", "700" if d.endswith(".ssh") else "755", d])
+        if rr.returncode != 0:
+            die("初始化 %s 失败: %s" % (d, rr.stderr.strip()[:300]))
+    # 空 authorized_keys（若不存在）
+    ak = os.path.join(home, ".ssh", "authorized_keys")
+    if not os.path.exists(ak):
+        with open(ak, "w", encoding="utf-8"):
+            pass
+        os.chown(ak, int(uid), int(uid))
+        os.chmod(ak, 0o600)
+    else:
+        os.chmod(ak, 0o600)
+    return True
+
+
+def cmd_init_user(username):
+    if not valid_user(username):
+        die("非法用户名")
+    r = run(["id", "-u", username])
+    if r.returncode != 0:
+        die("OS 账号 %s 在 %s 不存在" % (username, node_hostname()))
+    uid = r.stdout.strip()
+    _init_user_dirs(username, uid)
+    out({"ok": True, "username": username, "uid": int(uid)})
+
+
+def cmd_unprovision_user(username):
+    """注销 OS 账号（删除家目录数据！）。仅供管理员手动清理/测试。"""
+    if not valid_user(username):
+        die("非法用户名")
+    host = node_hostname()
+    r = run(["id", "-u", username])
+    if r.returncode != 0:
+        out({"ok": True, "username": username, "skipped": "not-exists"})
+        return
+    uid = r.stdout.strip()
+    import time
+    # 杀掉该用户所有作业，等待队列清空（容器回收）
+    run(["runuser", "-u", username, "--", "scancel", "-u", username], timeout=60)
+    for _ in range(20):
+        left = sh_out(["squeue", "-h", "-u", username, "-o", "%i"], timeout=30)
+        if not left:
+            break
+        time.sleep(2)
+
+    def _del_on_node(node, rm_home=False):
+        argv = ["userdel"] + (["-r"] if rm_home else []) + [username]
+        last = ssh_node(node, argv, timeout=60) if node != host else run(argv, timeout=120)
+        for _ in range(5):
+            if last.returncode == 0:
+                return True
+            time.sleep(3)
+            last = ssh_node(node, argv, timeout=60) if node != host else run(argv, timeout=120)
+        return last
+
+    # 先删计算节点（进程/容器在本机，避免 admin 家目录删除时被占用）
+    node_fail = []
+    for n in compute_nodes():
+        if n == host:
+            continue
+        if _del_on_node(n) is not True:
+            node_fail.append(n)
+    # admin: userdel -r（删除 NFS 家目录数据）
+    ar = _del_on_node(host, rm_home=True)
+    if ar is not True:
+        node_fail.append(host)
+    # 个人镜像目录 /share/images/<user> 一并清理（root 删除，/share 为 admin 本地盘）
+    imgdir = os.path.join(IMAGES_ROOT, username)
+    if os.path.isdir(imgdir):
+        run(["rm", "-rf", imgdir], timeout=120)
+    # sacctmgr 关联清理
+    run(["sacctmgr", "-i", "delete", "user", "name=%s" % username], timeout=60)
+    if node_fail:
+        out({"ok": False, "error": "以下节点删除账号残留失败: %s，请手动 userdel %s"
+             % (",".join(node_fail), username)}, code=1)
+    out({"ok": True, "username": username, "uid": int(uid)})
+
+
+def cmd_user_status(username):
+    if not name_ok(username):
+        die("非法用户名")
+    host = node_hostname()
+    uid = sh_out(["id", "-u", username])
+    nodes = {}
+    for n in compute_nodes():
+        if n == host:
+            nodes[n] = {"uid": uid if uid else None}
+        else:
+            r = ssh_node(n, ["id", "-u", username], timeout=30)
+            nodes[n] = {"uid": r.stdout.strip() if r.returncode == 0 else None}
+    assoc = sh_out(["sacctmgr", "-n", "-P", "show", "assoc",
+                    "user=%s" % username, "format=Account"], timeout=30)
+    home = user_home(username)
+    out({"ok": True, "username": username, "uid_admin": uid or None,
+         "exists": bool(uid), "nodes": nodes,
+         "sacct_account": assoc.split("|")[0] if assoc else "",
+         "home_exists": os.path.isdir(home)})
+
+
+# ----------------------------------------------------------------------------
+# 作业提交 / 停机 / 状态 / 日志
+# ----------------------------------------------------------------------------
+def _preflight_port_on_node(node, port):
+    """端口占用预检（防门户外自启任务/他人占用冲突）。"""
+    # ss 输出形如 0.0.0.0:28765 或 [::]:28765 —— 用 :port 后缀匹配
+    check = ["bash", "-c", "ss -tlnH | grep -Eq ':%d( |$)' || exit 1" % port]
+    r = ssh_node(node, check, timeout=20)
+    return r.returncode != 0  # True=空闲
+
+
+def cmd_submit():
+    try:
+        spec = json.load(sys.stdin)
+    except Exception:
+        die("stdin 不是合法 JSON")
+    for k in ("user", "node", "image", "gpus", "cpus", "mem_gb", "walltime", "port"):
+        if k not in spec:
+            die("缺少字段 %s" % k)
+    user = str(spec["user"])
+    if not name_ok(user):
+        die("非法用户名")
+    if run_ok(["id", user]) is False:
+        # id 存在性
+        pass
+    if run(["id", "-u", user]).returncode != 0:
+        die("OS 账号 %s 不存在" % user)
+
+    host = node_hostname()
+    nodes = compute_nodes()
+    node = str(spec["node"]).strip()   # 空串=由 Slurm 自动调度（不 -w、不按节点预检）
+    if node and node not in nodes:
+        die("节点 %s 不在分区内（可用: %s）" % (node, ",".join(nodes)))
+
+    image = str(spec["image"])
+    if not image.startswith("/share/images/") or not image.endswith(".sqsh") \
+            or not os.path.isfile(image):
+        die("镜像路径非法或不存在: %s" % image)
+
+    try:
+        gpus = int(spec["gpus"])
+        cpus = int(spec["cpus"])
+        mem_gb = int(spec["mem_gb"])
+        port = int(spec["port"])
+    except (TypeError, ValueError):
+        die("gpus/cpus/mem_gb/port 必须是整数")
+    if gpus not in (0, 1):
+        die("gpus 仅支持 0 或 1（每节点 1 卡）")
+    if not (1 <= cpus <= 64):
+        die("cpus 超出范围 1-64")
+    if not (1 <= mem_gb <= 256):
+        die("mem_gb 超出范围 1-256")
+    if not (10000 <= port <= 65535):
+        die("端口必须在 10000-65535")
+    walltime = str(spec["walltime"])
+    if not HOURS_RE.match(walltime):
+        die("walltime 格式须为 HH:MM:SS")
+
+    job_name = str(spec.get("job_name", "portal-ssh"))
+    if not re.match(r"^[A-Za-z0-9_.-]{1,40}$", job_name):
+        die("非法作业名")
+
+    # 容量粗校验（仅指定节点时；自动调度交给 Slurm）
+    if node:
+        sinfo_raw = sh_out(["sinfo", "-h", "-p", partition_name(), "-N",
+                            "-o", "%N|%C|%m|%G"], timeout=30)
+        node_cpus = node_mem = 0
+        for ln in sinfo_raw.splitlines():
+            f = ln.strip().split("|")
+            if f and f[0] == node:
+                m = re.match(r"^(\d+)/(\d+)/(\d+)/(\d+)$", f[1])
+                if m:
+                    node_cpus = int(m.group(4))
+                try:
+                    node_mem = int(f[2])
+                except ValueError:
+                    node_mem = 0
+                break
+        if cpus > node_cpus:
+            die("cpus=%d 超过 %s 可用核数 %d" % (cpus, node, node_cpus))
+        if mem_gb * 1024 > node_mem:
+            die("mem=%dG 超过 %s 内存 %dMB" % (mem_gb, node, node_mem))
+        if not _preflight_port_on_node(node, port):
+            die("端口 %d 在 %s 上已被占用（可能与门户外任务冲突），请换端口" % (port, node))
+
+    home = user_home(user)
+    if not os.path.isdir(home):
+        die("用户家目录 %s 不存在" % home)
+    logdir = os.path.join(home, ".portal", "logs")
+    run(["install", "-d", "-o", user, "-g", user, "-m", "755", logdir], timeout=30)
+
+    # 命名容器（--container-name=portal → pyxis_<jobid>_portal）：使容器 rootfs 成为
+    # 计算节点 ENROOT_DATA_PATH 下普通可读写的目录（而非临时 overlay），门户才能随时把
+    # “当前容器状态”导出成 .sqsh 个人镜像（save-image）。--container-writable 保证容器内
+    # 修改确实落盘到该 rootfs。作业结束（无论停机/到期）pyxis 会自动清理该目录。
+    argv = ["sbatch", "--parsable", "-p", partition_name(), "-N", "1",
+            "-J", job_name, "-c", str(cpus), "--mem=%dG" % mem_gb,
+            "--time=" + walltime, "-o", os.path.join(logdir, "%j.out"),
+            "--export=ALL,SSH_PORT=%d" % port,
+            "--container-image=" + image,
+            "--container-env=SSH_PORT",
+            "--container-mounts=%s:%s" % (home, home),
+            "--container-name=portal",
+            "--container-writable",
+            "--wrap", "/opt/start_ssh.sh"]
+    if node:
+        argv.insert(argv.index("-J"), "-w")
+        argv.insert(argv.index("-J"), node)
+    if gpus == 1:
+        argv.insert(argv.index("-J"), "--gres=gpu:1")
+    # 显式设置提交环境 HOME/USER，避免 runuser/服务目录把 HOME 带进作业（--export=ALL 会透传）
+    r = run(["runuser", "-u", user, "--"] + argv, timeout=60,
+            env={"HOME": home, "USER": user, "LOGNAME": user})
+    if r.returncode != 0:
+        die("sbatch 提交失败: %s" % (r.stderr.strip()[:400] or r.stdout.strip()[:400]))
+    job_id_txt = (r.stdout or r.stderr or "").strip().splitlines()[-1]
+    try:
+        job_id = int(job_id_txt)
+    except ValueError:
+        die("无法解析 sbatch 输出 jobid: %r" % job_id_txt)
+    out({"ok": True, "job_id": job_id,
+         "log_path": os.path.join(logdir, "%d.out" % job_id),
+         "command": " ".join(argv)})
+
+
+def cmd_kill(user, job_id):
+    if not name_ok(user):
+        die("非法用户名")
+    try:
+        job_id = int(job_id)
+    except ValueError:
+        die("非法 jobid")
+    if run(["id", "-u", user]).returncode != 0:
+        die("OS 账号 %s 不存在" % user)
+    owner = sh_out(["squeue", "-h", "-j", str(job_id), "-o", "%u"], timeout=30)
+    if not owner:
+        # 已不在队列 → 查历史
+        st = sh_out(["sacct", "-n", "-X", "-P", "-j", str(job_id),
+                     "-o", "State"], timeout=30)
+        state = (st.strip().splitlines() or [""])[-1] or "UNKNOWN"
+        out({"ok": True, "already_ended": True, "state": state})
+        return
+    if owner != user:
+        die("作业 %d 属主为 %s，非 %s" % (job_id, owner, user))
+    r = run(["runuser", "-u", user, "--", "scancel", str(job_id)], timeout=60)
+    if r.returncode != 0:
+        die("scancel 失败: %s" % r.stderr.strip()[:300])
+    out({"ok": True, "job_id": job_id, "cancelled": True})
+
+
+def cmd_job_state(user, job_id):
+    if not name_ok(user):
+        die("非法用户名")
+    try:
+        job_id = int(job_id)
+    except ValueError:
+        die("非法 jobid")
+    active = sh_out(["squeue", "-h", "-j", str(job_id),
+                     "-o", "%T|%N|%M|%j"], timeout=30)
+    if active:
+        f = active.split("|")
+        out({"ok": True, "active": True, "state": f[0], "node": f[1] if len(f) > 1 else "",
+             "elapsed": f[2] if len(f) > 2 else "", "name": f[3] if len(f) > 3 else ""})
+        return
+    st = sh_out(["sacct", "-n", "-X", "-P", "-j", str(job_id),
+                 "-o", "State,NodeList,Start"], timeout=30)
+    lines = [x for x in st.strip().splitlines() if x.strip()]
+    if not lines:
+        out({"ok": True, "active": False, "state": "UNKNOWN"})
+        return
+    f = lines[-1].split("|")
+    state = f[0].split("+")[0].split(" ")[0]
+    out({"ok": True, "active": False, "state": state,
+         "node": f[1] if len(f) > 1 else "", "start": f[2] if len(f) > 2 else ""})
+
+
+def cmd_log(user, job_id, lines):
+    if not name_ok(user):
+        die("非法用户名")
+    try:
+        job_id = int(job_id)
+        lines = max(1, min(int(lines), 5000))
+    except ValueError:
+        die("非法参数")
+    path = os.path.join(user_home(user), ".portal", "logs", "%d.out" % job_id)
+    if not os.path.isfile(path):
+        die("日志文件不存在: %s" % path)
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - lines * 4096))
+            data = fh.read()
+    except OSError as e:
+        die("读取日志失败: %s" % e)
+    text = data.decode("utf-8", "replace")
+    tail = text.splitlines()[-lines:]
+    out({"ok": True, "job_id": job_id, "path": path,
+         "text": "\n".join(tail), "total_lines": text.count("\n")})
+
+
+# ----------------------------------------------------------------------------
+# SSH 公钥读取/写入
+# ----------------------------------------------------------------------------
+def cmd_get_keys(user):
+    """读取某用户 authorized_keys 中的有效公钥行（root 才有权限读 600 文件）。"""
+    if not name_ok(user):
+        die("非法用户名")
+    home = user_home(user)
+    ak = os.path.join(home, ".ssh", "authorized_keys")
+    keys = []
+    if os.path.isfile(ak):
+        try:
+            with open(ak, "r", encoding="utf-8", errors="replace") as fh:
+                for ln in fh:
+                    s = ln.strip()
+                    if s and PUBKEY_RE.match(s) and s not in keys:
+                        keys.append(s)
+        except OSError:
+            pass
+    out({"ok": True, "user": user, "keys": keys})
+
+
+def cmd_set_keys(user):
+    if not name_ok(user):
+        die("非法用户名")
+    try:
+        keys = json.load(sys.stdin)
+    except Exception:
+        die("stdin 不是合法 JSON")
+    if not isinstance(keys, list) or len(keys) > 32:
+        die("公钥列表非法（最多 32 条）")
+    cleaned = []
+    for k in keys:
+        if not isinstance(k, str) or not PUBKEY_RE.match(k.strip()):
+            die("存在非法公钥格式（仅支持 OpenSSH 格式，一行一条）")
+        cleaned.append(k.strip())
+    if len(set(cleaned)) != len(cleaned):
+        die("存在重复公钥")
+    r = run(["id", "-u", user])
+    if r.returncode != 0:
+        die("OS 账号 %s 不存在" % user)
+    uid = r.stdout.strip()
+    home = user_home(user)
+    sshd = os.path.join(home, ".ssh")
+    run(["install", "-d", "-o", user, "-g", user, "-m", "700", sshd], timeout=30)
+    ak = os.path.join(sshd, "authorized_keys")
+    tmp = ak + ".portal-tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(cleaned) + "\n")
+        os.chown(tmp, int(uid), int(uid))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ak)
+    except OSError as e:
+        die("写入 authorized_keys 失败: %s" % e)
+    out({"ok": True, "user": user, "keys": len(cleaned),
+         "path": ak})
+
+
+# ----------------------------------------------------------------------------
+# /share 磁盘配额（实际从 OS 读取；配额软=硬，block 单位为 1K）
+# ----------------------------------------------------------------------------
+QUOTA_SIZE_RE = re.compile(r"^[1-9][0-9]{0,3}[GgTt]$")
+
+
+def _quota_rows():
+    """repquota CSV -> {user: {used_kb, soft_kb, hard_kb, files_used, ...}}"""
+    import csv
+    import io
+    r = run(["repquota", "-u", "/share", "-O", "csv"], timeout=60)
+    if r.returncode != 0:
+        return {}
+    out = {}
+    for row in csv.DictReader(io.StringIO(r.stdout)):
+        u = (row.get("User") or "").strip()
+        if not u:
+            continue
+        try:
+            out[u] = {
+                "used_kb": int(float(row.get("BlockUsed") or 0)),
+                "soft_kb": int(float(row.get("BlockSoftLimit") or 0)),
+                "hard_kb": int(float(row.get("BlockHardLimit") or 0)),
+                "files_used": int(float(row.get("FileUsed") or 0)),
+                "files_soft": int(float(row.get("FileSoftLimit") or 0)),
+                "files_hard": int(float(row.get("FileHardLimit") or 0)),
+            }
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def cmd_quota(username):
+    """单个用户的 /share 实际配额（无配额记录=不限）。"""
+    if not name_ok(username):
+        die("非法用户名")
+    if run(["id", "-u", username]).returncode != 0:
+        die("OS 账号 %s 不存在，无法读取配额" % username)
+    row = _quota_rows().get(username)
+    if not row:
+        out({"ok": True, "username": username, "exists": True,
+             "used_kb": 0, "soft_kb": 0, "hard_kb": 0,
+             "files_used": 0, "files_soft": 0, "files_hard": 0,
+             "note": "该账号无配额记录（视为不限）"})
+    row["ok"] = True
+    row["username"] = username
+    row["exists"] = True
+    out(row)
+
+
+def cmd_quota_all():
+    rows = _quota_rows()
+    out({"ok": True, "quotas": rows})
+
+
+def cmd_set_quota(username, size):
+    """设置 /share 配额（软=硬）。校验后调用 /opt/cluster-admin/set-quota.sh。"""
+    if not valid_user(username):
+        die("非法用户名（不能对系统/保留账号设置配额）")
+    if run(["id", "-u", username]).returncode != 0:
+        die("OS 账号 %s 不存在" % username)
+    if not QUOTA_SIZE_RE.match(size or ""):
+        die("配额格式错误: %s（例 100G / 500G / 1T）" % size)
+    if not os.path.isfile(os.path.join(CLUSTER_ADMIN_DIR, "set-quota.sh")):
+        die("缺少 %s/set-quota.sh" % CLUSTER_ADMIN_DIR)
+    # 仅 admin 本机可设（set-quota.sh 内部也会检查）
+    if node_hostname() != "admin":
+        die("配额只能在 admin 节点设置")
+    r = run(["bash", os.path.join(CLUSTER_ADMIN_DIR, "set-quota.sh"), username, size],
+            timeout=90)
+    if r.returncode != 0:
+        die("set-quota 失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+    row = _quota_rows().get(username) or {}
+    out({"ok": True, "username": username, "requested": size,
+         "used_kb": row.get("used_kb", 0), "soft_kb": row.get("soft_kb", 0),
+         "hard_kb": row.get("hard_kb", 0)})
+
+
+# ----------------------------------------------------------------------------
+# Slurm 关联 / QoS / 优先级 / 限额（经 sacctmgr 读取——slurmdbd 权威数据）
+# ----------------------------------------------------------------------------
+def cmd_slurm_info(username):
+    if not name_ok(username):
+        die("非法用户名")
+    if run(["id", "-u", username]).returncode != 0:
+        die("OS 账号 %s 不存在" % username)
+    # 该用户的所有关联行（含不同账号）
+    raw = sh_out(["sacctmgr", "-n", "-P", "show", "assoc",
+                  "user=%s" % username,
+                  "format=Account,User,Partition,QOS,Priority,GrpTRES,GrpTRESMins,"
+                  "MaxTRES,MaxTRESMins,GrpJobs,GrpSubmit,MaxJobs,MaxSubmit,MaxWall,GrpWall"],
+                 timeout=30)
+    assocs = []
+    qos_names = []
+    for ln in raw.splitlines():
+        f = ln.split("|")
+        if len(f) < 2 or f[1] != username:
+            continue  # 只要该用户行（跳过纯账号/纯 root 的聚合行）
+        rec = {
+            "account": f[0], "partition": f[2], "qos": f[3],
+            "priority": f[4],
+            "grp_tres": f[5], "grp_tres_mins": f[6],
+            "max_tres": f[7], "max_tres_mins": f[8],
+            "grp_jobs": f[9], "grp_submit": f[10],
+            "max_jobs": f[11], "max_submit": f[12],
+            "max_wall": f[13], "grp_wall": f[14],
+        }
+        if rec["qos"]:
+            for q in rec["qos"].split(","):
+                if q and q not in qos_names:
+                    qos_names.append(q)
+        assocs.append(rec)
+    # QoS 定义（优先级 + 限额）
+    qos_map = {}
+    if qos_names:
+        raw2 = sh_out(["sacctmgr", "-n", "-P", "show", "qos",
+                       "format=Name,Priority,MaxTRES,GrpTRES,MaxTRESMins,GrpTRESMins,"
+                       "GrpJobs,GrpSubmit,MaxJobs,MaxSubmit,MaxWall,GrpWall"],
+                      timeout=30)
+        for ln in raw2.splitlines():
+            f = ln.split("|")
+            if len(f) < 12 or f[0] not in qos_names:
+                continue
+            qos_map[f[0]] = {
+                "priority": f[1], "max_tres": f[2], "grp_tres": f[3],
+                "max_tres_mins": f[4], "grp_tres_mins": f[5],
+                "grp_jobs": f[6], "grp_submit": f[7],
+                "max_jobs": f[8], "max_submit": f[9],
+                "max_wall": f[10], "grp_wall": f[11],
+            }
+    out({"ok": True, "username": username, "assocs": assocs, "qos": qos_map})
+
+
+def cmd_rm_log(user, job_id):
+    """删除某作业日志文件（用户删除实例记录时同步清理，避免残留）。"""
+    if not name_ok(user):
+        die("非法用户名")
+    try:
+        job_id = int(job_id)
+    except ValueError:
+        die("非法 jobid")
+    path = os.path.join(user_home(user), ".portal", "logs", "%d.out" % job_id)
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError as e:
+            die("删除日志失败: %s" % e)
+        out({"ok": True, "job_id": job_id, "removed": True, "path": path})
+    out({"ok": True, "job_id": job_id, "removed": False, "path": path})
+
+
+# ----------------------------------------------------------------------------
+# 个人镜像（保存运行中容器 → /share/images/<user>/<name>.sqsh）
+# ----------------------------------------------------------------------------
+IMAGES_ROOT = "/share/images"
+
+
+def cmd_images(username):
+    """列出 /share/images/<username> 下该用户的个人镜像（web 以 root 视角读取 700 目录）。"""
+    if not name_ok(username):
+        die("非法用户名")
+    d = os.path.join(IMAGES_ROOT, username)
+    imgs = []
+    if os.path.isdir(d):
+        try:
+            for f in sorted(os.listdir(d)):
+                if f.lower().endswith(".sqsh"):
+                    p = os.path.join(d, f)
+                    st = os.stat(p)
+                    if os.path.isfile(p):
+                        imgs.append({"name": f, "path": p, "size": st.st_size,
+                                     "mtime": int(st.st_mtime)})
+        except OSError:
+            pass
+    out({"ok": True, "user": username, "images": imgs})
+
+
+def _as_user_argv(username, home, argv):
+    """以目标用户身份、在其家目录为 cwd 执行 argv（无 shell 拼接；env -C 处理 cwd）。"""
+    return ["runuser", "-u", username, "--", "env", "-C", home] + list(argv)
+
+
+def cmd_save_image(username, job_id, name, force):
+    """把“运行中的容器”整体导出为个人镜像 /share/images/<username>/<name>.sqsh。
+
+    - 容器须正在运行（作业属主须为该用户，state=RUNNING，实际节点从 squeue 现查）；
+    - rootfs 即计算节点 ENROOT_DATA_PATH 下的 pyxis_<jobid>_portal（submit 时以
+      --container-name=portal 创建）；enroot export 以该用户身份执行（写 NFS 到 admin 的
+      /share，文件归用户所有 → 计入该用户磁盘配额）；
+    - 用户名 root(uid 0) 从计算节点写 NFS 会被 root_squash，故先导出到节点本地再 scp 回 admin。
+    """
+    if not name_ok(username):
+        die("非法用户名")
+    if not IMG_NAME_RE.match(name or ""):
+        die("镜像名只能包含英文/数字/下划线（1-64 位），不含空格或特殊字符")
+    try:
+        job_id = int(job_id)
+    except (TypeError, ValueError):
+        die("非法 jobid")
+    if job_id <= 0:
+        die("非法 jobid")
+    force = str(force) in ("1", "True", "true")
+
+    sq = sh_out(["squeue", "-h", "-j", str(job_id), "-o", "%u|%T|%N"], timeout=30)
+    if not sq:
+        die("作业不存在或已结束：镜像只能在容器运行时保存")
+    f = sq.split("|")
+    if len(f) < 3:
+        die("查询作业状态失败: %s" % sq)
+    owner, state, node = f[0], f[1], f[2]
+    if owner != username:
+        die("作业 %d 属主为 %s，非 %s" % (job_id, owner, username))
+    if state != "RUNNING":
+        die("容器当前状态为 %s，仅运行中(RUNNING)可保存镜像" % state)
+
+    host = node_hostname()
+    if node not in compute_nodes():
+        die("作业所在节点 %s 不在分区内" % node)
+    uid = sh_out(["id", "-u", username], timeout=20)
+    if not uid.isdigit():
+        die("读取 %s UID 失败" % username)
+
+    home = user_home(username)
+    tdir = os.path.join(IMAGES_ROOT, username)
+    # 镜像目录（在 admin 上创建/校正属主，root 真实权限；web 用户由 images 命令经本脚本读取）
+    rr = run(["install", "-d", "-o", username, "-g", username, "-m", "700", tdir])
+    if rr.returncode != 0:
+        die("创建个人镜像目录失败: %s" % (rr.stderr.strip()[:200] or rr.stdout.strip()[:200]))
+    target = os.path.join(tdir, name + ".sqsh")
+    if os.path.exists(target) and not force:
+        die("个人镜像已存在: %s（如需覆盖请重新提交并确认覆盖）" % target)
+
+    container = "pyxis_%d_portal" % job_id
+    export_argv = ["enroot", "export"] + (["-f"] if force else []) + \
+                  ["-o", target, container]
+    timeout = 3600
+
+    if node == host:
+        # 本机（admin）直接执行（真实 root 环境；uid=0 也无 root_squash 问题）
+        r = run(_as_user_argv(username, home, export_argv), timeout=timeout)
+        if r.returncode != 0:
+            _cleanup_partial(target)
+            die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+    elif uid == "0":
+        # 用户名 root：计算节点写 NFS 被 root_squash，先导出到节点本地再 scp 回 admin
+        local_tmp = "/scratch/.portal-save-%d-%s.sqsh" % (job_id, name)
+        r0 = ssh_node(node, _as_user_argv(username, "/",
+                                           ["enroot", "export", "-o", local_tmp, container]),
+                      timeout=timeout)
+        if r0.returncode != 0:
+            _cleanup_partial(target)
+            die("镜像导出失败: %s" % (r0.stderr.strip()[-300:] or r0.stdout.strip()[-300:]))
+        r1 = run(["scp", "-P", "2180", "-o", "BatchMode=yes",
+                  "-o", "StrictHostKeyChecking=accept-new",
+                  "root@%s:%s" % (node, local_tmp), target + ".tmp"], timeout=1800)
+        ssh_node(node, ["rm", "-f", local_tmp], timeout=60)
+        if r1.returncode != 0:
+            _cleanup_partial(target)
+            die("镜像回传 admin 失败: %s" % (r1.stderr.strip()[-300:] or r1.stdout.strip()[-300:]))
+        os.replace(target + ".tmp", target)
+    else:
+        r = ssh_node(node, _as_user_argv(username, home, export_argv), timeout=timeout)
+        if r.returncode != 0:
+            _cleanup_partial(target)
+            die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+
+    try:
+        size = os.path.getsize(target)
+    except OSError:
+        size = 0
+    if size <= 0:
+        _cleanup_partial(target)
+        die("镜像导出结果为空文件（导出被中断？），请重试")
+    out({"ok": True, "user": username, "job_id": job_id, "name": name,
+         "path": target, "size": size, "node": node})
+
+
+def _cleanup_partial(target):
+    """删除导出失败/中断留下的半成品（admin 上真实 root，/share 为本地盘）。"""
+    for p in (target, target + ".tmp", target + ".part"):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
+# ----------------------------------------------------------------------------
+def main():
+    if len(sys.argv) < 2:
+        die("用法: %s <command> [...]" % CTL)
+    cmd = sys.argv[1]
+    try:
+        if cmd == "ping":
+            cmd_ping()
+        elif cmd == "sinfo":
+            cmd_sinfo()
+        elif cmd == "provision-user":
+            if len(sys.argv) < 4:
+                die("用法: provision-user <用户名> <配额> [--skip-os]")
+            cmd_provision_user(sys.argv[2], sys.argv[3], "--skip-os" in sys.argv[4:])
+        elif cmd == "unprovision-user":
+            if len(sys.argv) < 3:
+                die("用法: unprovision-user <用户名>")
+            cmd_unprovision_user(sys.argv[2])
+        elif cmd == "init-user":
+            if len(sys.argv) < 3:
+                die("用法: init-user <用户名>")
+            cmd_init_user(sys.argv[2])
+        elif cmd == "user-status":
+            if len(sys.argv) < 3:
+                die("用法: user-status <用户名>")
+            cmd_user_status(sys.argv[2])
+        elif cmd == "submit":
+            cmd_submit()
+        elif cmd == "kill":
+            if len(sys.argv) < 4:
+                die("用法: kill <用户名> <jobid>")
+            cmd_kill(sys.argv[2], sys.argv[3])
+        elif cmd == "job-state":
+            if len(sys.argv) < 4:
+                die("用法: job-state <用户名> <jobid>")
+            cmd_job_state(sys.argv[2], sys.argv[3])
+        elif cmd == "log":
+            if len(sys.argv) < 4:
+                die("用法: log <用户名> <jobid> [行数]")
+            cmd_log(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "200")
+        elif cmd == "rm-log":
+            if len(sys.argv) < 4:
+                die("用法: rm-log <用户名> <jobid>")
+            cmd_rm_log(sys.argv[2], sys.argv[3])
+        elif cmd == "save-image":
+            if len(sys.argv) < 5:
+                die("用法: save-image <用户名> <jobid> <镜像名> [force]")
+            cmd_save_image(sys.argv[2], sys.argv[3], sys.argv[4],
+                           sys.argv[5] if len(sys.argv) > 5 else "0")
+        elif cmd == "images":
+            if len(sys.argv) < 3:
+                die("用法: images <用户名>")
+            cmd_images(sys.argv[2])
+        elif cmd == "get-keys":
+            if len(sys.argv) < 3:
+                die("用法: get-keys <用户名>")
+            cmd_get_keys(sys.argv[2])
+        elif cmd == "set-keys":
+            if len(sys.argv) < 3:
+                die("用法: set-keys <用户名>")
+            cmd_set_keys(sys.argv[2])
+        elif cmd == "quota":
+            if len(sys.argv) < 3:
+                die("用法: quota <用户名>")
+            cmd_quota(sys.argv[2])
+        elif cmd == "quota-all":
+            cmd_quota_all()
+        elif cmd == "set-quota":
+            if len(sys.argv) < 4:
+                die("用法: set-quota <用户名> <大小>")
+            cmd_set_quota(sys.argv[2], sys.argv[3])
+        elif cmd == "slurm-info":
+            if len(sys.argv) < 3:
+                die("用法: slurm-info <用户名>")
+            cmd_slurm_info(sys.argv[2])
+        else:
+            die("未知命令: %s" % cmd)
+    except SystemExit:
+        raise
+    except Exception as e:  # 任何异常都以 JSON 形式返回
+        die("%s: %s" % (type(e).__name__, e))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}资源套餐 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>资源套餐（CPU/内存/GPU 预设）</h1>
+  <p class="muted">用户申请资源时选择「镜像 + 套餐」。套餐决定 CPU 核数、内存(GB) 与 GPU 卡数。</p>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<section class="card">
+  <h2>新增套餐</h2>
+  <form method="post" action="{{ url_for('admin_plan_add') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="row">
+      <label>名称 <input name="name" required maxlength="80" placeholder="例如：GPU 标准"></label>
+      <label>GPU <select name="gpus" class="plan-gpus"><option value="0">0（纯 CPU）</option><option value="1">1（单卡）</option></select></label>
+      <label>GPU 型号
+        <select name="gpu_model">
+          <option value="">—</option>
+          {% for m in gpu_models %}
+          <option value="{{ m }}">{{ m }}</option>
+          {% endfor %}
+        </select></label>
+      <label>CPU 核数 <input type="number" name="cpus" value="4" min="1" max="64" required></label>
+      <label>内存 GB <input type="number" name="mem_gb" value="8" min="1" max="256" required></label>
+      <label>最长时长(小时) maxtime <input type="number" name="maxtime_h" value="48" min="1" max="720" required></label>
+    </div>
+    <label>说明 <input name="description" maxlength="400" placeholder="可选，展示给用户"></label>
+    <button class="btn btn-primary" type="submit">添加套餐</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>套餐列表（{{ plans|length }}）</h2>
+  <table class="table">
+    <thead><tr><th>ID</th><th>名称/说明</th><th>GPU</th><th>CPU</th><th>内存GB</th><th>最长时长</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for p in plans %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td><b>{{ p.name }}</b><div class="small muted">{{ p.description }}</div></td>
+        <td>{% if p.gpus %}{{ p.gpu_model }}（单卡）{% else %}无{% endif %}</td>
+        <td>{{ p.cpus }}核</td>
+        <td>{{ p.mem_gb }}G</td>
+        <td>{{ p.maxtime_h }}h</td>
+        <td>{% if p.enabled %}<span class="st st-running">启用</span>{% else %}<span class="st st-cancelled">停用</span>{% endif %}</td>
+        <td class="ops">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('plan-edit-{{ p.id }}').hidden = !document.getElementById('plan-edit-{{ p.id }}').hidden">编辑</button>
+          <button class="btn btn-ghost btn-sm xact"
+                  data-url="{{ url_for('admin_plan_toggle', pid=p.id) }}"
+                  data-msg="确定{{ '停用' if p.enabled else '启用' }}套餐「{{ p.name }}」？">{{ '停用' if p.enabled else '启用' }}</button>
+          <button class="btn btn-danger btn-sm xact"
+                  data-url="{{ url_for('admin_plan_delete', pid=p.id) }}"
+                  data-msg="确定删除套餐「{{ p.name }}」？（已有申请记录的不能删）">删除</button>
+        </td>
+      </tr>
+      <tr id="plan-edit-{{ p.id }}" hidden>
+        <td colspan="8">
+          <form class="xform" data-url="{{ url_for('admin_plan_edit', pid=p.id) }}">
+            <div class="row">
+              <label>名称 <input name="name" required maxlength="80" value="{{ p.name }}"></label>
+              <label>GPU <select name="gpus"><option value="0" {% if not p.gpus %}selected{% endif %}>0（纯 CPU）</option><option value="1" {% if p.gpus %}selected{% endif %}>1（单卡）</option></select></label>
+              <label>GPU 型号
+                <select name="gpu_model">
+                  <option value="">—</option>
+                  {% for m in gpu_models %}
+                  <option value="{{ m }}" {% if p.gpu_model == m %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                </select></label>
+              <label>CPU 核数 <input type="number" name="cpus" min="1" max="64" value="{{ p.cpus }}" required></label>
+              <label>内存 GB <input type="number" name="mem_gb" min="1" max="256" value="{{ p.mem_gb }}" required></label>
+              <label>最长时长h <input type="number" name="maxtime_h" min="1" max="720" value="{{ p.maxtime_h }}" required></label>
+              <label>说明 <input name="description" maxlength="400" value="{{ p.description }}"></label>
+            </div>
+            <button class="btn btn-primary" type="submit">保存</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="empty">暂无套餐，请先在上方添加</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

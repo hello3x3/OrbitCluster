@@ -1,0 +1,5 @@
+slurm 26.05.1 (源码编译, 含 mysql 会计/nvml)
+enroot 4.2.1 / pyxis v0.24.0
+Ubuntu 24.04 / Python 3.12.3
+flask 3.1.3 / waitress (version via pip)
+门户部署目录 /opt/cluster-portal

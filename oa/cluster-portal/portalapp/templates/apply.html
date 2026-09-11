@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}申请资源 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>申请资源</h1>
+  <p class="muted">选择镜像与套餐即可提交；可同时申请多个资源。提交后可在「我的资源」查看
+    排队/运行状态、SSH 连接、日志，并可随时停机。</p>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<form id="apply-form" class="card" autocomplete="off">
+  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+  <h2>① 任务名称 <span class="muted small">（必填，3-10 个字符）</span></h2>
+  <label>名称
+    <input name="task_name" id="task-name" required
+           placeholder="3-10 个字符">
+  </label>
+  <p class="field-hint" id="task-hint" hidden></p>
+
+  <h2>② 选择镜像 <span class="muted small">（公共镜像由管理员维护；「我的镜像」是你此前从运行中容器保存的 .sqsh）</span></h2>
+  {% if image_groups.public or image_groups.mine %}
+  <select name="image" required>
+    {% if image_groups.public %}
+    <optgroup label="公共镜像（{{ image_groups.public|length }}）">
+      {% for img in image_groups.public %}
+      <option value="{{ img.path }}">{{ img.name }}</option>
+      {% endfor %}
+    </optgroup>
+    {% endif %}
+    {% if image_groups.mine %}
+    <optgroup label="我的镜像（{{ image_groups.mine|length }}）">
+      {% for img in image_groups.mine %}
+      <option value="{{ img.path }}">{{ img.name }}</option>
+      {% endfor %}
+    </optgroup>
+    {% endif %}
+  </select>
+  {% else %}
+  <div class="alert alert-warn">镜像目录 /share/images 下暂无 .sqsh 文件，请联系管理员。</div>
+  {% endif %}
+
+  <h2>③ 选择套餐 <span class="muted small">（管理员预设：CPU / GPU型号 / 内存 / 名称 / 最长时长）</span></h2>
+  <div class="plan-list" id="plan-list">
+    {% for pl in plans %}
+    <label class="plan-item plan-opt">
+      <input type="radio" name="plan_id" value="{{ pl.id }}" required
+             {% if loop.first %}checked{% endif %}
+             data-maxtime="{{ pl.maxtime_h }}">
+      <span class="plan-main">
+        <b>{{ pl.name }}</b>
+        <span class="small muted">{{ pl.description }}</span>
+      </span>
+      <span class="plan-specs small">
+        {% if pl.gpus %}GPU：{{ pl.gpu_model }}（1卡）{% else %}GPU：无{% endif %}
+        · CPU：{{ pl.cpus }} 核 · 内存：{{ pl.mem_gb }}G
+        <b>最长时长：{{ pl.maxtime_h }} 小时</b>
+      </span>
+    </label>
+    {% else %}
+    <p class="empty">暂无可选套餐，请联系管理员在「资源套餐」中添加。</p>
+    {% endfor %}
+  </div>
+
+  <h2>④ 时长 <span class="muted small">（不能超过所选套餐最大时长）</span></h2>
+  <label>小时数
+    <input type="number" name="hours" id="hours" min="1" max="720" value="{{ default_hours }}" required>
+  </label>
+  <p class="field-hint" id="hours-hint" hidden></p>
+
+  <h2>⑤ 指定节点</h2>
+  <select name="node" id="node-sel">
+    <option value="">自动分配（推荐）</option>
+    {% for n in nodes %}
+    <option value="{{ n.name }}">{{ n.name }}（{{ n.state }} · {{ n.cpus_idle }}/{{ n.cpus_total }}核空闲 · {{ (n.mem_mb/1024)|round|int }}G）</option>
+    {% endfor %}
+  </select>
+
+  <h2>⑥ SSH 端口 <span class="muted small">（从你的端口池选择；使用中的端口不可选）</span></h2>
+  {% if my_ports %}
+  <select name="port" required>
+    {% for p in my_ports %}
+    <option value="{{ p.port }}" {% if p.port in busy_ports %}disabled{% endif %}>
+      {{ p.port }}{% if p.port in busy_ports %}（正在使用，需先停机）{% endif %}
+    </option>
+    {% endfor %}
+  </select>
+  {% else %}
+  <div class="alert alert-warn">端口池为空：请先在「个人资料」登记端口（10000-65535）。</div>
+  {% endif %}
+
+  <div style="margin-top:14px">
+    <button class="btn btn-primary btn-lg" type="submit" id="btn-submit"
+            {% if not image_groups.public and not image_groups.mine or not my_ports or not plans %}disabled{% endif %}>提交申请</button>
+  </div>
+</form>
+{% endblock %}

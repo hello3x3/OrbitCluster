@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ portal_name }}{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=17">
+<meta name="csrf-token" content="{{ csrf_token }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><a href="{{ url_for('home') }}">⚡ {{ portal_name }}</a></div>
+  {% if cur_user %}
+  <nav class="nav">
+    {% if cur_role == 'admin' %}
+    <a href="{{ url_for('admin_users') }}">用户管理</a>
+    <a href="{{ url_for('admin_plans') }}">资源套餐</a>
+    <a href="{{ url_for('admin_apply') }}">代申请资源</a>
+    {% endif %}
+    <a href="{{ url_for('my_instances') }}">我的资源</a>
+    <a href="{{ url_for('apply_page') }}">申请资源</a>
+    <a href="{{ url_for('status_page') }}">集群状态</a>
+    <a href="{{ url_for('profile') }}">个人资料</a>
+  </nav>
+  <div class="userbox">
+    <span class="who" title="{{ cur_user.username }}">{{ cur_user.display_name or cur_user.username }}
+      {% if cur_role == 'admin' %}<em class="badge-admin">管理员</em>{% endif %}</span>
+    <a class="btn btn-ghost btn-sm" href="{{ url_for('logout') }}">退出</a>
+  </div>
+  {% endif %}
+</header>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% if msgs %}
+  <div class="flash-wrap">
+    {% for cat, m in msgs %}
+    <div class="flash flash-{{ cat }}">{{ m }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+<main class="container">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="foot">{{ portal_name }}</footer>
+<script src="{{ url_for('static', filename='app.js') }}?v=17"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

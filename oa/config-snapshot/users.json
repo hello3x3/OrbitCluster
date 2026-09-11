@@ -1,0 +1,31 @@
+[
+  {
+    "username": "<USERNAME>",
+    "role": "user",
+    "os_mode": "existing",
+    "quota": "500G",
+    "is_active": true,
+    "keys": 1,
+    "ports": [
+      52301
+    ]
+  },
+  {
+    "username": "admin",
+    "role": "admin",
+    "os_mode": "none",
+    "quota": "500G",
+    "is_active": true,
+    "keys": 0,
+    "ports": []
+  },
+  {
+    "username": "root",
+    "role": "admin",
+    "os_mode": "none",
+    "quota": "500G",
+    "is_active": true,
+    "keys": 3,
+    "ports": []
+  }
+]
