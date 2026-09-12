@@ -5,6 +5,8 @@ import os
 import sqlite3
 import threading
 
+from . import siteconf
+
 DEFAULT_COMMON_PORTS = [
     # 常用/高危端口（web 与集群服务等），端口申请必须避开
     21, 22, 23, 25, 53, 80, 110, 111, 123, 143, 443, 465, 587, 873, 993, 995,
@@ -12,6 +14,13 @@ DEFAULT_COMMON_PORTS = [
     8443, 8888, 9000, 9090, 9100, 9200, 9835, 10000, 10050, 11211, 15672,
     27017, 30000, 50000,
 ]
+# 本站点的集群 sshd 端口也必须保留，否则用户可能申请到别人登不进来的端口
+try:
+    _ssh_port = int(siteconf.SSH_PORT)
+    if _ssh_port not in DEFAULT_COMMON_PORTS:
+        DEFAULT_COMMON_PORTS.append(_ssh_port)
+except (TypeError, ValueError):
+    pass
 PORT_MIN = 10000
 PORT_MAX = 65535
 
@@ -422,17 +431,38 @@ def _migrate(db):
         db.exec("ALTER TABLE plans ADD COLUMN gpu_model TEXT NOT NULL DEFAULT ''")
     if "maxtime_h" not in pcols:
         db.exec("ALTER TABLE plans ADD COLUMN maxtime_h INTEGER NOT NULL DEFAULT 48")
-    # 已有 GPU 套餐补默认型号
-    db.exec("UPDATE plans SET gpu_model='RTX 3060' WHERE gpus=1 AND gpu_model=''")
+    # 已有 GPU 套餐补默认型号（站点默认型号，见 portalapp/siteconf.py）
+    db.exec("UPDATE plans SET gpu_model=? WHERE gpus=1 AND gpu_model=?",
+            (siteconf.DEFAULT_GPU_MODEL, ""))
+
+
+def _load_seed_plans():
+    """首次建库用的套餐定义。
+
+    站点配置 SEED_PLANS 指向 JSON 文件时用该文件（便于按机型定制）；
+    否则用与机型无关的通用内置套餐，GPU 型号取站点默认值。
+    """
+    if siteconf.SEED_PLANS:
+        try:
+            with open(siteconf.SEED_PLANS, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            seeds = [(str(p["name"]), str(p.get("desc", "")), int(p.get("gpus", 0)),
+                      str(p.get("gpu_model", "") or ""), int(p["cpus"]),
+                      int(p["mem_gb"]), int(p.get("maxtime_h", 48))) for p in data]
+            if seeds:
+                return seeds
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    g = siteconf.DEFAULT_GPU_MODEL
+    return [
+        ("基础 CPU", "纯 CPU 小任务（无 GPU），适合调试/轻量任务。", 0, "", 2, 4, 48),
+        ("均衡 CPU", "纯 CPU（无 GPU），适合编译/中等任务。", 0, "", 4, 8, 48),
+        ("GPU 入门", "单卡 %s + 4 核 8G，训练/推理入门配置。" % g, 1, g, 4, 8, 48),
+        ("GPU 标准", "单卡 %s + 8 核 16G，日常训练推荐。" % g, 1, g, 8, 16, 48),
+        ("GPU 高配", "单卡 %s + 16 核 24G，重负载训练。" % g, 1, g, 16, 24, 48),
+    ]
 
 
 def _seed_plans(db):
-    seeds = [
-        ("基础 CPU", "纯 CPU 小任务（无 GPU），适合调试/轻量任务。", 0, "", 2, 4, 48),
-        ("均衡 CPU", "纯 CPU（无 GPU），适合编译/中等任务。", 0, "", 4, 8, 48),
-        ("GPU 入门", "单卡 3060 + 4 核 8G，训练/推理入门配置。", 1, "RTX 3060", 4, 8, 48),
-        ("GPU 标准", "单卡 3060 + 8 核 16G，日常训练推荐。", 1, "RTX 3060", 8, 16, 48),
-        ("GPU 高配", "单卡 3060 + 16 核 24G（适配 31G 内存节点）。", 1, "RTX 3060", 16, 24, 48),
-    ]
-    for name, desc, gpus, model, cpus, mem, mx in seeds:
+    for name, desc, gpus, model, cpus, mem, mx in _load_seed_plans():
         db.add_plan(name, desc, gpus, model, cpus, mem, mx)

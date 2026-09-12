@@ -89,7 +89,7 @@
           {% endif %}
           {% if u.username != cur_user.username %}
           <button class="btn btn-danger btn-sm xact" data-url="{{ url_for('admin_user_delete', uid=u.id) }}"
-                  data-msg="确定删除门户账号 {{ u.username }}？{% if u.os_mode == 'provision' %}【注意】该用户由门户建号，将同时注销集群账号：终止其全部作业，并删除 admin/<GPU02>/<GPU03> 上的账号、sacctmgr 关联和 /share 家目录数据，不可恢复！{% else %}该账号未由门户开通集群账号（existing 方式），将保留其 OS 账号与家目录数据。{% endif %}">删除</button>
+                  data-msg="确定删除门户账号 {{ u.username }}？{% if u.os_mode == 'provision' %}【注意】该用户由门户建号，将同时注销集群账号：终止其全部作业，并删除管理节点与各计算节点上的账号、sacctmgr 关联和 /share 家目录数据，不可恢复！{% else %}该账号未由门户开通集群账号（existing 方式），将保留其 OS 账号与家目录数据。{% endif %}">删除</button>
           {% endif %}
           {% else %}
           {% if u.quota_can_edit %}

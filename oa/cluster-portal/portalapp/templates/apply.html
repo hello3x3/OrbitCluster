@@ -52,7 +52,7 @@
         <span class="small muted">{{ pl.description }}</span>
       </span>
       <span class="plan-specs small">
-        {% if pl.gpus %}GPU：{{ pl.gpu_model }}（1卡）{% else %}GPU：无{% endif %}
+        {% if pl.gpus %}GPU：{{ pl.gpu_model }}（{{ pl.gpus }}卡）{% else %}GPU：无{% endif %}
         · CPU：{{ pl.cpus }} 核 · 内存：{{ pl.mem_gb }}G
         <b>最长时长：{{ pl.maxtime_h }} 小时</b>
       </span>

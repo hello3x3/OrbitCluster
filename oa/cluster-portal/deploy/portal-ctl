@@ -13,6 +13,8 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   provision-user <u> <quota> [--skip-os]   开通集群账号(admin+计算节点)或仅初始化
   unprovision-user <u>                     注销集群账号(危险，仅测试/清理用)
   init-user <u>                            仅初始化已有 OS 用户的 .ssh/.portal 目录
+  ensure-assoc <u>                         确保该用户在会计里有账户关联(幂等；缺关联会
+                                           导致 sbatch 报 Invalid account...)
   user-status <u>                          查看账号在 admin/各节点的状态
   submit               读取 stdin JSON, 以该用户身份 sbatch 提交容器交互作业
   kill <u> <jobid>                         停机(校验属主后 scancel)
@@ -48,6 +50,36 @@ RESERVED = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games"
             "list", "irc", "_apt", "nobody", "systemd-*"}
 CLUSTER_ADMIN_DIR = "/opt/cluster-admin"
 SHARE_HOME = "/share/home"
+
+# ----------------------------------------------------------------------------
+# 站点配置（与 portalapp/siteconf.py 读同一个文件，保持两端行为一致）
+#   /etc/cluster-portal/site.conf  每行 KEY=VALUE，# 起注释
+#   本站点认的键：SSH_PORT <其它键由门户进程使用>
+# 节点名不在这里配置：一律经 sinfo 运行时探测，节点 IP 从 /etc/hosts 解析。
+# ----------------------------------------------------------------------------
+SITE_CONF = os.environ.get("PORTAL_SITE_CONF", "/etc/cluster-portal/site.conf")
+
+
+def _load_site_conf(path):
+    cfg = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                ln = raw.split("#", 1)[0].strip()
+                if not ln or "=" not in ln:
+                    continue
+                k, v = ln.split("=", 1)
+                k = k.strip().upper()
+                if k:
+                    cfg[k] = v.strip()
+    except OSError:
+        pass
+    return cfg
+
+
+SITE = _load_site_conf(SITE_CONF)
+# 节点间 ssh 端口：环境变量 > 站点配置 > 默认 2180
+SSH_PORT = str(os.environ.get("PORTAL_SSH_PORT") or SITE.get("SSH_PORT") or "2180")
 
 
 def user_home(username):
@@ -124,17 +156,41 @@ def partition_name():
     return (p.split()[0] if p else "gpu").rstrip("*")
 
 
-def nodes_ips():
-    ips = {}
+def nodes_ips(names=None):
+    """节点名 -> IP（通用实现，不依赖固定节点名单）。
+
+    以 /etc/hosts 为准：同一名字出现多次时**非回环地址优先、取最后一条**
+    （与本手册"127.0.1.1 本机名 在前、真实 IP 在后"的写法一致）；
+    回环地址仅在确实没有真实地址时采用。文件里没有的节点用 getent 兜底。
+    因此加节点 / 改节点名都不需要改代码。
+    """
+    wanted = set(names) if names else None
+    seen = {}
     try:
         with open("/etc/hosts", "r", encoding="utf-8") as fh:
             for ln in fh:
-                ln = ln.split("#")[0].strip()
-                parts = ln.split()
-                if len(parts) >= 2 and parts[1] in ("admin", "<GPU01>", "<GPU02>", "<GPU03>"):
-                    ips[parts[1]] = parts[0]
+                parts = ln.split("#")[0].split()
+                if len(parts) < 2:
+                    continue
+                ip = parts[0]
+                for name in parts[1:]:
+                    if wanted is not None and name not in wanted:
+                        continue
+                    seen.setdefault(name, []).append(ip)
     except OSError:
         pass
+    ips = {}
+    for name, cand in seen.items():
+        real = [c for c in cand if not c.startswith("127.")]
+        ips[name] = (real or cand)[-1]
+    for name in (wanted or []):
+        if name in ips:
+            continue
+        r = run(["getent", "ahostsv4", name], timeout=15)
+        cand = [l.split()[0] for l in r.stdout.splitlines() if l.split()]
+        real = [c for c in cand if not c.startswith("127.")]
+        if real or cand:
+            ips[name] = (real or cand)[0]
     return ips
 
 
@@ -143,7 +199,7 @@ def ssh_node(node, argv, timeout=60):
     if node == node_hostname():
         return run(argv, timeout=timeout)
     return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-                "-o", "StrictHostKeyChecking=accept-new", "-p", "2180",
+                "-o", "StrictHostKeyChecking=accept-new", "-p", SSH_PORT,
                 "root@" + node] + argv, timeout=timeout)
 
 
@@ -158,12 +214,11 @@ def cmd_sinfo():
     part = partition_name()
     raw = sh_out(["sinfo", "-h", "-p", part, "-N", "-o", "%N|%T|%C|%G|%m|%a"],
                  timeout=30)
+    fields = [ln.strip().split("|") for ln in raw.splitlines()]
+    fields = [f for f in fields if len(f) >= 6]
+    ips = nodes_ips([f[0] for f in fields])
     nodes = []
-    ips = nodes_ips()
-    for ln in raw.splitlines():
-        f = ln.strip().split("|")
-        if len(f) < 6:
-            continue
+    for f in fields:
         name, state, cpus, gres, mem_mb, avail = f[0], f[1], f[2], f[3], f[4], f[5]
         ca = ci = co = ct = 0
         m = re.match(r"^(\d+)/(\d+)/(\d+)/(\d+)$", cpus)
@@ -208,7 +263,7 @@ def _copy_scripts_to_nodes(nodes):
                       timeout=30)
         if r1.returncode == 0:
             continue  # 已存在
-        rr = run(["scp", "-P", "2180", "-o", "BatchMode=yes",
+        rr = run(["scp", "-P", SSH_PORT, "-o", "BatchMode=yes",
                   "-o", "StrictHostKeyChecking=accept-new",
                   src, "root@%s:%s/add-user.sh" % (n, CLUSTER_ADMIN_DIR)], timeout=60)
         if rr.returncode != 0:
@@ -242,7 +297,11 @@ def cmd_provision_user(username, quota, skip_os):
                     "请先在计算节点建号（add-user.sh %s -u %s）"
                     % (username, n, rr.stdout.strip() or "?", uid, username, uid))
         _init_user_dirs(username, uid)
-        out({"ok": True, "mode": "existing", "username": username, "uid": int(uid)})
+        # 「OS 账号已存在」这条路不会走 add-user.sh，必须在这里补会计关联，
+        # 否则用户能申请但一提交就报 Invalid account or account/partition combination
+        assoc_ok, assoc_err = _ensure_assoc(username)
+        out({"ok": True, "mode": "existing", "username": username, "uid": int(uid),
+             "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err})
         return
 
     _ensure_admin_scripts()
@@ -272,8 +331,37 @@ def cmd_provision_user(username, quota, skip_os):
             die("计算节点 %s 建号失败: %s" % (n, rr.stderr.strip()[:400] or rr.stdout.strip()[:400]))
 
     _init_user_dirs(username, uid)
+    # add-user.sh 已经建过关联；这里幂等再确认一次，避免脚本被改动后静默退化
+    _ensure_assoc(username)
     out({"ok": True, "mode": "new", "username": username, "uid": int(uid),
          "quota": quota, "nodes": nodes})
+
+
+def _ensure_assoc(username):
+    """确保该用户在会计（sacctmgr）里有账户关联。**幂等**，返回 (ok, err)。
+
+    为什么需要：集群开着 `AccountingStorageEnforce=associations` 时，没有关联的用户
+    sbatch 会被直接拒掉，报
+        Invalid account or account/partition combination specified
+    经 `add-user.sh` 建号的用户会自动带上关联（脚本里有 `sacctmgr add user ... account=lab`），
+    但**「OS 账号已存在」这条开通路径不走 add-user.sh**，历史上就漏了这一步 ——
+    表现为"能登录门户、能点申请，但一提交就报上面那个错"。
+
+    这里统一兜住：开通 / 初始化 / 提交前各确保一次。
+    账户名取站点配置的 ACCOUNT（缺省 lab），与 add-user.sh 的 CLUSTER_ACCOUNT 对齐。
+    """
+    acct = SITE.get("ACCOUNT") or os.environ.get("CLUSTER_ACCOUNT") or "lab"
+    r = run(["sacctmgr", "-n", "-P", "show", "assoc", "user=%s" % username,
+             "format=Account"], timeout=30)
+    if r.returncode != 0:
+        return False, "查询会计关联失败: %s" % (r.stderr.strip() or r.stdout.strip())[:300]
+    if r.stdout.strip():
+        return True, ""
+    rr = run(["sacctmgr", "-i", "add", "user", username,
+              "account=%s" % acct, "qos=normal"], timeout=60)
+    if rr.returncode != 0:
+        return False, "建立会计关联失败: %s" % (rr.stderr.strip() or rr.stdout.strip())[:300]
+    return True, ""
 
 
 def _init_user_dirs(username, uid):
@@ -302,7 +390,9 @@ def cmd_init_user(username):
         die("OS 账号 %s 在 %s 不存在" % (username, node_hostname()))
     uid = r.stdout.strip()
     _init_user_dirs(username, uid)
-    out({"ok": True, "username": username, "uid": int(uid)})
+    assoc_ok, assoc_err = _ensure_assoc(username)
+    out({"ok": True, "username": username, "uid": int(uid),
+         "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err})
 
 
 def cmd_unprovision_user(username):
@@ -424,8 +514,8 @@ def cmd_submit():
         port = int(spec["port"])
     except (TypeError, ValueError):
         die("gpus/cpus/mem_gb/port 必须是整数")
-    if gpus not in (0, 1):
-        die("gpus 仅支持 0 或 1（每节点 1 卡）")
+    if not (0 <= gpus <= 8):
+        die("gpus 超出范围 0-8（0=纯 CPU；上限按单节点最多 8 卡）")
     if not (1 <= cpus <= 64):
         die("cpus 超出范围 1-64")
     if not (1 <= mem_gb <= 256):
@@ -444,7 +534,7 @@ def cmd_submit():
     if node:
         sinfo_raw = sh_out(["sinfo", "-h", "-p", partition_name(), "-N",
                             "-o", "%N|%C|%m|%G"], timeout=30)
-        node_cpus = node_mem = 0
+        node_cpus = node_mem = node_gpus = 0
         for ln in sinfo_raw.splitlines():
             f = ln.strip().split("|")
             if f and f[0] == node:
@@ -455,11 +545,16 @@ def cmd_submit():
                     node_mem = int(f[2])
                 except ValueError:
                     node_mem = 0
+                gm = re.search(r"gpu:[^:,]+:(\d+)", f[3] or "")
+                if gm:
+                    node_gpus = int(gm.group(1))
                 break
         if cpus > node_cpus:
             die("cpus=%d 超过 %s 可用核数 %d" % (cpus, node, node_cpus))
         if mem_gb * 1024 > node_mem:
             die("mem=%dG 超过 %s 内存 %dMB" % (mem_gb, node, node_mem))
+        if gpus > node_gpus:
+            die("gpus=%d 超过 %s 可用 GPU 数 %d" % (gpus, node, node_gpus))
         if not _preflight_port_on_node(node, port):
             die("端口 %d 在 %s 上已被占用（可能与门户外任务冲突），请换端口" % (port, node))
 
@@ -469,6 +564,11 @@ def cmd_submit():
     logdir = os.path.join(home, ".portal", "logs")
     run(["install", "-d", "-o", user, "-g", user, "-m", "755", logdir], timeout=30)
 
+    # 兜底：确保会计关联存在。缺关联时 sbatch 会以
+    # "Invalid account or account/partition combination specified" 失败；
+    # 这里失败也不中止，交给 sbatch 报出更准确的错误。
+    _ensure_assoc(user)
+
     # 命名容器（--container-name=portal → pyxis_<jobid>_portal）：使容器 rootfs 成为
     # 计算节点 ENROOT_DATA_PATH 下普通可读写的目录（而非临时 overlay），门户才能随时把
     # “当前容器状态”导出成 .sqsh 个人镜像（save-image）。--container-writable 保证容器内
@@ -476,7 +576,15 @@ def cmd_submit():
     argv = ["sbatch", "--parsable", "-p", partition_name(), "-N", "1",
             "-J", job_name, "-c", str(cpus), "--mem=%dG" % mem_gb,
             "--time=" + walltime, "-o", os.path.join(logdir, "%j.out"),
-            "--export=ALL,SSH_PORT=%d" % port,
+            # 必须显式指定作业工作目录。不给的话 Slurm 用"提交者进程的 cwd"——
+            # 门户服务以 /opt/cluster-portal 为 cwd（systemd WorkingDirectory），
+            # 该目录只存在于管理节点；作业落到计算节点就会 chdir 失败并回退 /tmp：
+            #   error: couldn't chdir to `/opt/cluster-portal': No such file or directory
+            # 家目录在 NFS 上、各节点都有，是最自然的工作目录。
+            "--chdir=" + home,
+            # PWD 也要一起纠正：--export=ALL 会把门户进程的 PWD(=/opt/cluster-portal)
+            # 透传进来，和实际 cwd 不一致，部分程序会据此走错路径。
+            "--export=ALL,SSH_PORT=%d,PWD=%s" % (port, home),
             "--container-image=" + image,
             "--container-env=SSH_PORT",
             "--container-mounts=%s:%s" % (home, home),
@@ -486,8 +594,8 @@ def cmd_submit():
     if node:
         argv.insert(argv.index("-J"), "-w")
         argv.insert(argv.index("-J"), node)
-    if gpus == 1:
-        argv.insert(argv.index("-J"), "--gres=gpu:1")
+    if gpus >= 1:
+        argv.insert(argv.index("-J"), "--gres=gpu:%d" % gpus)
     # 显式设置提交环境 HOME/USER，避免 runuser/服务目录把 HOME 带进作业（--export=ALL 会透传）
     r = run(["runuser", "-u", user, "--"] + argv, timeout=60,
             env={"HOME": home, "USER": user, "LOGNAME": user})
@@ -890,7 +998,7 @@ def cmd_save_image(username, job_id, name, force):
         if r0.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r0.stderr.strip()[-300:] or r0.stdout.strip()[-300:]))
-        r1 = run(["scp", "-P", "2180", "-o", "BatchMode=yes",
+        r1 = run(["scp", "-P", SSH_PORT, "-o", "BatchMode=yes",
                   "-o", "StrictHostKeyChecking=accept-new",
                   "root@%s:%s" % (node, local_tmp), target + ".tmp"], timeout=1800)
         ssh_node(node, ["rm", "-f", local_tmp], timeout=60)
@@ -947,6 +1055,13 @@ def main():
             if len(sys.argv) < 3:
                 die("用法: init-user <用户名>")
             cmd_init_user(sys.argv[2])
+        elif cmd == "ensure-assoc":
+            if len(sys.argv) < 3:
+                die("用法: ensure-assoc <用户名>")
+            ok, err = _ensure_assoc(sys.argv[2])
+            if not ok:
+                die(err)
+            out({"ok": True, "user": sys.argv[2], "assoc": "ok"})
         elif cmd == "user-status":
             if len(sys.argv) < 3:
                 die("用法: user-status <用户名>")

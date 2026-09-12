@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# cluster-portal 安装脚本 —— 在集群管理/登录节点(admin)上以 root 执行
+# cluster-portal 安装脚本 —— 在集群管理/登录节点上以 root 执行
 #
-# 用法:  install.sh <代码目录> [门户端口]
-#   例:  bash install.sh /tmp/cluster-portal-src 8000
+# 用法:  install.sh <代码目录> [门户端口] [站点目录]
+#   例:  bash install.sh /tmp/cluster-portal-src 8000 /tmp/site-3090
+#
+# 【站点目录】可选，内含 site.conf（及可选的 plans.json）。给了就装到
+#   /etc/cluster-portal/ 下，用于适配不同集群的 ssh 端口 / GPU 型号 / 套餐种子；
+#   不给则用代码内置默认值（ssh 端口 2180、RTX 3060），即旧集群行为。
+#   站点目录样例见仓库 oa/sites/3090-2node/。
 #
 # 功能:
 #   * 创建运行账号 portal 与数据目录 /var/lib/cluster-portal
 #   * 把代码部署到 /opt/cluster-portal，建立 venv 并安装依赖
 #   * 安装 root 助手 /usr/local/sbin/portal-ctl 与 sudoers 白名单
+#   * 安装站点配置 /etc/cluster-portal/site.conf（可选）
 #   * 生成 systemd 服务 cluster-portal.service（waitress，0.0.0.0:<port>）
 #   * 创建默认管理员账号 root（最高管理员，密码随机，落盘 /root/.cluster-portal-admin 600）
 #   * 启动并做健康检查
 set -eu
 
-SRC="${1:?用法: install.sh <代码目录> [端口]}"
+SRC="${1:?用法: install.sh <代码目录> [端口] [站点目录]}"
 PORT="${2:-8000}"
+SITE_DIR="${3:-}"
 APP_DIR=/opt/cluster-portal
 DATA_DIR=/var/lib/cluster-portal
 CTL=/usr/local/sbin/portal-ctl
@@ -31,7 +38,7 @@ install -d -o root -g root -m 755 "$APP_DIR"
 echo "==> [2/8] 部署代码到 $APP_DIR"
 rsync -a --delete \
   --exclude='__pycache__' --exclude='*.pyc' --exclude='var' --exclude='venv' \
-  --exclude='.git' \
+  --exclude='.venv' --exclude='.venv-*' --exclude='.git' \
   "$SRC"/ "$APP_DIR"/
 chown -R root:root "$APP_DIR"
 chmod -R a+rX "$APP_DIR"          # 门户进程(portal)需能读取代码
@@ -77,6 +84,19 @@ fi
 chown root:portal /etc/cluster-portal/users.passwd
 chmod 660 /etc/cluster-portal/users.passwd   # root 可编辑，portal 进程可回写
 ls -l /etc/cluster-portal/users.passwd
+
+echo "==> [4c/8] 站点配置（可选：ssh 端口 / GPU 型号 / 套餐种子）"
+if [ -n "$SITE_DIR" ] && [ -d "$SITE_DIR" ]; then
+  [ -f "$SITE_DIR/site.conf" ] || { echo "站点目录缺少 site.conf: $SITE_DIR"; exit 1; }
+  install -o root -g root -m 644 "$SITE_DIR/site.conf" /etc/cluster-portal/site.conf
+  if [ -f "$SITE_DIR/plans.json" ]; then
+    install -o root -g root -m 644 "$SITE_DIR/plans.json" /etc/cluster-portal/plans.json
+  fi
+  echo "  已安装 /etc/cluster-portal/site.conf:"
+  grep -vE '^[[:space:]]*(#|$)' /etc/cluster-portal/site.conf | sed 's/^/    /'
+else
+  echo "  未提供站点目录 → 使用代码内置默认值（ssh 端口 2180、RTX 3060、内置套餐）"
+fi
 
 echo "==> [5/8] systemd 单元"
 cat > /etc/systemd/system/$SERVICE.service <<EOF

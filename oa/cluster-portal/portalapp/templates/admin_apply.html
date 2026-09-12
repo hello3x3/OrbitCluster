@@ -32,7 +32,7 @@
       <select name="plan_id" id="plan-sel" required>
         {% for pl in plans %}
         <option value="{{ pl.id }}" data-maxtime="{{ pl.maxtime_h }}">
-          {{ pl.name }}（{% if pl.gpus %}GPU {{ pl.gpu_model }}/1卡{% else %}纯CPU{% endif %} ·
+          {{ pl.name }}（{% if pl.gpus %}GPU {{ pl.gpu_model }}/{{ pl.gpus }}卡{% else %}纯CPU{% endif %} ·
           {{ pl.cpus }}核 · {{ pl.mem_gb }}G · 最长{{ pl.maxtime_h }}h）
         </option>
         {% endfor %}

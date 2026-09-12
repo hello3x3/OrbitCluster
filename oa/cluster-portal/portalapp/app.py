@@ -21,6 +21,7 @@ from flask import (Flask, abort, flash, g, jsonify, redirect,
 
 from . import auth as authlib
 from . import ctl
+from . import siteconf
 from .db import (ACTIVE_STATES, DB, STATE_CN, init_db)
 
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -265,6 +266,37 @@ def create_app(testing=False):
         setattr(g, attr, res)
         return res
 
+    def _sync_os_keys(db, u):
+        """把 OS `~/.ssh/authorized_keys` 里已有的公钥并入门户 DB。
+
+        为什么需要：门户「个人资料」页展示的是**门户自己的 ssh_keys 表**，并不直接读
+        OS 文件。用户若直接在 `~/.ssh/authorized_keys` 里配了公钥（没走门户的添加流程），
+        此前门户会显示"没有公钥"，表现为"明明配了却没读到"。
+
+        这里在打开个人资料页时做一次**单向导入**：
+          OS -> 门户 DB，只补缺失项；
+          **绝不回写 OS 文件**（回写只发生在用户主动增删公钥时）。
+        任何失败都静默处理，不影响页面渲染。
+        """
+        if not _os_ok(u):
+            return 0
+        try:
+            oskeys = ctl.get_keys(u["username"]).get("keys", [])
+        except ctl.CtlError:
+            return 0
+        added = 0
+        for k in oskeys:
+            if db.q1("SELECT 1 FROM ssh_keys WHERE user_id=? AND pubkey=?", (u["id"], k)):
+                continue
+            try:
+                db.add_key(u["id"], "", k)
+                added += 1
+            except Exception:
+                pass
+        if added:
+            app.logger.info("已从集群导入 %d 把公钥到门户账号 %s", added, u["username"])
+        return added
+
     def can_apply(u):
         """能否申请资源：集群有同名 OS 账号 且 已完善公钥+端口。"""
         return _os_ok(u) and profile_complete(u)
@@ -434,6 +466,9 @@ def create_app(testing=False):
     def profile():
         u = get_user_row()
         db = get_db()
+        # 打开个人资料页时把 OS 上已有的公钥导入门户 DB（只增不改，不回写 OS 文件），
+        # 避免"用户直接在 ~/.ssh/authorized_keys 里配了 key，门户却显示没有"。
+        _sync_os_keys(db, u)
         mine = [p["port"] for p in db.ports_for(u["id"])]
         claimed = [r["port"] for r in db.q("SELECT port FROM user_ports WHERE user_id<>?",
                                            (u["id"],))]
@@ -599,10 +634,13 @@ def create_app(testing=False):
         s = re.sub(r"-{2,}", "-", s).strip("-")
         return (s or "task")[:40]
 
-    GPU_MODEL_MAP = {"3060": "RTX 3060"}
-
     def _gpu_models():
-        """从集群实际 gres 中发现可选 GPU 型号（如 gpu:3060 → RTX 3060）。"""
+        """从集群实际 gres 中发现可选 GPU 型号（如 gpu:3090 → RTX 3090）。
+
+        型号 token → 展示名 的映射由站点配置决定（见 portalapp/siteconf.py）：
+        纯数字 token 自动加 "RTX " 前缀，因此换卡型不必改代码；
+        需要特殊命名时在 /etc/cluster-portal/site.conf 里写 GPU_MODEL_MAP。
+        """
         seen = set()
         try:
             data = app.node_cache.get()
@@ -612,10 +650,9 @@ def create_app(testing=False):
         for n in nodes:
             m = re.search(r"(?:^|,)\s*gpu:([^:]+):", n.get("gres") or "")
             if m:
-                token = m.group(1)
-                seen.add(GPU_MODEL_MAP.get(token, token))
+                seen.add(siteconf.pretty_gpu(m.group(1)))
         if not seen:
-            seen.add("RTX 3060")
+            seen.add(siteconf.DEFAULT_GPU_MODEL)
         return sorted(seen)
 
     @app.route("/apply")
@@ -1142,7 +1179,7 @@ def create_app(testing=False):
     def admin_user_delete(uid):
         """删除门户账号。
         - 普通用户(os_mode=provision，门户代建号)：先注销集群 OS 账号（终止全部作业、
-          删除 admin/<GPU02>/<GPU03> 上的账号、sacctmgr 关联与 NFS 家目录数据），再删门户记录；
+          删除管理节点与各计算节点上的账号、sacctmgr 关联与 NFS 家目录数据），再删门户记录；
         - 管理员 / os_mode=existing（OS 账号本来就存在）：只删门户记录，不动集群账号与家目录。
         """
         if not csrf_ok():
@@ -1314,12 +1351,12 @@ def create_app(testing=False):
         available = _gpu_models()
         if not name:
             return None, "套餐名称必填"
-        if gpus not in (0, 1):
-            return None, "GPU 仅支持 0（纯CPU）或 1（单卡）"
-        if gpus == 1:
+        if not (0 <= gpus <= 8):
+            return None, "GPU 卡数须在 0-8（0=纯 CPU）"
+        if gpus >= 1:
             if gpu_model not in available:
                 return None, "GPU 型号须从集群可用型号中选择：%s" % "、".join(available)
-        if gpus == 0:
+        else:
             gpu_model = ""
         if not (1 <= cpus <= 64):
             return None, "CPU 核数须在 1-64"

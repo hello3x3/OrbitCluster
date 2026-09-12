@@ -1,0 +1,17 @@
+DbdHost=<管理节点主机名>
+DbdPort=6819
+SlurmUser=slurm
+StorageType=accounting_storage/mysql
+StorageHost=localhost
+StoragePort=3306
+StorageUser=slurm
+StoragePass=<SLURMDB_PASSWORD>   # 实际值在目标机 /root/.slurmdb.pass (600)
+StorageLoc=slurm_acct_db
+AuthType=auth/munge
+LogFile=/var/log/slurm/slurmdbd.log
+PidFile=/run/slurmdbd/slurmdbd.pid
+DebugLevel=info
+PurgeEventAfter=1month
+PurgeJobAfter=3month
+PurgeResvAfter=1month
+PurgeStepAfter=1month

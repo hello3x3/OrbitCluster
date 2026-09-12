@@ -1,0 +1,8 @@
+[
+  {"name": "基础 CPU", "desc": "纯 CPU 小任务（无 GPU），适合调试/轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 2, "mem_gb": 8, "maxtime_h": 48},
+  {"name": "均衡 CPU", "desc": "纯 CPU（无 GPU），适合编译/中等任务。", "gpus": 0, "gpu_model": "", "cpus": 8, "mem_gb": 32, "maxtime_h": 48},
+  {"name": "GPU 入门", "desc": "单卡 RTX 3090 + 8 核 32G，训练/推理入门配置。", "gpus": 1, "gpu_model": "RTX 3090", "cpus": 8, "mem_gb": 32, "maxtime_h": 48},
+  {"name": "GPU 标准", "desc": "单卡 RTX 3090 + 16 核 64G，日常训练推荐。", "gpus": 1, "gpu_model": "RTX 3090", "cpus": 16, "mem_gb": 64, "maxtime_h": 48},
+  {"name": "GPU 双卡", "desc": "双卡 RTX 3090 + 24 核 96G，多卡并行 / 大模型微调。", "gpus": 2, "gpu_model": "RTX 3090", "cpus": 24, "mem_gb": 96, "maxtime_h": 48},
+  {"name": "GPU 三卡", "desc": "三卡 RTX 3090 + 32 核 112G，单机满卡训练。", "gpus": 3, "gpu_model": "RTX 3090", "cpus": 32, "mem_gb": 112, "maxtime_h": 24}
+]

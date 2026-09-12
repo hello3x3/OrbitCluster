@@ -117,7 +117,26 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   提交作业用 `runuser -u <用户> -- sbatch ...`，不拼接任意 shell。
 - 门户用户列表是「门户+集群账号」双写；`portal` 用户只开放给 sudoers 白名单命令，
   请不要为它放开其它 sudo 权限，也不要给服务单元加 `NoNewPrivileges`（会阻断 sudo）。
-- `~/.ssh/authorized_keys` 由门户整文件管理（删除某公钥会同步生效）；不建议手工改。
+- **SSH 公钥的两处存储**（这是最容易困惑的地方）：
+  - 「个人资料」页显示的是**门户自己 `ssh_keys` 表**里的记录，**不是**直接读 OS 文件；
+  - 用户主动增删公钥时，门户会把整份清单写回该用户的 `~/.ssh/authorized_keys`
+    （因此经门户删除某把公钥会同步生效）。
+  - **打开「个人资料」页时会自动做一次单向导入：OS → 门户 DB**（只补缺失项，
+    **绝不回写 OS 文件**）。所以如果你直接手工往 `~/.ssh/authorized_keys` 里加了公钥，
+    打开一次个人资料页就能在门户里看到它。
+  - 但**不建议手工改** `authorized_keys`：门户回写时是"整体重写"，带选项的行
+    （如 `from="..."`、`command="..."` 前缀）因为不被识别为公钥，会在下次经门户
+    增删公钥时被静默丢弃。
+- **作业能登录门户但一提交就报 `Invalid account or account/partition combination specified`**：
+  该用户在 Slurm 会计里没有账户关联，而集群开着 `AccountingStorageEnforce=associations`。
+  一条命令补：`portal-ctl ensure-assoc <用户>`。根因是**「OS 账号已存在」这条开通路径不经过
+  `add-user.sh`**（只有 `add-user.sh` 会建关联），历史上漏了这一步；现在 `portal-ctl` 在
+  **开通 / 初始化 / 提交前**都会幂等补齐（见 `_ensure_assoc`），账户名取站点配置的 `ACCOUNT`（默认 `lab`）。
+- **作业日志里出现 `couldn't chdir to '/opt/cluster-portal': No such file or directory`**：
+  门户服务的工作目录是 `/opt/cluster-portal`（systemd `WorkingDirectory`），而 `sbatch` 默认让
+  作业在**提交者进程的 cwd** 下启动 —— 该目录只存在于管理节点，作业落到计算节点就会 chdir 失败
+  并回退到 `/tmp`（作业仍能跑，但工作目录不对）。已修：提交时显式带 `--chdir=<用户家目录>`
+  （家目录在 NFS 上、各节点都有），同时把被透传进来的 `PWD` 环境变量一并纠正。
 - 可用交互镜像目前只有内置 sshd/`start_ssh.sh` 的两个：`cuda12.8.0-devel-ubuntu24.04` 与
   `cuda13.3.1-devel-ubuntu24.04`（镜像下拉由 `/share/images/*.sqsh` 自动扫描，无需登记）。
 - 端口在**同一节点**上同一时刻只能有一个实例（门户 DB 唯一约束 + 提交前节点端口预检）；
