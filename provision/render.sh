@@ -380,6 +380,8 @@ write_text "$(gen_plans_json)" "$OUT/etc/cluster-portal/plans.json"
 if [ "$PRINT" = 0 ]; then
   mkdir -p "$OUT/opt/cluster-admin"
   cp -p "$REPO"/base-cluster/scripts/cluster-admin/*.sh "$OUT/opt/cluster-admin/"
+  # 必须记进产物清单，否则 make reset 会漏删这三个脚本
+  for s in "$OUT"/opt/cluster-admin/*.sh; do GENERATED+=("$s"); done
 fi
 
 # ---- 文档渲染：markdown 里的 <占位符> → 本集群实值 ----
