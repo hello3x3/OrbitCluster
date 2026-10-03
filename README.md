@@ -39,7 +39,7 @@ OrbitCluster/
     │   ├── run.py / bootstrap.py    #   生产入口 / 账号初始化与重置
     │   └── README.md                #   门户自身文档（功能、安全模型、已知边界）
     ├── sites/                       # ★ 站点档案：同一份代码适配不同集群，换机器不用改代码
-    │   └── 3090-2node/              #   <ADMIN>(管理+计算) + <GPU02>(计算)，各 3×RTX 3090
+    │   └── 3090-2node/              #   <ADMIN>(管理+计算) + <GPU01>(计算)，各 3×RTX 3090
     │       ├── README.md            #   本站点差异清单 + 三个坑 + 部署顺序
     │       ├── site.conf            #   ssh 端口 / GPU 型号 / 套餐种子
     │       ├── plans.json           #   首次建库的套餐
@@ -94,8 +94,8 @@ python3 -m venv .venv-test
 .venv-test/bin/pip install -r requirements.txt requests
 .venv-test/bin/python tests/smoke_local.py          # 成功打印 SMOKE_OK
 
-# 真机端到端验收（需门户已部署且本机可 ssh root@admin）
-E2E_BASE=http://admin:8000 .venv-test/bin/python tests/e2e_live.py
+# 真机端到端验收（需门户已部署且本机可 ssh root@<ADMIN>）
+E2E_BASE=http://<ADMIN>:8000 .venv-test/bin/python tests/e2e_live.py
 ```
 
 ## 仓库约定
@@ -120,8 +120,8 @@ Python 3.12 · Flask 3.1.3 + waitress。
 
 | 实例 | 节点 | 卡 | sshd | 门户 | 档案 |
 |---|---|---|---|---|---|
-| 现场（2026-09） | `admin`(管理/登录) + `<GPU02>`/`<GPU03>` | 各 1×RTX 3060 | 2180 | `http://admin:8000` | `oa/config-snapshot/` |
-| 3090 集群 | `<ADMIN>`(管理+计算) + `<GPU02>`(计算) | 各 **3×RTX 3090** | 2022 | `http://<ADMIN>:8000` | `oa/sites/3090-2node/` |
+| 现场（2026-09） | `<ADMIN>`(管理/登录) + `<GPU01>`/`<GPU02>` | 各 1×RTX 3060 | 2180 | `http://<ADMIN>:8000` | `oa/config-snapshot/` |
+| 3090 集群 | `<ADMIN>`(管理+计算) + `<GPU01>`(计算) | 各 **3×RTX 3090** | 2022 | `http://<ADMIN>:8000` | `oa/sites/3090-2node/` |
 
 版本细节见 `oa/config-snapshot/versions.txt`；3090 集群的差异与踩坑见
 `oa/sites/3090-2node/README.md`。

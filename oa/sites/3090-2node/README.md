@@ -10,8 +10,8 @@
 > | 占位符 | 含义 | 本集群实值 |
 > |---|---|---|
 > | `<ADMIN>` | 管理节点主机名（本集群它同时是计算节点） | 见目标机 `hostname` |
-> | `<GPU02>` | 计算节点主机名 | 同上 |
-> | `<ADMIN_IP>` / `<GPU02_IP>` | 两个节点的静态 IP | 见目标机 `ip -br addr` |
+> | `<GPU01>` | 计算节点主机名 | 同上 |
+> | `<ADMIN_IP>` / `<GPU01_IP>` | 两个节点的静态 IP | 见目标机 `ip -br addr` |
 > | `<LAN_CIDR>` | 内网网段（NFS 导出与 chrony 放行用） | 见目标机 `ip route` |
 > | `<OLD_ADMIN_IP>` | 迁镜像时用到的旧集群管理节点 | —— |
 >
@@ -21,7 +21,7 @@
 | 角色 | 主机 | IP | hardware |
 |---|---|---|---|
 | 管理 + 计算 + NFS 服务端 + 门户 | `<ADMIN>` | `<ADMIN_IP>` | 2×Xeon Silver 4210 / 40 线程 / 125G / 3×RTX 3090 |
-| 计算 | `<GPU02>` | `<GPU02_IP>` | i9-10980XE / 36 线程 / 125G / 3×RTX 3090 |
+| 计算 | `<GPU01>` | `<GPU01_IP>` | i9-10980XE / 36 线程 / 125G / 3×RTX 3090 |
 
 - 系统：Ubuntu 24.04.5 LTS（kernel 6.8.0-139），驱动 595.71.05（open），无 CUDA 工具链（仅 NVML 头用于编译）
 - **sshd 端口 2022**（非标准 22）
@@ -39,6 +39,7 @@
 | `gres.conf` | `/etc/slurm/gres.conf` | **显式** 3 卡，而非 `AutoDetect=nvml`（原因见下） |
 | `e2e_verify.py` | 在管理节点上执行（不必安装） | 端到端验收脚本，需用 `E2E_MGT`/`E2E_PEER` 传真实节点名 |
 | `host-config/` | 见该目录的 `README.md` | 现场系统配置文件（fstab/exports/enroot/plugstack… 已脱敏） |
+| `host-config/etc-ssh-sshd_config.d-10-portal-only.conf` | `/etc/ssh/sshd_config.d/10-portal-only.conf`（**每台节点**） | 门户模式必做：`AllowUsers root` + `PermitRootLogin prohibit-password`，禁止集群用户登录宿主机（见底层手册 1.7） |
 
 安装时一次带入（站点目录里的占位符需先换成实值）：
 
@@ -67,7 +68,7 @@ E2E_MGT=<真实管理节点名> E2E_PEER=<真实计算节点名> python3 e2e_ver
 
 | 项 | 旧集群 | 本站点 | 影响 |
 |---|---|---|---|
-| 节点 | admin + gpu02 + gpu03 | <ADMIN> + <GPU02> | 节点名由 `sinfo` 探测，代码不用改 |
+| 节点 | admin + gpu02 + gpu03 | <ADMIN> + <GPU01> | 节点名由 `sinfo` 探测，代码不用改 |
 | 每节点卡数 | 1× RTX 3060 | **3× RTX 3090** | 放开多卡套餐（提交侧原本写死 `gpus==1`） |
 | sshd 端口 | 2180 | **2022** | 必须写进 `site.conf` |
 | 镜像目录 | `/share/images`（在 sdb 上） | **独立 NVMe 文件系统** | NFS 需**单独导出 + 单独挂载**（见下） |
@@ -90,7 +91,7 @@ where the other filesystem is mounted. That filesystem is 'hidden'."*
 /share         <LAN_CIDR>(rw,sync,no_subtree_check)
 /share/images  <LAN_CIDR>(rw,sync,no_subtree_check)
 
-# <GPU02> /etc/fstab（第二条是关键，且要保证 /share 先挂）
+# <GPU01> /etc/fstab（第二条是关键，且要保证 /share 先挂）
 <ADMIN>:/share         /share         nfs _netdev,rw,hard,intr,noatime,actimeo=60 0 0
 <ADMIN>:/share/images  /share/images  nfs _netdev,rw,hard,intr,noatime,actimeo=60,x-systemd.requires-mounts-for=/share 0 0
 ```
@@ -138,12 +139,12 @@ Name=gpu Type=3090 File=/dev/nvidia2
 ## 运维注意（本次实测踩到）
 
 **1. 管理节点与计算节点「同时」重启后，计算节点可能被标 DOWN。**
-实测两台一起 reboot 后，slurmctld 报 `Reason=Node unexpectedly rebooted` 并把 <GPU02> 标成 DOWN
+实测两台一起 reboot 后，slurmctld 报 `Reason=Node unexpectedly rebooted` 并把 <GPU01> 标成 DOWN
 （slurmctld 的"意外重启"判定与 slurmd 的注册发生竞争；正常**单台**重启不会触发）。
 一条命令拉回：
 
 ```bash
-scontrol update nodename=<GPU02> state=resume
+scontrol update nodename=<GPU01> state=resume
 ```
 
 已加的开机加固（两台的 `slurmd.service.d/20-wait-remote-fs.conf`）：让 slurmd 等
@@ -172,7 +173,7 @@ scontrol update nodename=<GPU02> state=resume
 |---|---|
 | `mirrors.zju.edu.cn`（apt） | ✅ |
 | PyPI | ✅ |
-| `download.schedmd.com`（Slurm 源码） | ✅ 但 <ADMIN> 实测仅 ~13KB/s，建议从 <GPU02> 内网拷 |
+| `download.schedmd.com`（Slurm 源码） | ✅ 但 <ADMIN> 实测仅 ~13KB/s，建议从 <GPU01> 内网拷 |
 | `developer.download.nvidia.com`（CUDA 源，含 `libnvidia-container`） | ✅ |
 | github.com / raw.githubusercontent.com | ❌ 阻断 |
 | `gh-proxy.com`（GitHub 代理） | ✅ enroot release、pyxis tag tarball 都能下 |

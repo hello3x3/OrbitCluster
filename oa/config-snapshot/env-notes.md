@@ -1,6 +1,6 @@
 # 实例环境与变量（换机器复现时按此替换）
 
-> 本目录是 **2026-09 现场（`admin/<GPU02>/<GPU03>` 集群）的配置快照**。
+> 本目录是 **2026-09 现场（`admin/<GPU01>/<GPU02>` 集群）的配置快照**。
 > 新机器上请把下面“应替换”的值换成你自己的；手册中提到这些变量时请对照本表。
 
 ## 1. 主机与网络（应替换）
@@ -8,7 +8,7 @@
 | 变量 | 本实例值 | 说明 |
 |---|---|---|
 | 管理/登录节点 | `admin` = `<ADMIN_IP>` | NFS 服务端 + slurmctld + 门户服务所在 |
-| 计算节点 | `<GPU02>` = `<GPU02_IP>`；`<GPU03>` = `<GPU03_IP>` | 各 1×RTX 3060 |
+| 计算节点 | `<GPU01>` = `<GPU01_IP>`；`<GPU02>` = `<GPU02_IP>` | 各 1×RTX 3060 |
 | 集群 sshd 端口 | `2180`（非标准 22） | 全部节点（portal-ctl 内亦按此连接计算节点） |
 | 集群分区 | `gpu` | 3 节点全 idle，各 `gpu:3060:1` |
 | 门户服务地址 | `http://admin:8000`（0.0.0.0:8000） | 内网访问 |
@@ -77,3 +77,8 @@ Ubuntu 24.04、Python 3.12、Flask 3.1.3 + waitress。
 1. 节点名/IP/ssh 端口（第 1 节）；2. 镜像清单；3. 分区名（如不是 gpu）；
 4. `/etc/cluster-portal/users.passwd`（复制旧机文件或重设密码后等 20s 自动生效）；
 5. 计算节点上存在 `/opt/cluster-admin/add-user.sh`（可自动补齐）；6. root 间互信密钥。
+7. **宿主机 sshd 白名单（必做）**：三台都要有
+   `/etc/ssh/sshd_config.d/10-portal-only.conf`（`AllowUsers root` + `PermitRootLogin prohibit-password`）。
+   没有它，任何门户用户拿自己登记的私钥就能 `ssh -p 2180 <自己>@<节点>` 登上宿主机，
+   并用 `sbatch/srun` 绕过门户口令/套餐/镜像/端口全部策略。做法与验收见
+   `base-cluster/all-in-one-cluster-manual.md` **1.7 节**；`oa/scripts/verify-install.sh` 会检查。

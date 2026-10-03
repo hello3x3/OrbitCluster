@@ -26,7 +26,7 @@ OrbitCluster/
     ├── 03-使用手册.md               # 使用：登录、资料、申请、连接、日志、停机
     ├── cluster-portal/              # 门户完整源码/安装器/助手/测试
     ├── sites/                       # ★ 站点档案：同一份代码适配不同集群
-    │   └── 3090-2node/              #   <ADMIN>(管理+计算) + <GPU02>(计算)，各 3×RTX3090
+    │   └── 3090-2node/              #   <ADMIN>(管理+计算) + <GPU01>(计算)，各 3×RTX3090
     │       ├── README.md            #   本站点与旧集群的差异清单 + 部署要点
     │       ├── site.conf            #   → /etc/cluster-portal/site.conf（ssh 端口/GPU 型号/套餐种子）
     │       ├── plans.json           #   → /etc/cluster-portal/plans.json（首次建库的套餐）

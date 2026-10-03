@@ -2,7 +2,7 @@
 
 > **范围**：本手册把三份文档合并为一份，按顺序可在**新机器**上从零手动部署并验收通过：
 > NFS 共享盘 → Slurm 26.05.1（源码编译，**一步到位带会计插件**）→ enroot + pyxis 容器 → Prometheus+Grafana 监控 → 多用户（磁盘配额 + slurmdbd 会计 + 建号/扩容脚本 + fairshare）。
-> 内容经过 2026-09-05 在本集群（`admin/<GPU02>/<GPU03>`，Ubuntu 24.04）**实际部署并逐条验收**，所有踩过的坑都已固化为正文章节的操作步骤或醒目标注，照做即可一次成功。
+> 内容经过 2026-09-05 在本集群（`<ADMIN>/<GPU01>/<GPU02>`，Ubuntu 24.04）**实际部署并逐条验收**，所有踩过的坑都已固化为正文章节的操作步骤或醒目标注，照做即可一次成功。
 >
 > 源文档（本手册是它们的合并升级版）：`cluster-deploy-manual.md`（集群本体）、`slurm-monitoring-runbook.md`（监控）、`slurm-multiuser-runbook.md`（多用户化）。
 
@@ -13,23 +13,23 @@
 ### 0.1 架构与角色
 
 ```
-admin  (管理节点 = NFS 服务端 + slurmctld + slurmdbd + slurmd* + Prometheus + Grafana + 登录节点)
+<ADMIN>  (管理节点 = NFS 服务端 + slurmctld + slurmdbd + slurmd* + Prometheus + Grafana + 登录节点)
+<GPU01>  (GPU 计算节点 = slurmd + 驱动 + enroot/pyxis)
 <GPU02>  (GPU 计算节点 = slurmd + 驱动 + enroot/pyxis)
-<GPU03>  (GPU 计算节点 = slurmd + 驱动 + enroot/pyxis)
-* 本集群 admin 也插了 GPU 并作为第 3 个计算节点；若你的管理节点不带 GPU，保持纯管理节点即可（相关步骤有标注）
+* 本集群 <ADMIN> 也插了 GPU 并作为第 3 个计算节点；若你的管理节点不带 GPU，保持纯管理节点即可（相关步骤有标注）
 ```
 
 | 角色 | 需要装的东西（按章节） |
 |---|---|
-| admin | 第 1 章基础 + 第 2 章 NFS 服务端 + 第 3/4 章 Slurm（编译+控制端+slurmd）+ 第 5 章 enroot/pyxis + 第 6 章监控 + 第 7 章多用户 |
-| `<GPU02>` / `<GPU03>` | 第 1 章基础 + 第 2 章 NFS 客户端 + 第 3/4 章 Slurm（编译+计算端）+ 第 5 章 enroot/pyxis + 第 7 章配额客户端 |
+| <ADMIN> | 第 1 章基础 + 第 2 章 NFS 服务端 + 第 3/4 章 Slurm（编译+控制端+slurmd）+ 第 5 章 enroot/pyxis + 第 6 章监控 + 第 7 章多用户 |
+| `<GPU01>` / `<GPU02>` | 第 1 章基础 + 第 2 章 NFS 客户端 + 第 3/4 章 Slurm（编译+计算端）+ 第 5 章 enroot/pyxis + 第 7 章配额客户端 |
 
 ### 0.2 变量表（先定好，全文替换）
 
 | 变量 | 本手册示例值 | 说明 |
 |---|---|---|
-| 管理节点主机名/IP | `admin` / `<ADMIN_IP>` | 换成你的实际值 |
-| GPU 节点主机名/IP | `<GPU02>`、`<GPU03>` / `<GPU02_IP>`、`<GPU03_IP>` | 加节点按同格式追加 |
+| 管理节点主机名/IP | `<ADMIN>` / `<ADMIN_IP>` | 换成你的实际值 |
+| GPU 节点主机名/IP | `<GPU01>`、`<GPU02>` / `<GPU01_IP>`、`<GPU02_IP>` | 加节点按同格式追加 |
 | 集群名 ClusterName | `lab` | slurm.conf 与 sacctmgr 必须同名 |
 | 默认账户名 | `lab` | sacctmgr account 与用户关联 |
 | 数据盘 | `/dev/sda` | ⚠️ 先 `lsblk` 确认不是系统盘（第 2.1 节） |
@@ -45,17 +45,17 @@ admin  (管理节点 = NFS 服务端 + slurmctld + slurmdbd + slurmd* + Promethe
 | 端口 | 服务 | 节点 |
 |---|---|---|
 | 22 / 2180 | sshd（本集群 sshd 实测在 2180，标准环境为 22） | 全部 |
-| 111/2049/875 | NFS / rpcbind / rquotad（配额查询） | admin |
+| 111/2049/875 | NFS / rpcbind / rquotad（配额查询） | <ADMIN> |
 | 6817 / 6818 | slurmctld / slurmd | 全部 |
-| 6819 | slurmdbd | admin |
-| 3306 | MariaDB | admin（仅本机） |
+| 6819 | slurmdbd | <ADMIN> |
+| 3306 | MariaDB | <ADMIN>（仅本机） |
 | 9090 / 9100 / 8080 / 8085 / 9835 | Prometheus / node_exporter / slurm 导出器 / 队列导出器 / GPU 导出器 | 见第 6 章 |
-| 3000 | Grafana | admin |
+| 3000 | Grafana | <ADMIN> |
 
 ### 0.4 执行约定（重要）
 
 1. **全程以 root 执行**：命令里**不写 sudo**。登录方式不限（控制台/ssh root），root 下要切换成普通用户验证时用 `runuser -u <用户> -- <命令>`。
-2. **每段命令前标注执行机器**：`[全部节点]` = 每台都要跑；`[admin]` = 只在管理节点；`[<GPU02>/<GPU03>]` = 每台 GPU 节点。
+2. **每段命令前标注执行机器**：`[全部节点]` = 每台都要跑；`[<ADMIN>]` = 只在管理节点；`[<GPU01>/<GPU02>]` = 每台 GPU 节点。
 3. 文档不写远程登录包装（ssh/scp），**换机器执行靠人工切换**；唯一需要"文件搬家"的两处（munge 密钥、slurm.conf 同步）给出明确说明与替代写法（见 4.3 / 7.5）。
 4. `<占位符>` 一律替换成 0.2 变量表的值；`#` 注释可直接复制。
 5. **每个大章节末尾都有验收命令**，输出符合标注才算通过，再进入下一章。
@@ -64,7 +64,7 @@ admin  (管理节点 = NFS 服务端 + slurmctld + slurmdbd + slurmd* + Promethe
 
 | 文件 | 用途 | 存放 |
 |---|---|---|
-| 本手册附录 B 的仪表盘 JSON（或同目录 `grafana-slurm-dashboard.json`） | Grafana 导入 | admin |
+| 本手册附录 B 的仪表盘 JSON（或同目录 `grafana-slurm-dashboard.json`） | Grafana 导入 | <ADMIN> |
 | `.sqsh` 镜像（第 5.6 节下载/导入） | 容器作业 | `/share/images/` |
 | 第 7 章脚本（add-user.sh / set-quota.sh / show-quota.sh） | 建号与配额 | `/opt/cluster-admin/` |
 
@@ -95,20 +95,20 @@ network:
 EOF
 netplan apply     # ⚠️ 切静态 IP 时 ssh 可能断线，建议控制台操作
 
-hostnamectl set-hostname <主机名>     # admin / <GPU02> / <GPU03>
+hostnamectl set-hostname <主机名>     # <ADMIN> / <GPU01> / <GPU02>
 ```
 
 ### 1.3 /etc/hosts（[全部节点]，内容相同，含自己）
 ```bash
 cat >> /etc/hosts <<'EOF'
-<ADMIN_IP> admin
+<ADMIN_IP> <ADMIN>
+<GPU01_IP> <GPU01>
 <GPU02_IP> <GPU02>
-<GPU03_IP> <GPU03>
 EOF
 # ⚠️ 把系统自动生成的“127.0.1.1 <安装时主机名>”改成“127.0.1.1 <该机正式主机名>”
 # ⚠️ 每台都要包含它自己：缺失会导致 slurmd 重启后 Unable to bind listen port (6818)、
 #    slurmctld/scontrol 解析失败（见 4.6⑥ 与 8.2 排障表）
-ping -c1 admin && ping -c1 <GPU02> && ping -c1 <GPU03>   # 两两互通
+ping -c1 <ADMIN> && ping -c1 <GPU01> && ping -c1 <GPU02>   # 两两互通
 ```
 
 ### 1.4 内核参数（Ubuntu 24.04 限制 userns，enroot 必需）
@@ -128,19 +128,19 @@ timedatectl set-timezone Asia/Shanghai
 timedatectl set-ntp true
 apt update && apt install -y chrony
 ```
-- [admin] 允许内网客户端查询（自身继续用默认公网 pool）：
+- [<ADMIN>] 允许内网客户端查询（自身继续用默认公网 pool）：
 ```bash
 cat >> /etc/chrony/chrony.conf <<'EOF'
 allow <LAN_CIDR>
 EOF
 systemctl enable --now chrony && systemctl restart chrony
 ```
-- [`<GPU02>/<GPU03>`] 以 admin 为本地时钟源（公网 pool 自动降级为备份，不必删）：
+- [`<GPU01>/<GPU02>`] 以 <ADMIN> 为本地时钟源（公网 pool 自动降级为备份，不必删）：
 ```bash
-echo 'server admin iburst prefer' >> /etc/chrony/chrony.conf
+echo 'server <ADMIN> iburst prefer' >> /etc/chrony/chrony.conf
 systemctl enable --now chrony && systemctl restart chrony
 ```
-- 验收 [全部节点]：`chronyc sources`（GPU 节点应看到 admin 为 `^*`）；`chronyc tracking`（Stratum 正常、Last offset 小）。
+- 验收 [全部节点]：`chronyc sources`（GPU 节点应看到 <ADMIN> 为 `^*`）；`chronyc tracking`（Stratum 正常、Last offset 小）。
 - 若开了 ufw：`ufw allow from <LAN_CIDR> to any port 123 proto udp`。
 
 ### 1.6 基础工具
@@ -148,20 +148,64 @@ systemctl enable --now chrony && systemctl restart chrony
 apt install -y git curl wget build-essential make gcc
 ```
 
-### 1.7 第 1 章验收
+### 1.7 sshd 加固 —— 禁止集群用户登录宿主机（[全部节点]，**门户模式下必做**）
+
+> ⚠️ 这一节是「用户只用网页 + 自己的容器」这个产品模型能否成立的**前提**。不做的话，
+> 任何门户用户拿自己登记的私钥都能直接 ssh 登录宿主机（见下面的原理），等于门户白做。
+
+**原理（为什么会漏）**
+门户把用户登记的 SSH 公钥写进他自己的 `~/.ssh/authorized_keys`，是给**容器内**的 sshd 用的
+（容器里由 `/opt/start_ssh.sh` 起 sshd，端口是用户申请的 ≥10000）。但家目录在 NFS 上、
+每台节点都导出，而宿主机的 sshd 读的也是同一个 `AuthorizedKeysFile .ssh/authorized_keys`
+—— 于是用户用同一把私钥就能 `ssh -p <sshd端口> <自己>@<节点>` 登上宿主机，
+进而用 PATH 里的 `sbatch/srun` **绕过全部门户策略**（套餐、最长时长、镜像白名单、端口池）。
+
+**做法（每台节点都要做）**
+```bash
+install -d /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/10-portal-only.conf <<'EOF'
+# 只允许运维账号登录宿主机；集群用户一律不能登录（他们只该连自己容器内的 sshd）
+AllowUsers root
+# root 有可用口令且默认 PasswordAuthentication yes，只写 AllowUsers 挡不住口令爆破
+PermitRootLogin prohibit-password
+EOF
+sshd -t && systemctl reload ssh
+sshd -T | grep -iE '^allowusers|^permitrootlogin'
+```
+> * 若还有别的运维账号（例如手册 2.5 的 `lab`）确实需要登录宿主机，写成
+>   `AllowUsers root lab`。**但绝不要把普通科研用户写进去。**
+> * `systemd-*`、`sshd`、`mysql` 等系统账号不必列 —— 它们本来就没有可用 shell。
+
+**验收（[全部节点]）**
+```bash
+sshd -T | grep -i '^allowusers'          # 应输出 allowusers root
+# 在任意一台机器上（用某个普通集群用户的私钥）：
+#   ssh -p <sshd端口> <普通用户>@<节点>    → 必须 Permission denied
+#   ssh -p <sshd端口> root@<节点>          → 正常（密钥）
+```
+
+**不要踩的坑**
+* **不要**把普通用户的 shell 改成 `/usr/sbin/nologin`：enroot 的 passwd hook 会把宿主机的
+  passwd 条目（含 shell）复制进容器，改完**容器里也登不进去**。边界只能落在 sshd 配置上。
+* 容器不受本配置影响：容器内 sshd 读的是**镜像自带**的 `/etc/ssh/sshd_config`，且只挂 `$HOME`。
+* 改完先 `sshd -t` 语法检查、再 `reload`；并**立刻新开一个连接**验证 root 仍能登录，
+  避免把自己锁在外面。
+
+### 1.8 第 1 章验收
 ```bash
 hostname                      # 各自正确
 sysctl kernel.apparmor_restrict_unprivileged_userns   # 0
 chronyc tracking | grep -E 'Stratum|Last offset'
+sshd -T | grep -i '^allowusers'                        # 门户模式：应输出 allowusers root
 ```
 
 ---
 
 ## 2. NFS 共享盘（/share）
 
-> 布局：只在 admin 上导出 `/share` 一个目录；用户家目录 `/share/home/<user>`，数据集 `/share/datasets`，镜像缓存 `/share/enroot-cache`，镜像仓库 `/share/images`。GPU 节点挂载同一路径。
+> 布局：只在 <ADMIN> 上导出 `/share` 一个目录；用户家目录 `/share/home/<user>`，数据集 `/share/datasets`，镜像缓存 `/share/enroot-cache`，镜像仓库 `/share/images`。GPU 节点挂载同一路径。
 
-### 2.1 数据盘准备 [admin]
+### 2.1 数据盘准备 [<ADMIN>]
 ```bash
 # ⚠️ 第一步确认 /dev/sda 是【数据盘】而不是系统盘！
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
@@ -175,7 +219,7 @@ df -h /share
 ```
 > 关于配额：ext4 支持按 UID 配额，但**不支持按目录**配额（这是第 7.1 节配额口径的依据）；fstab 的 `usrquota` 选项在第 7.1 节再加（避免此时就要 remount）。
 
-### 2.2 目录结构与权限 [admin]
+### 2.2 目录结构与权限 [<ADMIN>]
 ```bash
 mkdir -p /share/home && chmod 755 /share/home
 mkdir -p /share/enroot-cache && chmod 1777 /share/enroot-cache
@@ -197,7 +241,7 @@ datasets 的另一种组织方式（小组要互改同一批文件时）——�
 | 简单方案（本手册采用） | `chmod 1777` | 各自下载自己的数据集，只删改自己的 |
 | 规范方案 |  + 用户入组 | 组内互写互删、新文件自动继承组 |
 
-### 2.3 NFS 服务端 [admin]
+### 2.3 NFS 服务端 [<ADMIN>]
 ```bash
 apt install -y nfs-kernel-server
 cat > /etc/exports <<'EOF'
@@ -219,16 +263,16 @@ showmount -e localhost        # 应列出 /share
 | `all_squash` | 把**所有**客户端用户压成 nobody | 不用 | 会破坏多用户属主 |
 
 > ⚠️ **root_squash 是本集群踩过的最深的坑（部署日志 §5.4），先记住结论**：
-> 当 **① 作业以 root 提交 ② `-o`/输出落 `/share` ③ 跑在 NFS 客户端节点（`<GPU02>/<GPU03>`）** 三条件同时成立时，
+> 当 **① 作业以 root 提交 ② `-o`/输出落 `/share` ③ 跑在 NFS 客户端节点（`<GPU01>/<GPU02>`）** 三条件同时成立时，
 > 批处理作业会在启动 ~1 秒内死掉（输出 0 字节且属主 nobody，slurmctld 日志 `WTERMSIG 53`），与容器/pyxis 无关。
 > 对策：root 提交的作业 `-o` 一律用节点本地路径（如 `/tmp/test-%j.out`）；**多用户（第 7 章）后作业都由普通用户提交，天然不受影响**。不要在 exports 里加 `no_root_squash`。
 
-### 2.4 NFS 客户端 [`<GPU02>/<GPU03>`]
+### 2.4 NFS 客户端 [`<GPU01>/<GPU02>`]
 ```bash
 apt install -y nfs-common
 mkdir -p /share
 cat >> /etc/fstab <<'EOF'
-admin:/share  /share  nfs _netdev,rw,hard,intr,noatime,actimeo=60 0 0
+<ADMIN>:/share  /share  nfs _netdev,rw,hard,intr,noatime,actimeo=60 0 0
 EOF
 mount -a
 df -h /share        # 挂载成功（不再是根分区设备）
@@ -246,13 +290,13 @@ fstab 挂载参数说明：
 > ⚠️ 顺序：必须先有 `/share`（2.1/2.2），再建用户，否则 `useradd -m` 失败。
 
 ```bash
-# [admin] 建家目录 + 账号 + 免密 sudo（lab 是“管理员操作账号”；普通科研用户不加 sudo，建号脚本见 7.5）
+# [<ADMIN>] 建家目录 + 账号 + 免密 sudo（lab 是“管理员操作账号”；普通科研用户不加 sudo，建号脚本见 7.5）
 mkdir -p /share/home
 useradd -m -d /share/home/lab -u 1000 -s /bin/bash lab    # 已存在则跳过
 chown -R lab:lab /share/home/lab
 echo 'lab ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lab
 
-# [<GPU02>/<GPU03>] 只登记账号，不建家目录（-M；家目录经 NFS 自动可见）
+# [<GPU01>/<GPU02>] 只登记账号，不建家目录（-M；家目录经 NFS 自动可见）
 useradd -u 1000 -d /share/home/lab -s /bin/bash -M lab    # 已存在则跳过
 echo 'lab ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lab
 
@@ -262,12 +306,12 @@ passwd lab
 
 ### 2.6 第 2 章验收
 ```bash
-# [<GPU02>/<GPU03>] 普通用户写自家目录（属主应为 lab，不是 nobody）
+# [<GPU01>/<GPU02>] 普通用户写自家目录（属主应为 lab，不是 nobody）
 runuser -u lab -- touch /share/home/lab/$(hostname).test && ls -l /share/home/lab/
-# [<GPU02>/<GPU03>] 1G 大文件写测试（oflag=direct 绕过客户端缓存，落到 datasets；测完删除）
+# [<GPU01>/<GPU02>] 1G 大文件写测试（oflag=direct 绕过客户端缓存，落到 datasets；测完删除）
 time runuser -u lab -- dd if=/dev/zero of=/share/datasets/nfs-write-test bs=1M count=1024 oflag=direct status=progress
 rm -f /share/datasets/nfs-write-test
-# [admin] 在服务端确认文件属主是 lab 而不是 nobody（root_squash 未误伤普通用户）
+# [<ADMIN>] 在服务端确认文件属主是 lab 而不是 nobody（root_squash 未误伤普通用户）
 ls -l /share/home/lab/
 ```
 > 若文件属主是 `nobody`：说明你以 root 在建/写文件（root_squash 预期行为），改用 lab 身份即可。
@@ -373,11 +417,11 @@ systemctl daemon-reload
 
 ---
 
-## 4. 控制端配置（[admin]：munge + slurm.conf + slurmctld）
+## 4. 控制端配置（[<ADMIN>]：munge + slurm.conf + slurmctld）
 
-> ⚠️ 前置：3 章编译已完成；主机名必须是 `admin`（1.2/1.3），否则 slurmctld 报 `This host (xxx) not a valid controller`。
+> ⚠️ 前置：3 章编译已完成；主机名必须是 `<ADMIN>`（1.2/1.3），否则 slurmctld 报 `This host (xxx) not a valid controller`。
 
-### 4.1 munge 密钥（只在 admin 生成一次）
+### 4.1 munge 密钥（只在 <ADMIN> 生成一次）
 ```bash
 # Ubuntu 24.04 的 munge 0.5.15 用 mungekey（create-munge-key 不存在）
 mungekey -c -f
@@ -388,7 +432,7 @@ munge -n | unmunge          # 本机自检：能解出自己即 OK
 ```
 > ⚠️ munge 三条铁律（本集群全踩过）：
 > 1. **同步密钥到任何节点后必须重启该节点的 munged**——munged 只在启动时读密钥，光换文件内存里还是旧的（报 Invalid credential）；
-> 2. admin **自己**重新生成/覆盖密钥后也要重启自己的 munged（否则全网对 admin 认证失败，srun 报 Protocol authentication error）；
+> 2. <ADMIN> **自己**重新生成/覆盖密钥后也要重启自己的 munged（否则全网对 <ADMIN> 认证失败，srun 报 Protocol authentication error）；
 > 3. 跨机验证一条命令同时查 key+时钟：`munge -n | ssh <节点> unmunge`——报 `Response too old or too new` 是时钟漂移（查 chrony），报密钥错误是 key 不一致（md5sum 对比）。
 
 ### 4.2 slurm.conf（源码编译版不会自动建 /etc/slurm，先建目录）
@@ -396,7 +440,7 @@ munge -n | unmunge          # 本机自检：能解出自己即 OK
 mkdir -p /etc/slurm
 cat > /etc/slurm/slurm.conf <<'EOF'
 ClusterName=lab
-SlurmctldHost=admin
+SlurmctldHost=<ADMIN>
 
 AuthType=auth/munge
 CryptoType=crypto/munge
@@ -418,9 +462,9 @@ SelectTypeParameters=CR_Core_Memory
 SchedulerType=sched/backfill
 TaskPlugin=task/cgroup,task/affinity
 
-NodeName=admin CPUs=16 Boards=1 SocketsPerBoard=1 CoresPerSocket=8 ThreadsPerCore=2 RealMemory=31933 Gres=gpu:3060:1
-NodeName=<GPU02> CPUs=16 Boards=1 SocketsPerBoard=1 CoresPerSocket=8 ThreadsPerCore=2 RealMemory=31933 Gres=gpu:3060:1
-NodeName=<GPU03> CPUs=16 Boards=1 SocketsPerBoard=1 CoresPerSocket=8 ThreadsPerCore=2 RealMemory=128653 Gres=gpu:3060:1
+NodeName=<ADMIN>  CPUs=<ADMIN_CPUS>  Boards=1 SocketsPerBoard=<ADMIN_SOCKETS> CoresPerSocket=<ADMIN_CORES> ThreadsPerCore=<ADMIN_THREADS> RealMemory=<ADMIN_MEM> Gres=gpu:<GPU_TYPE>:<ADMIN_GPUS>
+NodeName=<GPU01>  CPUs=<GPU01_CPUS>  Boards=1 SocketsPerBoard=<GPU01_SOCKETS> CoresPerSocket=<GPU01_CORES> ThreadsPerCore=<GPU01_THREADS> RealMemory=<GPU01_MEM> Gres=gpu:<GPU_TYPE>:<GPU01_GPUS>
+NodeName=<GPU02>  CPUs=<GPU02_CPUS>  Boards=1 SocketsPerBoard=<GPU02_SOCKETS> CoresPerSocket=<GPU02_CORES> ThreadsPerCore=<GPU02_THREADS> RealMemory=<GPU02_MEM> Gres=gpu:<GPU_TYPE>:<GPU02_GPUS>
 MailProg=/bin/true
 
 PartitionName=gpu Nodes=ALL Default=YES MaxTime=INFINITE State=UP
@@ -434,7 +478,7 @@ slurm.conf 主要参数说明：
 | 参数 | 作用 | 可选配置/备注 |
 |---|---|---|
 | `ClusterName` | 集群名 | 与 sacctmgr cluster 同名（第 7 章） |
-| `SlurmctldHost` | 控制端主机名 | 必须等于 admin 的主机名 |
+| `SlurmctldHost` | 控制端主机名 | 必须等于 <ADMIN> 的主机名 |
 | `AuthType=auth/munge` + `CryptoType=crypto/munge` | 跨机认证 | munge 是唯一选择 |
 | `SlurmUser=slurm` | 运行用户 | 缺了报 `Unauthorized credential for client UID=64030` |
 | `ProctrackType=proctrack/cgroup` | 进程跟踪走 cgroup | 需 cgroup.conf（4.3）；排障可临时退回 `proctrack/linuxproc` |
@@ -464,14 +508,14 @@ EOF
 ### 4.4 启动控制端并验收
 ```bash
 systemctl enable --now slurmctld
-scontrol ping     # 期望 Slurmctld(primary) at admin
+scontrol ping     # 期望 Slurmctld(primary) at <ADMIN>
 ```
 第 4 章验收：
 ```bash
 scontrol ping
 # 此时计算节点还没注册（slurmd 未启），sinfo 显示 down/drain 属正常；做完 4.5-4.8 后再看即 idle
 ```
-### 4.5 NVIDIA 驱动（[每台带 GPU 的节点]，含 admin 若也插卡）
+### 4.5 NVIDIA 驱动（[每台带 GPU 的节点]，含 <ADMIN> 若也插卡）
 ```bash
 lspci | grep -i nvidia
 ubuntu-drivers devices            # 找到 recommended 的那行
@@ -483,30 +527,30 @@ nvidia-smi                        # 重启后验证
 ```
 > 所有 GPU 节点驱动版本必须一致，并与容器镜像 CUDA 大版本兼容。
 
-### 4.6 计算端 munge + 配置同步 + gres.conf [`<GPU02>/<GPU03>`；admin 若跑 slurmd 同样做]
+### 4.6 计算端 munge + 配置同步 + gres.conf [`<GPU01>/<GPU02>`；<ADMIN> 若跑 slurmd 同样做]
 
 > ⚠️ 顺序提醒：本机 slurmd 只有在 `/etc/slurm/slurm.conf` **包含本机 NodeName 行**且 munge 密钥与全网一致时才能注册成功。
 > 26.05 新行为：本地配置缺失/不含自己时 slurmd 会走 DNS SRV“从控制器拉配置”并无限重试（日志 `fetch_config: DNS SRV lookup failed`）。
 
 **① munge 密钥（两段式）**
 ```bash
-# 密钥文件在 admin 的 /etc/munge/munge.key，把它原样复制到本机 /tmp/munge.key 后执行：
+# 密钥文件在 <ADMIN> 的 /etc/munge/munge.key，把它原样复制到本机 /tmp/munge.key 后执行：
 # （复制方式不限：scp/rsync/U 盘/带外管理均可；文档不写远程命令。注意方向与端口差异）
 install -o munge -g munge -m 400 /tmp/munge.key /etc/munge/munge.key
 systemctl enable --now munge
 # ⚠️ 密钥更新/同步后必须重启本机 munged：munged 只在启动时读密钥
 systemctl restart munge
 munge -n | unmunge                 # 本机自检
-# 跨机验证在 admin 执行：munge -n | ssh <节点> unmunge（无报错=key+时钟都 OK）
+# 跨机验证在 <ADMIN> 执行：munge -n | ssh <节点> unmunge（无报错=key+时钟都 OK）
 ```
 
-**② 配置文件同步（内容与 admin 完全一致）**
+**② 配置文件同步（内容与 <ADMIN> 完全一致）**
 ```bash
 mkdir -p /etc/slurm
-# 把 admin 的 /etc/slurm/slurm.conf、cgroup.conf 复制到本机同路径（复制方式同上）
-# ⚠️ gres.conf 本机自建（见下），不要从 admin 拷——它按本机硬件探测
+# 把 <ADMIN> 的 /etc/slurm/slurm.conf、cgroup.conf 复制到本机同路径（复制方式同上）
+# ⚠️ gres.conf 本机自建（见下），不要从 <ADMIN> 拷——它按本机硬件探测
 ```
-> 之后 admin 每改一次 slurm.conf（加 NodeName/加会计），都要**同步到所有节点并重启 slurmd**，否则两边配置不一致（第 7.5 节会计开启时专门强调）。
+> 之后 <ADMIN> 每改一次 slurm.conf（加 NodeName/加会计），都要**同步到所有节点并重启 slurmd**，否则两边配置不一致（第 7.5 节会计开启时专门强调）。
 
 **③ gres.conf（编译版带 nvml，一行自动探测）**
 ```bash
@@ -524,8 +568,8 @@ EOF
 **④ 实测本机资源并核对 NodeName 行**
 ```bash
 slurmd -C
-# 输出示例: NodeName=<GPU02> CPUs=16 ... RealMemory=31933 Gres=gpu:3060:1
-# 拿这个结果与 admin 的 /etc/slurm/slurm.conf NodeName 行比对；不一致就改 admin 那份再同步
+# 输出示例: NodeName=<GPU01> CPUs=<GPU01_CPUS> ... RealMemory=<GPU01_MEM> Gres=gpu:<GPU_TYPE>:<GPU01_GPUS>
+# 拿这个结果与 <ADMIN> 的 /etc/slurm/slurm.conf NodeName 行比对；不一致就改 <ADMIN> 那份再同步
 ```
 
 **⑤ 启动 slurmd**
@@ -544,26 +588,26 @@ systemctl daemon-reload
 > slurmd 重启起不来的两大根因：① /etc/hosts 缺本机自身 IP（1.3）；② 网络未就绪（本条 drop-in 解决）。
 > 若节点被标 DOWN：`scontrol update nodename=<节点> state=idle` 拉回。
 
-### 4.7 admin 兼作计算节点的特别说明
-> 本集群 admin 也插了 RTX 3060 并跑 slurmd（第 3 个计算节点）。做法：
-> ① admin 的 slurm.conf 已含 `NodeName=admin ... Gres=gpu:3060:1`；
-> ② admin 本机也执行 4.6 的 ③⑤⑥（建 gres.conf + 启 slurmd + 加固），不用再拷密钥（密钥就在本机）。
-> ⚠️ 实测坑：给 admin 加了 NodeName 却**漏建 /etc/slurm/gres.conf** → admin 显示 `IDLE+DRAIN+INVALID_REG`
+### 4.7 <ADMIN> 兼作计算节点的特别说明
+> 本集群 <ADMIN> 也插了 RTX 3060 并跑 slurmd（第 3 个计算节点）。做法：
+> ① <ADMIN> 的 slurm.conf 已含 `NodeName=<ADMIN> ... Gres=gpu:<GPU_TYPE>:<ADMIN_GPUS>`；
+> ② <ADMIN> 本机也执行 4.6 的 ③⑤⑥（建 gres.conf + 启 slurmd + 加固），不用再拷密钥（密钥就在本机）。
+> ⚠️ 实测坑：给 <ADMIN> 加了 NodeName 却**漏建 /etc/slurm/gres.conf** → <ADMIN> 显示 `IDLE+DRAIN+INVALID_REG`
 > （slurmd 注册的 Gres 与 slurm.conf 不符）；补 gres.conf 重启 slurmd 即恢复。
-> 若你的管理节点不带 GPU：跳过本节与 4.5，slurm.conf 里不要写 admin 的 NodeName。
+> 若你的管理节点不带 GPU：跳过本节与 4.5，slurm.conf 里不要写 <ADMIN> 的 NodeName。
 
-### 4.8 第 4 章验收（[admin] 上执行）
+### 4.8 第 4 章验收（[<ADMIN>] 上执行）
 ```bash
-scontrol ping                            # Slurmctld(primary) at admin
+scontrol ping                            # Slurmctld(primary) at <ADMIN>
 sinfo                                    # 全部节点 idle
-scontrol show node <GPU02> -d | grep -E 'Gres|CPUTot|RealMemory'   # Gres=gpu:N
+scontrol show node <GPU01> -d | grep -E 'Gres|CPUTot|RealMemory'   # Gres=gpu:N
 # GPU 调度：确认作业跑在【计算节点】上（别用 echo $HOSTNAME——它会被提交端先展开）
-srun --gres=gpu:1 hostname               # 应输出 <GPU02>/<GPU03>/admin，不是提交端误判
+srun --gres=gpu:1 hostname               # 应输出 <GPU01>/<GPU02>/<ADMIN>，不是提交端误判
 srun --gres=gpu:1 nvidia-smi             # 应显示被分配的那张卡
 ```
 ---
 
-## 5. enroot + pyxis 容器（[全部节点]，含 admin）
+## 5. enroot + pyxis 容器（[全部节点]，含 <ADMIN>）
 
 > 不需要 Docker：enroot 直接与镜像仓库通信（docker:// 协议）或挂载本地 .sqsh；pyxis 是 Slurm SPANK 插件，
 > 让 `srun --container-image=...` 直接可用。**登录端解析参数、计算端启动容器，两边都要装**（无预编译 pyxis 包，每台各编译一次约 1 分钟）。
@@ -603,6 +647,16 @@ EOF
 | `ENROOT_RESTRICT_DEV` | 限制 /dev 设备 | y | 安全 |
 | `ENROOT_ROOTFS_WRITABLE` | rootfs 可写层 | y | |
 | `ENROOT_REMAP_ROOT` | 是否把提交者 remap 成容器内 root | **n** | 默认以**提交者身份**进容器（不做 uid→0 映射）：容器内是本人 uid，写 /share 属主即本人、不触发 root_squash；确需以 root 操作时单次加 srun `--container-remap-root` |
+
+> ⚠️ **安全：不要把它改成 `y`，也不要随意用 `--container-remap-root`。**
+> 镜像内置的 `sshd_config` 是 `PermitRootLogin yes` + `PermitEmptyPasswords yes`
+> （镜像 root 还有固定口令），而 enroot **共享宿主机网络命名空间** —— 容器一旦以 root
+> 运行，就等于把一个"口令公开的 sshd"暴露给整个内网。
+> 仓库里的 `base-cluster/images/start_ssh.sh`（镜像内 `/opt/start_ssh.sh` 的加固版）
+> 已在**任何身份**下强制 `PermitRootLogin=prohibit-password` + `PasswordAuthentication=no`
+> + `PermitEmptyPasswords=no`；**重建镜像时请用这一版**。
+> 门户侧另有硬约束：提交参数里绝不会出现 `--container-remap-root`（portal-ctl 内有显式拦截），
+> `oa/scripts/verify-install.sh` 也会逐台检查 `ENROOT_REMAP_ROOT=n`。
 
 ### 5.3 运行时目录（三处 1777 + 开机重建）
 ```bash
@@ -713,7 +767,7 @@ enroot create -n alpine-test ./library+alpine+latest.sqsh
 enroot start alpine-test      # 进入容器 shell，exit 退出
 enroot remove -f alpine-test
 
-# 集群镜像流程（推荐）：管理员在 admin（NFS 服务端）root 预置 .sqsh 到共享盘，用户按路径直接用、免特权
+# 集群镜像流程（推荐）：管理员在 <ADMIN>（NFS 服务端）root 预置 .sqsh 到共享盘，用户按路径直接用、免特权
 # 例（NGC 国内可达）：
 #   enroot import -o /share/images/pytorch-24.03.sqsh docker://nvcr.io#nvidia/pytorch:24.03-py3
 # 或从缓存镜像转出：enroot export <镜像名> | tee /share/images/<名>.sqsh > /dev/null
@@ -733,10 +787,10 @@ srun --gres=gpu:1 --container-image=/share/images/<你的镜像>.sqsh \
      --container-mounts=/share:/share python -c "import torch;print(torch.cuda.device_count())"
 
 # ③【普通用户】（多用户化的核心验证；lab 已建）
-runuser -u lab -- srun -D /tmp -N1 -w <GPU02> -o /tmp/lab-ct-%j.out \
+runuser -u lab -- srun -D /tmp -N1 -w <GPU01> -o /tmp/lab-ct-%j.out \
     --container-image=/share/images/ubuntu-22.04.sqsh cat /etc/os-release ; echo EXIT=$?
 #    ↑ CPU 容器：修复 5.5 钩子后应 EXIT=0（修复前必挂 exit 1）
-runuser -u lab -- srun -D /tmp -N1 -w <GPU02> --gres=gpu:1 -o /tmp/lab-ct-%j.out \
+runuser -u lab -- srun -D /tmp -N1 -w <GPU01> --gres=gpu:1 -o /tmp/lab-ct-%j.out \
     --container-image=/share/images/pytorch-2.12.1-cuda13.0-cudnn9-devel.sqsh \
     python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 #    期望：True NVIDIA GeForce RTX 3060
@@ -752,9 +806,9 @@ sbatch --gres=gpu:1 -o /tmp/test-%j.out --wrap 'nvidia-smi -L'
 > （ubuntu 基础镜像无 nvidia-smi/python），不是集群问题；用 pytorch 镜像验证 GPU。
 ---
 
-## 6. 监控栈（Prometheus + 导出器 + Grafana，[admin] 为主）
+## 6. 监控栈（Prometheus + 导出器 + Grafana，[<ADMIN>] 为主）
 
-> 拓扑：每个节点跑 node_exporter(:9100) 与 gpu_exporter(:9835)；admin 额外跑 slurm_exporter(:8080) 与
+> 拓扑：每个节点跑 node_exporter(:9100) 与 gpu_exporter(:9835)；<ADMIN> 额外跑 slurm_exporter(:8080) 与
 > jobqueue_exporter(:8085)；Prometheus(:9090) 5s 抓取全部；Grafana(:3000) 出面板。
 > 前提：Slurm 已跑通（第 4 章）。若目标集群的 slurm 源码构建**没有 JSON 序列化插件**（`squeue --json` 报 fatal），
 > 不影响本方案——所有导出器都解析 `-h` 文本输出。
@@ -769,7 +823,7 @@ systemctl is-active prometheus-node-exporter        # active
 curl -s localhost:9100/metrics | head -c 80         # 有输出即正常
 ```
 
-### 6.2 Prometheus 配置 [admin]
+### 6.2 Prometheus 配置 [<ADMIN>]
 > 监控类 job 抓取间隔 5s（与导出器 5s 刷新同步）；全局默认 15s。
 ```bash
 cat > /etc/prometheus/prometheus.yml <<"EOF"
@@ -784,7 +838,7 @@ scrape_configs:
   - job_name: node
     scrape_interval: 5s
     static_configs:
-      - targets: ["admin:9100", "<GPU02>:9100", "<GPU03>:9100"]
+      - targets: ["<ADMIN>:9100", "<GPU01>:9100", "<GPU02>:9100"]
   - job_name: slurm
     scrape_interval: 5s
     static_configs:
@@ -792,7 +846,7 @@ scrape_configs:
   - job_name: gpu
     scrape_interval: 5s
     static_configs:
-      - targets: ["admin:9835", "<GPU02>:9835", "<GPU03>:9835"]
+      - targets: ["<ADMIN>:9835", "<GPU01>:9835", "<GPU02>:9835"]
   - job_name: slurm-jobs
     scrape_interval: 5s
     static_configs:
@@ -808,7 +862,7 @@ curl -s localhost:9090/-/healthy   # Prometheus Server is Healthy.
 
 **目录 [全部节点]**：`mkdir -p /opt/slurm-monitor`
 
-**slurm 调度导出器（:8080，只装 admin）** [admin]：
+**slurm 调度导出器（:8080，只装 <ADMIN>）** [<ADMIN>]：
 ```bash
 cat > /opt/slurm-monitor/slurm_exporter.py <<"PYEOF"
 #!/usr/bin/env python3
@@ -858,7 +912,7 @@ if __name__ == "__main__":
 PYEOF
 ```
 
-**队列明细导出器（:8085，只装 admin，含用户、命令与优先级）** [admin]：
+**队列明细导出器（:8085，只装 <ADMIN>，含用户、命令与优先级）** [<ADMIN>]：
 ```bash
 cat > /opt/slurm-monitor/jobqueue_exporter.py <<"PYEOF"
 #!/usr/bin/env python3
@@ -945,7 +999,7 @@ chmod +x /opt/slurm-monitor/*.py
 
 ### 6.4 systemd 单元与启动
 ```bash
-# [admin] slurm 调度导出器
+# [<ADMIN>] slurm 调度导出器
 cat > /etc/systemd/system/slurm-exporter.service <<"EOF"
 [Unit]
 Description=Slurm scheduler exporter
@@ -960,7 +1014,7 @@ User=root          # 改成能执行 sinfo/squeue 的用户
 WantedBy=multi-user.target
 EOF
 
-# [admin] 队列明细导出器
+# [<ADMIN>] 队列明细导出器
 cat > /etc/systemd/system/jobqueue-exporter.service <<"EOF"
 [Unit]
 Description=Slurm job queue exporter
@@ -992,7 +1046,7 @@ EOF
 systemctl daemon-reload
 ```
 ```bash
-# [admin] 启动调度 + 队列导出器并验证
+# [<ADMIN>] 启动调度 + 队列导出器并验证
 systemctl enable --now slurm-exporter jobqueue-exporter
 sleep 2
 systemctl is-active slurm-exporter jobqueue-exporter        # active active
@@ -1006,7 +1060,7 @@ curl -s localhost:9835/metrics | grep '^nvidia_gpu' | head -6
 # 期望: nvidia_gpu_utilization_percent{gpu="0",name="...",host="<本机名>"} 0
 ```
 
-### 6.5 Grafana 安装 [admin]
+### 6.5 Grafana 安装 [<ADMIN>]
 
 **方式 A：官方 apt 源（网络正常时）**
 ```bash
@@ -1041,11 +1095,11 @@ curl -s localhost:3000/api/health    # {"database":"ok","version":...}
 
 ### 6.6 数据源 + 仪表盘（改密码后执行）
 ```bash
-# 设 Grafana 密码（默认 admin/admin，建议立即改）
-grafana-cli admin reset-admin-password '<GRAFANA_PASSWORD>'
+# 设 Grafana 密码（默认 <ADMIN>/<ADMIN>，建议立即改）
+grafana-cli <ADMIN> reset-admin-password '<GRAFANA_PASSWORD>'
 
 # 创建 Prometheus 数据源（uid=promds）
-curl -s -u admin:<GRAFANA_PASSWORD> -X POST -H "Content-Type: application/json" \
+curl -s -u <ADMIN>:<GRAFANA_PASSWORD> -X POST -H "Content-Type: application/json" \
   -d '{"name":"Prometheus","type":"prometheus","url":"http://localhost:9090","access":"proxy","isDefault":true,"uid":"promds"}' \
   localhost:3000/api/datasources
 
@@ -1056,12 +1110,12 @@ dash = json.load(open("/tmp/dash.json"))
 body = json.dumps({"dashboard": dash, "overwrite": True}).encode()
 req = urllib.request.Request("http://localhost:3000/api/dashboards/db", data=body,
     headers={"Content-Type": "application/json"})
-req.add_header("Authorization", "Basic " + base64.b64encode(b"admin:<GRAFANA_PASSWORD>").decode())
+req.add_header("Authorization", "Basic " + base64.b64encode(b"<ADMIN>:<GRAFANA_PASSWORD>").decode())
 print(urllib.request.urlopen(req, timeout=15).read()[:200])
 PY
 
 # 设为首页（打开根地址即见仪表盘）
-curl -s -u admin:<GRAFANA_PASSWORD> -X PUT -H "Content-Type: application/json" \
+curl -s -u <ADMIN>:<GRAFANA_PASSWORD> -X PUT -H "Content-Type: application/json" \
   -d '{"homeDashboardUID":"slurm-realtime","theme":"","timezone":""}' \
   localhost:3000/api/org/preferences
 ```
@@ -1083,7 +1137,7 @@ sbatch --gres=gpu:1 -o /tmp/test-%j.out --time=00:05:00 \
   --wrap="nvidia-smi -L || true"
 squeue -o "%.8i %.12u %.14j %.3t %N"
 
-# ④ 浏览器打开 http://<admin>:3000 → 「SLURM 实时调度总览」自动刷新 10s
+# ④ 浏览器打开 http://<<ADMIN>>:3000 → 「SLURM 实时调度总览」自动刷新 10s
 ```
 > 计数查询里 `or on() vector(0)` 不能省：PromQL 对"0 个"返回空向量，Stat 面板 lastNotNull 会残留旧值
 > （“没作业却显示 1 个有作业节点”就是它造成的）；面板已内置，勿在面板里删。
@@ -1093,7 +1147,7 @@ squeue -o "%.8i %.12u %.14j %.3t %N"
 
 > 目标：每个用户账号 → 家目录 `/share/home/<user>`（NFS 全网一份）→ 每人 `/share` 总量 500G 配额（可随时扩容）
 > → 公共数据集 `/share/datasets`（顶层平铺 sticky，可读他人、只可删改自己的）→ 用户自行 sbatch/srun（含容器）。
-> 决策（已确认）：配额口径=每用户 /share 总量；datasets=顶层平铺；会计=启用 slurmdbd+MariaDB；admin 继续当计算节点。
+> 决策（已确认）：配额口径=每用户 /share 总量；datasets=顶层平铺；会计=启用 slurmdbd+MariaDB；<ADMIN> 继续当计算节点。
 
 ### 7.1 先厘清“配额”的三种含义
 
@@ -1106,7 +1160,7 @@ squeue -o "%.8i %.12u %.14j %.3t %N"
 > ⚠️ ext4 只有按 UID 的配额、**没有按目录的配额**。500G 统计的是该用户在整个 /share 上的全部文件
 > （家目录 + 数据集 + enroot 缓存）。想“家目录与数据集分开设限”需要 XFS(pquota) 或独立盘，另议。
 
-### 7.2 磁盘配额启用 [admin]
+### 7.2 磁盘配额启用 [<ADMIN>]
 ```bash
 apt-get install -y quota
 
@@ -1135,9 +1189,9 @@ ls -la /share/aquota.user
 | 1T | 1073741824 | `setquota -u <user> 1073741824 1073741824 0 0 /share` |
 
 > soft=hard 相等 = **无宽限期、到顶即拒写**（扩容随时一条命令）。查：`repquota -u /share` / `quota -u <user>`。
-> ⚠️ 配额在**服务端强制**（admin 的 /dev/sda），计算节点无需配额工具；但用户要在 `<GPU02>/<GPU03>` 上**自查询**需要：
-> [admin] `systemctl enable --now quotarpc`（rpc.rquotad，配额包自带，默认 disabled；NFS 配额查询服务）
-> [`<GPU02>/<GPU03>`] `apt-get install -y quota`（只要客户端 quota 命令）。然后任意节点 `quota -s` 都能查到服务器配额。
+> ⚠️ 配额在**服务端强制**（<ADMIN> 的 /dev/sda），计算节点无需配额工具；但用户要在 `<GPU01>/<GPU02>` 上**自查询**需要：
+> [<ADMIN>] `systemctl enable --now quotarpc`（rpc.rquotad，配额包自带，默认 disabled；NFS 配额查询服务）
+> [`<GPU01>/<GPU02>`] `apt-get install -y quota`（只要客户端 quota 命令）。然后任意节点 `quota -s` 都能查到服务器配额。
 
 ### 7.3 /share/datasets 使用约定
 - 顶层 1777 sticky 已就绪（2.2）。每个用户下载自己的数据集即可：他人可读、你只能删改自己的文件。
@@ -1145,7 +1199,7 @@ ls -la /share/aquota.user
 - 所有用户保持默认 umask 022（文件 644），他人才能读；不要在 .bashrc 里改 umask 077。
 - root 在计算节点下载会变 nobody 所有（root_squash，见 2.3 警告框）——数据下载一律用普通用户。
 
-### 7.4 会计：MariaDB + slurmdbd [admin]
+### 7.4 会计：MariaDB + slurmdbd [<ADMIN>]
 
 **① 安装 MariaDB 并建库建账号**
 ```bash
@@ -1183,7 +1237,7 @@ systemctl restart mariadb
 ```bash
 mkdir -p /var/log/slurm && chown slurm:slurm /var/log/slurm
 cat > /etc/slurm/slurmdbd.conf <<CONF
-DbdHost=admin
+DbdHost=<ADMIN>
 DbdPort=6819
 SlurmUser=slurm
 StorageType=accounting_storage/mysql
@@ -1225,13 +1279,13 @@ ss -tlnp | grep 6819
 tail -3 /var/log/slurm/slurmdbd.log    # 期望无 "not recommended" 告警
 ```
 
-**⑤ slurm.conf 开启会计（admin），并同步到全部节点**
+**⑤ slurm.conf 开启会计（<ADMIN>），并同步到全部节点**
 ```bash
 cat >> /etc/slurm/slurm.conf <<'CONF'
 
 # ---- 会计 (slurmdbd) 启用 ----
 AccountingStorageType=accounting_storage/slurmdbd
-AccountingStorageHost=admin
+AccountingStorageHost=<ADMIN>
 AccountingStoragePort=6819
 JobAcctGatherType=jobacct_gather/linux
 JobAcctGatherFrequency=30
@@ -1239,20 +1293,20 @@ CONF
 systemctl restart slurmctld
 ```
 > ⚠️ 两个实测教训（务必照做）：
-> ① `AccountingStorageHost` 必须填 **slurmdbd 所在主机名（admin）**，不能写 `localhost`——写 localhost 时
-> 只有 admin 本机能连会计，`<GPU02>/<GPU03>` 上的客户端会去连自己的 6819 报 Connection refused；
+> ① `AccountingStorageHost` 必须填 **slurmdbd 所在主机名（<ADMIN>）**，不能写 `localhost`——写 localhost 时
+> 只有 <ADMIN> 本机能连会计，`<GPU01>/<GPU02>` 上的客户端会去连自己的 6819 报 Connection refused；
 > ② 客户端工具（sacct/sacctmgr）读**本机** /etc/slurm/slurm.conf——改完必须把 slurm.conf **同步到全部节点
 > 并重启 slurmd**，否则计算节点上报 "Slurm accounting storage is disabled"（配置没会计行）或 refused（有行但 host 错）。
-> 前提：各节点能解析 admin（1.3 hosts 已写）。
+> 前提：各节点能解析 <ADMIN>（1.3 hosts 已写）。
 
 ```bash
-# [<GPU02>/<GPU03>] 用你习惯的方式把 admin 的 /etc/slurm/slurm.conf 覆盖到本机后：
+# [<GPU01>/<GPU02>] 用你习惯的方式把 <ADMIN> 的 /etc/slurm/slurm.conf 覆盖到本机后：
 systemctl restart slurmd
 md5sum /etc/slurm/slurm.conf      # 三节点应一致
 sacct -X -n -o JobID,User,State   # 三节点都应能出记录（不再 disabled/refused）
 ```
 
-**⑥ sacctmgr 建 cluster/account/user 关联 [admin]**
+**⑥ sacctmgr 建 cluster/account/user 关联 [<ADMIN>]**
 ```bash
 sacctmgr -i add cluster lab                       # 若提示已存在则忽略（slurmctld 首次连上会自建）
 sacctmgr -i add account lab Organization=lab Description="默认账户"
@@ -1263,15 +1317,22 @@ sacctmgr show assoc format=Cluster,Account,User,AdminLevel
 > 会计刚开时 `AccountingStorageEnforce` 默认为 none（不做强制），没有关联的用户也能提交；
 > 关联的意义在于 fairshare 份额与 sacctmgr 限额（7.6）。历史从启用当天起累积。
 
-### 7.5 管理脚本（建号 + 配额，[admin] 一次性安装）
+### 7.5 管理脚本（建号 + 配额，[<ADMIN>] 一次性安装）
+
+> ⚠️ **下面这段内嵌脚本是早期版本，仅供理解流程，别直接照抄。**
+> 维护版本在 `base-cluster/scripts/cluster-admin/add-user.sh`：站点无关（自动判定管理/计算节点）、
+> 支持 `-u/-g` 对齐各节点 UID/GID，并且**拒绝创建重复 UID**。
+> 关键差异：旧版用 `useradd ... -o`，在目标 UID 已被占用时会**静默建出重复 UID** ——
+> 重复 UID 会让 enroot 容器里解析不到真实用户名（`/etc/enroot/hooks.d/10-shadow.sh`
+> 只按 UID 取一条 passwd 记录），用户 `ssh` 进容器报 `Permission denied (publickey)`。
 ```bash
 mkdir -p /opt/cluster-admin
 cat > /opt/cluster-admin/add-user.sh <<'SCRIPT'
 #!/usr/bin/env bash
 # 用法:
-#   在 admin 上:   /opt/cluster-admin/add-user.sh <用户名> [配额如 500G]
+#   在 <ADMIN> 上:   /opt/cluster-admin/add-user.sh <用户名> [配额如 500G]
 #                  (创建家目录 /share/home/<用户名> 并设置 /share 配额)
-#   在 <GPU02>/<GPU03>: /opt/cluster-admin/add-user.sh <用户名>
+#   在 <GPU01>/<GPU02>: /opt/cluster-admin/add-user.sh <用户名>
 #                  (仅建账号与组，不建家目录; 家目录经 NFS 自动可见)
 # 可选 -u <UID>: 三节点自动分配 UID 不一致时，在计算节点上强制指定
 set -eu
@@ -1287,10 +1348,10 @@ HOST="$(hostname -s)"
 if id "$USERNAME" &>/dev/null; then echo "[!] $USERNAME 已存在，跳过"; exit 0; fi
 
 case "$HOST" in
-  admin)
-    echo "[admin] 创建用户与家目录 ..."
+  <ADMIN>)
+    echo "[<ADMIN>] 创建用户与家目录 ..."
     if [ -n "$FORCE_UID" ]; then
-      useradd -m -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" -o "$USERNAME"
+      useradd -m -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" "$USERNAME"   # 注意: 不要加 -o, 重复 UID 会破坏容器内用户名解析
     else
       useradd -m -s /bin/bash -d "/share/home/$USERNAME" "$USERNAME"
     fi
@@ -1299,30 +1360,30 @@ case "$HOST" in
     # 自动建 sacctmgr 关联（启用即挂默认 QoS normal = 中等优先级 / 作业限制不限）
     sacctmgr -i add user "$USERNAME" account=lab qos=normal >/dev/null 2>&1 \
       || echo "[!] sacctmgr 关联失败，请手动: sacctmgr add user $USERNAME account=lab qos=normal"
-    echo "[admin] 完成: $USERNAME uid=$UID_NOW 家目录=/share/home/$USERNAME 磁盘配额=$QUOTA 作业QoS=normal(中等/不限)"
-    echo "[admin] 下一步:"
+    echo "[<ADMIN>] 完成: $USERNAME uid=$UID_NOW 家目录=/share/home/$USERNAME 磁盘配额=$QUOTA 作业QoS=normal(中等/不限)"
+    echo "[<ADMIN>] 下一步:"
     echo "        1) passwd $USERNAME"
-    echo "        2) <GPU02>/<GPU03> 上执行: /opt/cluster-admin/add-user.sh $USERNAME"
+    echo "        2) <GPU01>/<GPU02> 上执行: /opt/cluster-admin/add-user.sh $USERNAME"
     echo "           (若计算节点自动 UID != $UID_NOW, 加 -u $UID_NOW)"
     echo "        3) 后续调单个用户优先级/配额: sacctmgr(见 7.6)，改后需 systemctl restart slurmctld"
     ;;
-  <GPU02>|<GPU03>)
+  <GPU01>|<GPU02>)
     echo "[$HOST] 创建账号(不建家目录) ..."
     if [ -n "$FORCE_UID" ]; then
-      useradd -M -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" -o "$USERNAME"
+      useradd -M -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" "$USERNAME"   # 注意: 不要加 -o, 重复 UID 会破坏容器内用户名解析
     else
       useradd -M -s /bin/bash -d "/share/home/$USERNAME" "$USERNAME"
     fi
     echo "[$HOST] 完成: $USERNAME uid=$(id -u "$USERNAME")"
     ;;
   *)
-    echo "[!] 未知主机 $HOST —— 请分别在 admin/<GPU02>/<GPU03> 上执行本脚本"; exit 1 ;;
+    echo "[!] 未知主机 $HOST —— 请分别在 <ADMIN>/<GPU01>/<GPU02> 上执行本脚本"; exit 1 ;;
 esac
 SCRIPT
 
 cat > /opt/cluster-admin/set-quota.sh <<'SCRIPT'
 #!/usr/bin/env bash
-# set-quota.sh —— 设置/扩容某用户在 /share 上的配额（admin 上执行）
+# set-quota.sh —— 设置/扩容某用户在 /share 上的配额（<ADMIN> 上执行）
 # 用法: /opt/cluster-admin/set-quota.sh <用户名> <大小>    例: 500G / 1T / 200M
 # ext4 按 UID 计配额，覆盖该用户在 /share 上的全部文件; soft=hard 即时生效
 set -eu
@@ -1335,7 +1396,7 @@ case "$SZ" in
   *) echo "大小需带单位 M/G/T, 如 500G"; exit 1 ;;
 esac
 id "$U" &>/dev/null || { echo "用户 $U 不存在"; exit 1; }
-[ "$(hostname -s)" = admin ] || { echo "配额只能在 admin 上设置"; exit 1; }
+[ "$(hostname -s)" = <ADMIN> ] || { echo "配额只能在 <ADMIN> 上设置"; exit 1; }
 setquota -u "$U" "$BLK" "$BLK" 0 0 /share
 echo "== 已设置: $U 软/硬上限 = $SZ (blocks=$BLK) =="
 quota -u "$U" | tail -3
@@ -1343,7 +1404,7 @@ SCRIPT
 
 cat > /opt/cluster-admin/show-quota.sh <<'SCRIPT'
 #!/usr/bin/env bash
-# show-quota.sh —— 查看 /share 全部用户配额使用情况（admin 上执行）
+# show-quota.sh —— 查看 /share 全部用户配额使用情况（<ADMIN> 上执行）
 repquota -u /share
 SCRIPT
 chmod +x /opt/cluster-admin/*.sh
@@ -1351,11 +1412,11 @@ chmod +x /opt/cluster-admin/*.sh
 
 **新用户上线流程**：
 ```bash
-# ① admin
+# ① <ADMIN>
 /opt/cluster-admin/add-user.sh <USER> 500G
-# ② <GPU02>、<GPU03>（UID 不一致时加 -u <admin 上的 UID>）
+# ② <GPU01>、<GPU02>（UID 不一致时加 -u <<ADMIN> 上的 UID>）
 /opt/cluster-admin/add-user.sh <USER>
-# ③ admin 设初始密码
+# ③ <ADMIN> 设初始密码
 passwd <USER>
 # ④ 会计关联：① 已由 add-user.sh 自动完成(qos=normal)；手工补做时的等价命令:
 #    sacctmgr -i add user <USER> account=lab qos=normal
@@ -1381,7 +1442,7 @@ passwd <USER>
 **已生效的配置（照抄即可）：**
 
 ```bash
-# slurm.conf 追加（admin；已含 7.4 的会计行）
+# slurm.conf 追加（<ADMIN>；已含 7.4 的会计行）
 cat >> /etc/slurm/slurm.conf <<'CONF'
 
 # ---- 静态优先级(管理员调控) + 强制关联 (2026-09-06) ----
@@ -1389,7 +1450,7 @@ PriorityWeightQOS=1        # 权重=1 → 作业优先级显示值 = QoS.Priorit
 PriorityFlags=NO_NORMAL_QOS
 AccountingStorageEnforce=associations,limits
 CONF
-# 同步 slurm.conf 到 <GPU02>/<GPU03> 后重启 slurmctld
+# 同步 slurm.conf 到 <GPU01>/<GPU02> 后重启 slurmctld
 
 # QoS 默认档：normal = 中等优先级(5) / 作业限制不限；已执行
 sacctmgr -i modify qos normal set priority=5
@@ -1445,10 +1506,10 @@ sacctmgr -i delete qos name=vip-alice
 quotaon -p /share                          # user quota on
 repquota -u /share                         # 能看到各用户用量与 500G 上限
 # 从计算节点自查询（quotarpc + 客户端 quota）
-#   [<GPU02>] quota -u lab                    # 能显示 admin:/share 的行
+#   [<GPU01>] quota -u lab                    # 能显示 <ADMIN>:/share 的行
 # 会计
-sacct                                   # admin 出表
-#   [<GPU02>] sacct                        # 计算节点也能出记录（slurm.conf 已同步）
+sacct                                   # <ADMIN> 出表
+#   [<GPU01>] sacct                        # 计算节点也能出记录（slurm.conf 已同步）
 sacctmgr show assoc format=Cluster,Account,User,AdminLevel
 # 容器多用户（lab 身份 CPU/GPU 各一次，见 5.8 ③，期望 EXIT=0 与 torch True）
 # 建号验证（新建一个用户后）
@@ -1466,47 +1527,49 @@ sacct -u <USER>                          # 有作业记录
 | # | 项 | 命令（在标注机器） | 期望 |
 |---|---|---|---|
 | 1 | 时钟 | `[全部] chronyc tracking` | Stratum 正常、无大漂移 |
-| 2 | NFS | `[<GPU02>] df -h /share`；`runuser -u lab -- touch /share/home/lab/t` | 挂载正常、属主 lab |
-| 3 | 集群 | `[admin] scontrol ping`；`sinfo` | UP；三节点 idle |
-| 4 | GPU 调度 | `[admin] srun --gres=gpu:1 nvidia-smi` | 显示被分配的卡 |
-| 5 | 容器 CPU | `[admin] runuser -u lab -- srun ... ubuntu .sqsh cat /etc/os-release` | EXIT=0 |
-| 6 | 容器 GPU | `[admin] runuser -u lab -- srun --gres=gpu:1 ... pytorch .sqsh python3 -c "import torch;print(torch.cuda.is_available())"` | True |
-| 7 | 监控抓取 | `[admin] curl -s localhost:9090/api/v1/targets` | 10 个 up |
-| 8 | 监控计数 | `[admin]` 查 `count(slurm_node_state{state="idle"}) or on() vector(0)` | 3 |
-| 9 | 配额 | `[admin] quotaon -p /share`；`repquota -u /share` | user quota on；有上限 |
-| 10 | 配额自查询 | `[<GPU02>] quota -u lab` | 能显示 admin:/share 行 |
-| 11 | 会计 | `[admin] sacct`；`[<GPU02>] sacct` | 两处都出表 |
+| 2 | NFS | `[<GPU01>] df -h /share`；`runuser -u lab -- touch /share/home/lab/t` | 挂载正常、属主 lab |
+| 3 | 集群 | `[<ADMIN>] scontrol ping`；`sinfo` | UP；三节点 idle |
+| 4 | GPU 调度 | `[<ADMIN>] srun --gres=gpu:1 nvidia-smi` | 显示被分配的卡 |
+| 5 | 容器 CPU | `[<ADMIN>] runuser -u lab -- srun ... ubuntu .sqsh cat /etc/os-release` | EXIT=0 |
+| 6 | 容器 GPU | `[<ADMIN>] runuser -u lab -- srun --gres=gpu:1 ... pytorch .sqsh python3 -c "import torch;print(torch.cuda.is_available())"` | True |
+| 7 | 监控抓取 | `[<ADMIN>] curl -s localhost:9090/api/v1/targets` | 10 个 up |
+| 8 | 监控计数 | `[<ADMIN>]` 查 `count(slurm_node_state{state="idle"}) or on() vector(0)` | 3 |
+| 9 | 配额 | `[<ADMIN>] quotaon -p /share`；`repquota -u /share` | user quota on；有上限 |
+| 10 | 配额自查询 | `[<GPU01>] quota -u lab` | 能显示 <ADMIN>:/share 行 |
+| 11 | 会计 | `[<ADMIN>] sacct`；`[<GPU01>] sacct` | 两处都出表 |
 | 12 | 建号链路 | 按 7.5 建一个测试用户并提交 | id/家目录/quota/sacct 全通 |
 
 ### 8.2 排障总表（按现象查）
 
 | 现象 | 原因与处理 |
 |---|---|
+| **普通用户能 ssh 登录宿主机**（`ssh -p <sshd端口> <自己>@<节点>` 直接进系统） | 宿主机 sshd 没做白名单。门户把用户公钥写进 NFS 家目录的 `~/.ssh/authorized_keys`，而宿主机 sshd 读同一个文件 → 用户拿容器那把私钥就能登宿主机，并用 `sbatch/srun` 绕过全部门户策略。修法见 **1.7 节**：加 `/etc/ssh/sshd_config.d/10-portal-only.conf`（`AllowUsers root`）后 `systemctl reload ssh`；检查 `sshd -T \| grep -i allowusers` |
+| 容器里 sshd 不认公钥、但用户明明登记过 | ① `~/.ssh/authorized_keys` 被换成软链或权限不对（门户助手已拒绝软链）；② 镜像没内置 sshd 或 `/opt/start_ssh.sh`；③ 容器还没有就绪（Slurm RUNNING ≠ 容器可登录，pyxis 解包 .sqsh 要数十秒，测试要重试） |
 | NFS 挂载 `access denied by server` | exports 网段与客户端 IP 不匹配：`exportfs -v` 看放行范围，改对 `/etc/exports` 后 `exportfs -ra` |
 | 重启后 /share 没挂上（df 显示根分区设备） | fstab NFS 行缺 `_netdev`；`mount -a` 恢复并补 `_netdev` |
 | slurmd 重启起不来：`Unable to bind listen port (6818)` | ① /etc/hosts 缺本机自身 IP（根因）；② 网络未就绪 → 加 network-online drop-in（4.6⑥）。修好 `scontrol update nodename=<节点> state=idle` 拉回 |
 | `srun` 报 `Invalid MPI type 'pmix'` | 缺 `libpmix2t64`，重启 slurmctld/slurmd |
-| slurmctld 起不来：`This host (xxx) not a valid controller` | 主机名没改成 admin（SlurmctldHost 要求） |
-| munge 跨机认证失败 / `Protocol authentication error` | key 不一致或时钟漂移。跨机一条命令查：`munge -n \| ssh <节点> unmunge`；**同步密钥后必须重启 munged**（只在启动时读 key），admin 自己改过 key 也要重启自己的 munged |
+| slurmctld 起不来：`This host (xxx) not a valid controller` | 主机名没改成 <ADMIN>（SlurmctldHost 要求） |
+| munge 跨机认证失败 / `Protocol authentication error` | key 不一致或时钟漂移。跨机一条命令查：`munge -n \| ssh <节点> unmunge`；**同步密钥后必须重启 munged**（只在启动时读 key），<ADMIN> 自己改过 key 也要重启自己的 munged |
 | slurmctld 日志 `Unauthorized credential for client UID=64030` | slurm.conf 缺 `SlurmUser=slurm` |
 | `srun --container-image` 找不到参数 | pyxis 插件没加载：查 plugstack.conf、`srun --help \| grep container`、重启 slurmd |
 | enroot 容器起不来报 squashfs/fuse 错误 | 装 `squashfs-tools squashfuse`；sysctl(1.4) 生效并重启过 |
 | `enroot import` 卡 `Querying registry` | Docker Hub 不可达：换 DaoCloud 源或直接用 nvcr.io |
-| root 在 GPU 节点写 /share 被拒 | root_squash **预期行为**：客户端 root → nobody。用普通用户操作；管理操作在 admin（服务端）做，别开 no_root_squash |
+| root 在 GPU 节点写 /share 被拒 | root_squash **预期行为**：客户端 root → nobody。用普通用户操作；管理操作在 <ADMIN>（服务端）做，别开 no_root_squash |
 | **root 批处理作业 `-o` 落 /share 秒死（输出 nobody、日志 WTERMSIG 53）** | root_squash 三条件同时成立（见 2.3 警告框）：`-o` 改节点本地 `/tmp`；或改用普通用户提交（第 7 章后常态） |
 | 容器能启动但看不到 GPU | ① gres 没配好（编译版 `AutoDetect=nvml`）；② enroot GPU 钩子缺 nvidia-container-cli 或 NVIDIA_VISIBLE_DEVICES（5.4/5.5）；③ 驱动与镜像 CUDA 不兼容 |
 | `slurmd -C` 不显示 GPU | ① 驱动加载（nvidia-smi）；② /dev/nvidia* 存在；③ gres.conf 正确 |
 | 节点 `INVALID_REG+DRAIN` | slurmd 注册与 slurm.conf 不符：最常见是缺 `/etc/slurm/gres.conf`（补 AutoDetect=nvml 重启 slurmd），或 NodeName 行 CPUs/内存/Gres 与 `slurmd -C` 不符 |
 | 容器作业 `mkdir: /scratch/enroot-data: Permission denied` | root 先跑过 enroot 把它建成 0700：`chmod 1777 /scratch/enroot-data`（5.3） |
 | **纯 CPU 容器秒挂：`95-slurm-gpus.sh exited with return code 1`** | 95 钩子旧版末行退出码 bug——用 5.5 的修复版（末尾显式 exit 0） |
-| 计算节点 `sacct` 报 disabled / Connection refused | ① slurm.conf 没同步到该节点（客户端读本机配置）；② `AccountingStorageHost=localhost` 应填 admin。见 7.4⑤ |
+| 计算节点 `sacct` 报 disabled / Connection refused | ① slurm.conf 没同步到该节点（客户端读本机配置）；② `AccountingStorageHost=localhost` 应填 <ADMIN>。见 7.4⑤ |
 | `squeue --json` 报 fatal serializer_required | 源码构建无 JSON 插件，正常；监控导出器全部 `-h` 文本解析 |
 | 监控“没作业却显示有作业 1” | PromQL `count(空集)` 返回空向量、lastNotNull 残留旧值：查询加 `or on() vector(0)` + `instant:true`（面板已内置） |
 | sinfo 状态 `mixed-`/`idle*` 匹配不到 | 状态带后缀：导出器已 `.lower().strip(" *-")` 归一化，勿删 |
 | Grafana apt NO_PUBKEY | signed-by keyring 必须 `gpg --dearmor` 二进制格式 |
 | Grafana 装了但 :3000 不通 | 首次启动迁移约 30 秒；等它监听再 curl /api/health |
 | 显存数值不对 | 面板单位用 `bytes`；`decmbytes` 是非法单位 |
-| 计算节点 `quota` 报无此服务/查不到 | admin 没启 `quotarpc`（7.2）或计算节点没装 quota 客户端包 |
+| 计算节点 `quota` 报无此服务/查不到 | <ADMIN> 没启 `quotarpc`（7.2）或计算节点没装 quota 客户端包 |
 | slurmd restart 卡 deactivating | `systemctl stop slurmd; pkill -9 slurmd; sleep 1; systemctl start slurmd` |
 | slurmd 无限刷 `fetch_config: DNS SRV lookup failed` | 本地 slurm.conf 缺/不含本机 NodeName（26.05 回退拉配置走 DNS SRV）：补含本机 NodeName 的 slurm.conf + hosts 本机条目 |
 | slurmd 起不来/卡住报 cgroup 错 | 缺 cgroup.conf（与 slurm.conf 一起拷）；或退回 `ProctrackType=proctrack/linuxproc` 排查 |
@@ -1526,7 +1589,7 @@ scancel <jobid>                # 杀作业
 sacct -u <user> -X -o JobID,JobName,State,Elapsed    # 历史
 sreport user top               # 用量排行
 quota -s                       # 自己配额（任意节点）
-repquota -u /share             # 全员配额（admin）
+repquota -u /share             # 全员配额（<ADMIN>）
 scontrol update nodename=<节点> state=idle    # 拉回节点
 journalctl -u slurmd -n 50     # 节点日志
 ```
@@ -1536,13 +1599,13 @@ journalctl -u slurmd -n 50     # 节点日志
 | 文件/路径 | 节点 | 说明 |
 |---|---|---|
 | `/etc/slurm/{slurm,cgroup,gres,plugstack.conf,slurmdbd}.conf` | 全部/按章 | slurm 配置（三节点 slurm.conf 必须一致） |
-| `/usr/local/lib/slurm/accounting_storage_mysql.so` | admin | 会计插件（第 3 章编译时确认存在） |
+| `/usr/local/lib/slurm/accounting_storage_mysql.so` | <ADMIN> | 会计插件（第 3 章编译时确认存在） |
 | `/opt/slurm-monitor/*.py` + systemd 单元 | 按第 6 章 | 监控导出器 |
-| `/etc/prometheus/prometheus.yml` | admin | 抓取配置 |
-| `/opt/cluster-admin/{add-user,set-quota,show-quota}.sh` | admin | 建号/配额脚本（也拷到 `<GPU02>/<GPU03>`） |
-| `/etc/skel/CLUSTER-README.txt` | admin | 新用户须知模板 |
-| `/root/.slurmdb.pass`(600) | admin | slurmdbd DB 密码（文档用占位符） |
-| `grafana-slurm-dashboard.json` | admin | 仪表盘 JSON（=附录 B） |
+| `/etc/prometheus/prometheus.yml` | <ADMIN> | 抓取配置 |
+| `/opt/cluster-admin/{add-user,set-quota,show-quota}.sh` | <ADMIN> | 建号/配额脚本（也拷到 `<GPU01>/<GPU02>`） |
+| `/etc/skel/CLUSTER-README.txt` | <ADMIN> | 新用户须知模板 |
+| `/root/.slurmdb.pass`(600) | <ADMIN> | slurmdbd DB 密码（文档用占位符） |
+| `grafana-slurm-dashboard.json` | <ADMIN> | 仪表盘 JSON（=附录 B） |
 
 ### A.3 源文档映射（本手册升级/合并自）
 
@@ -1672,8 +1735,8 @@ journalctl -u slurmd -n 50     # 节点日志
 | pyxis 95 钩子导致纯 CPU 容器必挂 | 5.5 | 用修复版脚本（env 缺失 exit 0 + 末尾显式 exit 0） |
 | root 先跑 enroot 把 /scratch/enroot-data 建成 0700 | 5.3 | 预建 1777（幂等执行） |
 | root 批处理作业 -o 落 /share 秒死（root_squash） | 2.3 警告框 | root 作业 -o 用 /tmp；或普通用户提交 |
-| 计算节点 sacct disabled / refused | 7.4⑤ | slurm.conf 三节点同步 + `AccountingStorageHost=admin`（勿 localhost） |
-| 配额无法在计算节点自查询 | 7.2 | admin 启 `quotarpc` + 计算节点装 quota 客户端 |
+| 计算节点 sacct disabled / refused | 7.4⑤ | slurm.conf 三节点同步 + `AccountingStorageHost=<ADMIN>`（勿 localhost） |
+| 配额无法在计算节点自查询 | 7.2 | <ADMIN> 启 `quotarpc` + 计算节点装 quota 客户端 |
 | 监控空集残留旧值（没作业显示 1） | 6.7 | `or on() vector(0)` + instant（JSON 已内置） |
 | sinfo 状态带后缀匹配不到 | 6.3 导出器 | `.lower().strip(" *-")`（勿删） |
 | Grafana apt NO_PUBKEY | 6.5 方式 A | keyring 必须 `gpg --dearmor` 二进制 |
