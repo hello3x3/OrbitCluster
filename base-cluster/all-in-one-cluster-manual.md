@@ -1413,13 +1413,13 @@ chmod +x /opt/cluster-admin/*.sh
 **新用户上线流程**：
 ```bash
 # ① <ADMIN>
-/opt/cluster-admin/add-user.sh <USER> 500G
-# ② <GPU01>、<GPU02>（UID 不一致时加 -u <<ADMIN> 上的 UID>）
-/opt/cluster-admin/add-user.sh <USER>
+/opt/cluster-admin/add-user.sh <新建用户名> 500G
+# ② <GPU01>、<GPU02>（UID 不一致时加 -u <管理节点上的 UID>）
+/opt/cluster-admin/add-user.sh <新建用户名>
 # ③ <ADMIN> 设初始密码
-passwd <USER>
+passwd <新建用户名>
 # ④ 会计关联：① 已由 add-user.sh 自动完成(qos=normal)；手工补做时的等价命令:
-#    sacctmgr -i add user <USER> account=lab qos=normal
+#    sacctmgr -i add user <新建用户名> account=lab qos=normal
 # ⑤ skel 使用须知（可选，新家目录自动带；内容见下 CLUSTER-README.txt 段落）
 ```
 
@@ -1513,10 +1513,10 @@ sacct                                   # <ADMIN> 出表
 sacctmgr show assoc format=Cluster,Account,User,AdminLevel
 # 容器多用户（lab 身份 CPU/GPU 各一次，见 5.8 ③，期望 EXIT=0 与 torch True）
 # 建号验证（新建一个用户后）
-id <USER>                                # 三节点 uid 一致
-ls -ld /share/home/<USER>                # NFS 家目录
-quota -u <USER>                          # 500G 可见
-sacct -u <USER>                          # 有作业记录
+id <新建用户名>                                # 三节点 uid 一致
+ls -ld /share/home/<新建用户名>                # NFS 家目录
+quota -u <新建用户名>                          # 500G 可见
+sacct -u <新建用户名>                          # 有作业记录
 ```
 ---
 

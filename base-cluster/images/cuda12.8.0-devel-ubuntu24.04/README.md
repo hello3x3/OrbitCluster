@@ -89,12 +89,12 @@ srun --pty --no-container-remap-root --container-image=<镜像> \
 ```bash
 # 1) root 模式（须以集群 root 提交）+ 公钥登录
 export SSH_PORT=2222
-export SSH_HOSTKEY_DIR=/share/home/<SENIOR_USER>/.ssh-hostkeys   # 持久化 host key
+export SSH_HOSTKEY_DIR=/share/home/<USER>/.ssh-hostkeys   # 持久化 host key
 srun \
   --no-container-remap-root \
   --container-image=<镜像> \
   --container-env=SSH_PORT,SSH_HOSTKEY_DIR \
-  --container-mounts=/share/home/<SENIOR_USER>/.ssh/authorized_keys:/root/.ssh/authorized_keys:ro \
+  --container-mounts=/share/home/<USER>/.ssh/authorized_keys:/root/.ssh/authorized_keys:ro \
   /opt/start_ssh.sh
 #    不挂钥匙也行：root 模式直接密码 root:5233 登录
 ```
@@ -105,9 +105,9 @@ srun \
   --no-container-remap-root \
   --container-image=<镜像> \
   --container-env=SSH_PORT \
-  --container-mounts=/share/home/<SENIOR_USER>:/share/home/<SENIOR_USER> \
+  --container-mounts=/share/home/<USER>:/share/home/<USER> \
   /opt/start_ssh.sh
-#    连接用户名 = 提交用户名（<SENIOR_USER>），不是 root
+#    连接用户名 = 提交用户名（<USER>），不是 root
 ```
 
 ```bash
@@ -119,7 +119,7 @@ srun \
   --no-container-remap-root \
   --container-image=<镜像> \
   --container-env=SSH_PORT,SSH_AUTHORIZED_KEYS \
-  --container-mounts=/share/home/<SENIOR_USER>/.ssh/authorized_keys:/opt/ssh-authorized_keys:ro \
+  --container-mounts=/share/home/<USER>/.ssh/authorized_keys:/opt/ssh-authorized_keys:ro \
   /opt/start_ssh.sh
 ```
 
@@ -136,7 +136,7 @@ srun \
   - root 模式默认**不生成**它——直接用镜像内置 `/etc/ssh/ssh_host_*`（同镜像指纹恒定）
   - 只有「非 root」或「显式设置了 SSH_HOSTKEY_DIR」时才生成/复用该目录
 - 只有容器**实际运行过** start_ssh.sh、且写入的是**挂载盘**，才能在宿主机对应路径看到它
-  （如 `/share/home/<SENIOR_USER>/.ssh-hostkeys/`，含 `ssh_host_ed25519_key[.pub]`、`ssh_host_rsa_key[.pub]`），
+  （如 `/share/home/<USER>/.ssh-hostkeys/`，含 `ssh_host_ed25519_key[.pub]`、`ssh_host_rsa_key[.pub]`），
   隐藏目录需 `ls -a` 查看；若 `$HOME` 在容器内是 `/root`（未挂载），会写进临时 overlay，任务结束即消失
 
 ## 注意
