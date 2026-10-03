@@ -142,6 +142,14 @@ ProtectSystem=strict
 ReadWritePaths=$DATA_DIR /etc/cluster-portal /share
 ProtectHome=read-only
 PrivateDevices=yes
+# ⚠ PrivateDevices=yes 会把 /dev/sda 从沙箱的 /dev 里摘掉，而 `repquota /share` 必须先
+#   stat() 这个块设备节点，否则直接空手而归（rc 还是 0，所以是**静默**失败）：
+#   用户管理页的「配额（OS 实读）」整列变成「—」，库里的额度与 OS 实际值漂移
+#   （某用户库里 500G / OS 实际 5G）就完全看不出来 —— 直到他存 ~10G 镜像报
+#   "Write failed because Disk quota exceeded" 才暴露（2026-10-03 线上真实事故）。
+#   只把这一个设备节点**只读**bind 进沙箱：repquota 只要 stat()，不需要打开设备，
+#   所以不必放宽 DevicePolicy；非特权 portal 进程依旧打不开它（brw-rw---- root:disk）。
+BindReadOnlyPaths=/dev/sda
 RestrictSUIDSGID=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

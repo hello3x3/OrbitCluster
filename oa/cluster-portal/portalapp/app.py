@@ -279,6 +279,23 @@ def create_app(testing=False):
             return f(*a, **kw)
         return w
 
+    def super_admin_required(f):
+        """仅平台最高管理员 root。
+
+        用于「资源套餐」这类全站级配置：套餐决定**所有人**能选什么资源，与同样是
+        root-only 的「授予/撤销管理员」同级；普通管理员的授权边界是"管用户 + 代申请"，
+        不包含改全站资源规格。非 root 管理员一律 403（导航里也不会给他这个入口）。
+        """
+        @wraps(f)
+        def w(*a, **kw):
+            u = get_user_row()
+            if u is None:
+                return redirect(url_for("login", next=request.path))
+            if u["role"] != "admin" or u["username"] != "root":
+                abort(403)
+            return f(*a, **kw)
+        return w
+
     def csrf_ok():
         tok = session.get("csrf")
         posted = request.form.get("_csrf") or request.headers.get("X-CSRF-Token") or ""
@@ -1170,17 +1187,25 @@ def create_app(testing=False):
             # 页面只显示 OS 实读值，肉眼根本看不出库里还记着另一个数。
             d["quota_portal"] = u["quota"] or ""
             portal_kb = _quota_to_kb(u["quota"])
+            # 保留账号（root/portal/…）不参与这个比对：它们的家目录不在 /share 上（root 是 /root），
+            # /share 配额对它们本来就没有意义；库里那个 500G 只是历史上 add_user 的列默认值。
+            # 不排除的话，root 行会永远挂一个橙色「门户记 500G ≠ OS」，而它给出的建议
+            # （"用这行的「改配额」按钮重设一次"）在保留账号上根本做不到。
             d["quota_mismatch"] = bool(
                 d["quota_os_present"] and portal_kb
-                and portal_kb != (q.get("hard_kb") or 0))
-            # 是否允许“改配额”：目标须有同名 OS 账号且非系统保留账号；
-            # 普通用户行任何管理员可改；管理员行仅 root 或本人可改
+                and portal_kb != (q.get("hard_kb") or 0)
+                and not is_reserved_os(u["username"]))
+            d["reserved"] = is_reserved_os(u["username"])
+            # 是否允许“改配额”：目标须有同名 OS 账号；
+            # 普通用户行任何管理员可改；管理员行仅 root 或本人可改。
+            # 保留账号也给按钮 —— admin_user_quota 明确允许把它们设成「不限」来清除遗留额度
+            # （那是唯一的对齐途径），只是不允许设具体数值，后端会拦并给出提示。
             d["quota_can_edit"] = False
             if u["role"] == "user":
                 d["quota_can_edit"] = u["os_mode"] in ("provision", "existing") \
                     and not is_reserved_os(u["username"])
             elif actor["username"] == "root" or actor["id"] == u["id"]:
-                d["quota_can_edit"] = not is_reserved_os(u["username"])
+                d["quota_can_edit"] = True
             users.append(d)
         return {"users": users,
                 "quota_options": ["100G", "300G", "500G", "1T", QUOTA_UNLIMITED]}
@@ -1562,7 +1587,7 @@ def create_app(testing=False):
 
     # ------------------------------------------------------------------ 管理员：资源套餐（CPU/内存/GPU 预设）
     @app.route("/admin/plans")
-    @admin_required
+    @super_admin_required
     def admin_plans():
         db = get_db()
         return render_template("admin_plans.html", plans=db.plans_all(),
@@ -1598,7 +1623,7 @@ def create_app(testing=False):
         return (name, description, gpus, gpu_model, cpus, mem_gb, maxtime_h), None
 
     @app.route("/admin/plans/add", methods=["POST"])
-    @admin_required
+    @super_admin_required
     def admin_plan_add():
         if not csrf_ok():
             flash("页面已过期，请重试", "error")
@@ -1612,7 +1637,7 @@ def create_app(testing=False):
         return redirect(url_for("admin_plans"))
 
     @app.route("/admin/plans/<int:pid>/edit", methods=["POST"])
-    @admin_required
+    @super_admin_required
     def admin_plan_edit(pid):
         if not csrf_ok():
             return _json_err("页面已过期")
@@ -1624,7 +1649,7 @@ def create_app(testing=False):
         return _json_ok("套餐已更新")
 
     @app.route("/admin/plans/<int:pid>/toggle", methods=["POST"])
-    @admin_required
+    @super_admin_required
     def admin_plan_toggle(pid):
         if not csrf_ok():
             return _json_err("页面已过期")
@@ -1636,7 +1661,7 @@ def create_app(testing=False):
         return _json_ok("套餐已%s" % ("停用" if p["enabled"] else "启用"))
 
     @app.route("/admin/plans/<int:pid>/data")
-    @admin_required
+    @super_admin_required
     def admin_plan_data(pid):
         p = get_db().plan_by_id(pid)
         if not p:
@@ -1644,7 +1669,7 @@ def create_app(testing=False):
         return jsonify({"ok": True, "plan": _row_dict(p)})
 
     @app.route("/admin/plans/<int:pid>/delete", methods=["POST"])
-    @admin_required
+    @super_admin_required
     def admin_plan_delete(pid):
         if not csrf_ok():
             return _json_err("页面已过期")

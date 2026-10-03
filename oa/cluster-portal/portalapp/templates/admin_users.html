@@ -101,7 +101,7 @@
                   data-msg="确定{{ '停用' if u.is_active else '启用' }}用户 {{ u.username }}？">{% if u.is_active %}停用{% else %}启用{% endif %}</button>
           {% if u.quota_can_edit %}
           <button class="btn btn-ghost btn-sm act-quota" data-url="{{ url_for('admin_user_quota', uid=u.id) }}"
-                  data-user="{{ u.username }}">改配额</button>
+                  data-user="{{ u.username }}"{% if u.reserved %} data-reserved="1"{% endif %}>改配额</button>
           {% endif %}
           {% if u.username != cur_user.username %}
           <button class="btn btn-danger btn-sm xact" data-url="{{ url_for('admin_user_delete', uid=u.id) }}"
@@ -110,7 +110,7 @@
           {% else %}
           {% if u.quota_can_edit %}
           <button class="btn btn-ghost btn-sm act-quota" data-url="{{ url_for('admin_user_quota', uid=u.id) }}"
-                  data-user="{{ u.username }}">改配额</button>
+                  data-user="{{ u.username }}"{% if u.reserved %} data-reserved="1"{% endif %}>改配额</button>
           {% endif %}
           {% if cur_user.username != 'root' %}<span class="muted small">（管理员，由 root 管理）</span>{% endif %}
           {% endif %}

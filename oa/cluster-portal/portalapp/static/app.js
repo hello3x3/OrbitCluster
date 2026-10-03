@@ -94,7 +94,14 @@
     $$(".act-quota").forEach(b => {
       b.addEventListener("click", async () => {
         const user = b.dataset.user || "";
-        const size = window.prompt("为 " + user + " 设置 /share 磁盘配额（软=硬。例：100G / 500G / 1T；填「不限」表示不限额）：", "");
+        // 系统保留账号（root 等）只能填「不限」（= 清除限额）：它们的家目录不在 /share 上，
+        // 设具体额度还可能威胁系统自身写入，后端也会拒绝。这里直接把提示与默认值换成「不限」。
+        const reserved = b.dataset.reserved === "1";
+        const msg = reserved
+          ? ("为 " + user + " 设置 /share 配额。\n"
+             + "这是系统保留账号：只能填「不限」（清除限额），填具体额度会被后端拒绝。")
+          : ("为 " + user + " 设置 /share 磁盘配额（软=硬。例：100G / 500G / 1T；填「不限」表示不限额）：");
+        const size = window.prompt(msg, reserved ? "不限" : "");
         if (size === null || !size.trim()) return;
         try {
           const fd = new FormData();

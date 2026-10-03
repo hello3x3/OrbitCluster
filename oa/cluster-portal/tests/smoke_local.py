@@ -633,6 +633,81 @@ def main():
                headers={"X-CSRF-Token": tokq}, data={"quota": "1T"})
     assert not r.get_json()["ok"] and "保留账号" in r.get_json()["error"], r.get_json()
 
+    # ---- 保留账号（root）的「改配额」按钮 ----
+    # 后端 admin_user_quota 明确允许把保留账号设为「不限」（清除遗留额度，那是唯一的对齐途径），
+    # 但前端曾用 `not is_reserved_os(...)` 把按钮藏掉 → root 行挂着「门户记 500G ≠ OS」的告警，
+    # 而它建议你去点的那个按钮根本不存在。这里守住：按钮在、带 data-reserved 标记、且不再误报。
+    # 用独立 client，避免动到 c 的 admin 会话（后面还有用例复用它的 CSRF token）。
+    croot = app.test_client()
+    login(croot, "root", "RootPass1234")
+    dbxr2 = _DB(appmod.DB_PATH)
+    uroot = dbxr2.user_by_name("root")
+    dbxr2.close()
+    r = croot.get("/admin/users")
+    root_tr = next((mm.group(0) for mm in re.finditer(r"<tr>.*?</tr>", r.text, re.S)
+                    if ">root<" in mm.group(0)), None)
+    assert root_tr, "用户列表应有 root 行"
+    assert "改配额" in root_tr, "root 行也该有「改配额」按钮（后端支持设为「不限」）"
+    assert 'data-reserved="1"' in root_tr, "root 的改配额按钮应带 data-reserved 标记"
+    assert "badge-warn" not in root_tr, "保留账号不该挂「门户记 ≠ OS」告警"
+    tokr = csrf_of(croot, "/admin/users")
+    r = croot.post("/admin/users/%s/quota" % uroot["id"],
+                   headers={"X-CSRF-Token": tokr}, data={"quota": "100G"})
+    assert not r.get_json()["ok"] and "保留账号" in r.get_json()["error"], r.get_json()
+    r = croot.post("/admin/users/%s/quota" % uroot["id"],
+                   headers={"X-CSRF-Token": tokr}, data={"quota": "不限"})
+    assert r.get_json()["ok"], r.get_json()
+    dbxr2 = _DB(appmod.DB_PATH)
+    try:
+        assert dbxr2.user_by_name("root")["quota"] == "不限", "root 的库内额度应对齐成「不限」"
+    finally:
+        dbxr2.close()
+    assert "badge-warn" not in next(
+        (mm.group(0) for mm in re.finditer(r"<tr>.*?</tr>", croot.get("/admin/users").text, re.S)
+         if ">root<" in mm.group(0)), "")
+
+    # ---- 「资源套餐」root-only：普通管理员连入口都不给，后端 6 条路由全部 403 ----
+    # 套餐决定**所有人**能选什么资源，与同样是 root-only 的「授予/撤销管理员」同级。
+    # 普通管理员的授权边界是"管用户 + 代申请"，不含改全站资源规格。
+    assert c.get("/admin/plans").status_code == 403, "普通管理员不应能访问资源套餐"
+    assert "资源套餐" not in c.get("/admin/users").text, "普通管理员的导航里不该出现资源套餐"
+    r = c.post("/admin/plans/add", data={
+        "name": "越权套餐", "gpus": "0", "cpus": "1", "mem_gb": "1", "maxtime_h": "1"})
+    assert r.status_code == 403, "普通管理员不应能新增套餐"
+    r = c.post("/admin/plans/3/edit", data={"name": "越权改名"})
+    assert r.status_code == 403, "普通管理员不应能改套餐"
+    assert croot.get("/admin/plans").status_code == 200, "root 应能访问资源套餐"
+    assert "资源套餐" in croot.get("/admin/users").text, "root 的导航里应有资源套餐"
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        assert dbp.q1("SELECT COUNT(*) n FROM plans WHERE name IN ('越权套餐','越权改名')")["n"] == 0, \
+            "越权请求竟然改到了套餐"
+        n0 = dbp.q1("SELECT COUNT(*) n FROM plans")["n"]
+    finally:
+        dbp.close()
+    # root 的正路仍然通：新增 + 删除
+    tokp = csrf_of(croot, "/admin/plans")
+    r = croot.post("/admin/plans/add", data={
+        "_csrf": tokp, "name": "冒烟套餐X", "description": "smoke",
+        "gpus": "0", "gpu_model": "", "cpus": "2", "mem_gb": "4", "maxtime_h": "12"})
+    assert r.status_code in (200, 302), r.status_code
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        row = dbp.q1("SELECT id FROM plans WHERE name='冒烟套餐X'")
+        assert row, "root 新增套餐失败"
+        assert dbp.q1("SELECT COUNT(*) n FROM plans")["n"] == n0 + 1, "新增后套餐数应 +1"
+        pid = row["id"]
+    finally:
+        dbp.close()
+    tokp = csrf_of(croot, "/admin/plans")
+    r = croot.post("/admin/plans/%d/delete" % pid, data={"_csrf": tokp})
+    assert r.get_json()["ok"], r.get_json()
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        assert dbp.q1("SELECT COUNT(*) n FROM plans")["n"] == n0, "删除后套餐数应还原"
+    finally:
+        dbp.close()
+
     # 管理员代申请资源（帮助 alice 提交，用其端口 28766）
     dbx0 = _DB(appmod.DB_PATH)
     uid_mgr = dbx0.q1("SELECT id FROM users WHERE username=?", ("mgr",))["id"]

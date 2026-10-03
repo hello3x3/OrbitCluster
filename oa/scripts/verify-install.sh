@@ -34,6 +34,25 @@ chk "镜像目录可读"           "bash -c 'ls /share/images/*.sqsh >/dev/null'
 # 以 root 导入 portalapp.db，而该目录当时归 portal 所有 —— 门户被攻破即可借此拿 root。
 # 现在改为直接用标准库 sqlite3 读库，不加载应用代码。
 chk "套餐>=1"                "python3 -c 'import sqlite3;c=sqlite3.connect(\"/var/lib/cluster-portal/portal.db\");print(c.execute(\"SELECT COUNT(*) FROM plans\").fetchone()[0])' | grep -qv '^0$'"
+# 「用户管理」页的配额列要在**服务的沙箱里**读得到 /share 配额。
+# PrivateDevices=yes 会把 /dev/sda 从沙箱的 /dev 里摘掉，而 repquota 必须先 stat() 这个设备节点；
+# 少了 BindReadOnlyPaths=/dev/sda，配额整列会变成「—」，额度漂移（库里 500G / OS 实际 5G）
+# 肉眼完全看不出来 —— 线上真实事故：某用户 5G 配额去存 ~10G 镜像，报 quota exceeded 才发现。
+SVC_PID="$(systemctl show cluster-portal -p MainPID --value 2>/dev/null || true)"
+if [ -n "$SVC_PID" ] && [ -d "/proc/$SVC_PID" ]; then
+  _q_n="$(nsenter -t "$SVC_PID" -m -- runuser -u portal -- sudo -n /usr/local/sbin/portal-ctl quota-all 2>/dev/null \
+          | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("quotas") or {}))' 2>/dev/null || echo 0)"
+  if [ "${_q_n:-0}" -gt 0 ]; then
+    echo "  [OK] 门户能读到 /share 配额（$_q_n 条）"
+  else
+    echo "  [FAIL] 门户在沙箱里读不到 /share 配额 —— 用户管理页的配额列会整列显示「—」"
+    echo "         修法：systemd 单元加 BindReadOnlyPaths=/dev/sda（PrivateDevices=yes 摘掉了设备节点）"
+    fail=1
+  fi
+else
+  echo "  [i] 服务未运行，跳过「配额可读」检查"
+fi
+
 
 echo "== 安全边界（门户用户不得登录宿主机 / 不得篡改门户代码）=="
 chk "应用代码不属于 portal"  "bash -c 'st=\$(stat -c %U /opt/cluster-portal/portalapp); test \"\$st\" = root'"

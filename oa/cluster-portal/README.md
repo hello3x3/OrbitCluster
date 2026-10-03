@@ -66,6 +66,9 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
    - 方式「自动建号」：三节点同步建号（UID 一致）+ `/share` 配额 + sacctmgr 关联。
    - 方式「OS 账号已存在」：跳过建号，仅初始化门户目录。
 2. 「资源套餐」维护预设的 CPU/内存/GPU 组合（启用/停用/增删；镜像由 `/share/images` 自动发现，无需登记）。
+   **仅 `root`**：套餐决定所有人能选什么资源，与同样是 root-only 的「授予/撤销管理员」同级 ——
+   普通管理员看不到导航入口，直接访问 6 条套餐路由（页面/增/改/启停/删除/数据）一律 403。
+   普通管理员在「代申请资源」里照样能选套餐，只是不能改。
 3. 可停用/启用、重置密码（随机生成，仅显示一次）、**删除用户**、**改配额**。
    - 「改配额」：输入如 `200G / 500G / 1T`，门户以 root 执行 `set-quota.sh` 直写 OS
      `/share` 配额（软=硬即时生效），并回读 `repquota` 确认；「配额（OS 实读）」列显示
@@ -140,6 +143,10 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   `/share`（家目录/镜像/配额），且 `sudo` 子进程继承同一挂载命名空间 —— 漏了它，提交作业就会报
   `OSError: [Errno 30] Read-only file system: '/share/home/<用户>/.portal/logs'`。
   `verify-install.sh` 会在服务的命名空间里试写 `/share` 守住这条。
+  另外 `PrivateDevices=yes` 会把 `/dev/sda` 摘掉，而 `repquota /share` 必须先 `stat()` 这个设备节点
+  —— 所以还要 `BindReadOnlyPaths=/dev/sda`，否则「用户管理」页的配额列**静默**变成整列「—」
+  （`repquota` 还返回 rc=0，看不出报错），额度漂移就再也发现不了。
+  `verify-install.sh` 会在沙箱里调一次 `quota-all` 守住这条。
 - **会话 12 小时绝对过期，并且可吊销**：`PERMANENT_SESSION_LIFETIME=12h`；
   另用 `users.session_epoch`，在改密 / 管理员重置口令 / 停用 / 权限变更 / 主动登出时 +1，
   旧 Cookie 立即失效（Flask 的 session 是无状态签名 Cookie，没有这一步吊销不掉）。

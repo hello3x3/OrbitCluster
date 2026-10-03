@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=23">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=24">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -16,7 +16,11 @@
   <nav class="nav">
     {% if cur_role == 'admin' %}
     <a href="{{ url_for('admin_users') }}"{% if ep in ('admin_users','admin_user_create','admin_user_role','admin_user_toggle','admin_user_delete','admin_user_quota','admin_user_resetpwd') %} class="active"{% endif %}>用户管理</a>
+    {# 资源套餐是 root-only（决定全站可选资源规格，与授予/撤销管理员同级）；
+       普通管理员连入口都不给 —— 后端那 6 条路由也会 403，这里只是不让他点了才发现。 #}
+    {% if cur_user.username == 'root' %}
     <a href="{{ url_for('admin_plans') }}"{% if ep and ep.startswith('admin_plan') %} class="active"{% endif %}>资源套餐</a>
+    {% endif %}
     <a href="{{ url_for('admin_apply') }}"{% if ep == 'admin_apply' %} class="active"{% endif %}>代申请资源</a>
     {% endif %}
     <a href="{{ url_for('my_instances') }}"{% if ep in ('my_instances','home') %} class="active"{% endif %}>我的资源</a>
@@ -49,7 +53,7 @@
 </main>
 
 <footer class="foot">{{ portal_name }}</footer>
-<script src="{{ url_for('static', filename='app.js') }}?v=23"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=24"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
