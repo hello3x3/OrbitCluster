@@ -242,12 +242,14 @@
           i.ssh_ip && i.ssh_ip !== i.node ? "（" + esc(i.ssh_ip) + "）" : ""}</p>` : "";
         $("#detail-body").innerHTML = `
           <h3>SSH 连接</h3>
-          <pre class="cmd-preview">${esc(sshNode)}</pre>
+          <div class="cmd-row">
+            <pre class="cmd-preview" id="detail-ssh-cmd">${esc(sshNode)}</pre>
+            <button class="btn btn-ghost btn-sm btn-copy" type="button"
+                    data-copy-from="#detail-ssh-cmd" title="复制这条 SSH 命令">复制</button>
+          </div>
           ${nodeLine}
           <p class="muted small">用你登记公钥对应的<b>私钥</b>连接；首次连接若提示 host key 变化，
-          因容器 host key 存放在你的家目录（.ssh-hostkeys），更换机器/清理后需重新接受。</p>
-          <h3>本次提交的命令</h3>
-          <pre class="cmd-preview">${esc(i.cmd || "")}</pre>`;
+          因容器 host key 存放在你的家目录（.ssh-hostkeys），更换机器/清理后需重新接受。</p>`;
       } else if (b.classList.contains("act-save")) {
         const rec = last[id] || {};
         let name = window.prompt("保存当前容器状态为个人镜像（保存到 /share/images/" +
@@ -484,11 +486,88 @@
     });
   }
 
+  /* ---------- 时长快捷值（申请资源 / 代申请资源共用）----------
+     它只做一件事：把 .hours-block 里的数字输入设成 chip 的值，再派发 input/change，
+     让上面两套原有的校验（套餐 maxtime、1-720 范围、提交按钮可用性）照常跑 ——
+     这里不复制任何校验逻辑。 */
+  function wireHourChips() {
+    document.addEventListener("click", ev => {
+      const t = ev.target;
+      const chip = t && t.closest ? t.closest(".chip[data-hours]") : null;
+      if (!chip) return;
+      const block = chip.closest(".hours-block");
+      const input = block && block.querySelector('input[name="hours"]');
+      if (!input) return;
+      block.querySelectorAll(".chip").forEach(c => c.classList.toggle("is-on", c === chip));
+      input.dataset.fromChip = "1";   // 让下面那个监听跳过这次高亮清理
+      input.value = chip.dataset.hours;
+      input.dispatchEvent(new Event("input", {bubbles: true}));
+      input.dispatchEvent(new Event("change", {bubbles: true}));
+    });
+    // 手动改数字时取消 chip 高亮
+    document.addEventListener("input", ev => {
+      const input = ev.target;
+      if (!input || !input.matches || !input.matches('.hours-block input[name="hours"]')) return;
+      if (input.dataset.fromChip) { delete input.dataset.fromChip; return; }
+      const block = input.closest(".hours-block");
+      if (block) block.querySelectorAll(".chip.is-on").forEach(c => c.classList.remove("is-on"));
+    });
+  }
+
+  /* ---------- 「复制」按钮 ----------
+     注意：门户跑在 http://<内网IP>:8000 上，**不是安全上下文**，浏览器里根本没有
+     navigator.clipboard —— 只用它的话点"复制"会静默失败。所以留 execCommand 兜底，
+     并且现代 API 失败时（权限被拒、文档没聚焦…）也要回退，而不是直接报错。 */
+  function legacyCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);   // iOS 上 select() 不够，要显式给范围
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text) {
+    const FAIL = "浏览器不允许自动复制，请手动选中命令";
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text)
+        .catch(() => { if (!legacyCopy(text)) throw new Error(FAIL); });
+    }
+    return legacyCopy(text) ? Promise.resolve() : Promise.reject(new Error(FAIL));
+  }
+
+  // 委托到 document：详情弹窗的内容是 innerHTML 后填的，逐个绑事件会漏。
+  function wireCopyButtons() {
+    document.addEventListener("click", async ev => {
+      const t = ev.target;
+      const btn = t && t.closest ? t.closest(".btn-copy") : null;
+      if (!btn) return;
+      const src = btn.dataset.copyFrom ? document.querySelector(btn.dataset.copyFrom) : null;
+      const text = (btn.dataset.copy || (src ? src.textContent : "")).trim();
+      if (!text) { toast("没有可复制的内容", "err"); return; }
+      try {
+        await copyText(text);
+        toast("已复制", "ok");
+      } catch (e) {
+        toast(e.message || "复制失败", "err");
+      }
+    });
+  }
+
   /* ---------- 启动 ---------- */
   document.addEventListener("DOMContentLoaded", () => {
     wireGeneric();
     wireMyPage();
     wireApplyForm();
     wireAdminApply();
+    wireHourChips();
+    wireCopyButtons();
   });
 })();

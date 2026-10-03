@@ -7,18 +7,24 @@
 <h2>节点（分区 {{ partition }}）</h2>
 <div class="card">
   <table class="table">
-    <thead><tr><th>节点</th><th>状态</th><th>CPU(空闲/总)</th><th>内存</th><th>GPU</th></tr></thead>
+    <thead><tr><th>节点</th><th>状态</th><th>CPU（空闲/总）</th><th>内存（空闲/总）</th><th>GPU（空闲/总）</th></tr></thead>
     <tbody>
     {% for n in nodes %}
+      {# 用 .get()：老缓存 / 测试桩里的节点字典可能没有这些新字段，
+         缺字段时应当显示「—」，而不是让 Undefined 参与算术把整页 500 掉。 #}
+      {% set mem_free = n.get('mem_free_mb') %}
+      {% set gres_free = n.get('gres_free') %}
+      {% set gres_total = n.get('gres_total') or 0 %}
       <tr>
         <td class="mono">{{ n.name }}</td>
         <td><span class="st st-{{ n.state|lower }}">{{ n.state }}</span></td>
         <td>{{ n.cpus_idle }}/{{ n.cpus_total }}</td>
-        <td>{{ (n.mem_mb/1024)|round|int }}G</td>
-        <td class="small">{{ n.gres }}</td>
+        {# 内存：调度口径的空闲 = 总内存 − 已分配（不是 OS 的 free，口径见 portal-ctl 里的说明） #}
+        <td>{% if mem_free is not none %}{{ (mem_free/1024)|round|int }}G/{{ (n.mem_mb/1024)|round|int }}G{% else %}—{% endif %}</td>
+        <td class="mono" title="{{ n.gres }}">{% if gres_total and gres_free is not none %}{{ gres_free }}/{{ gres_total }}{% else %}—{% endif %}{% if n.get('gres_model') %} <span class="muted small">{{ n.gres_model }}</span>{% endif %}</td>
       </tr>
     {% else %}
-      <tr><td colspan="6" class="empty">无法获取节点状态（slurm 不可用？）</td></tr>
+      <tr><td colspan="5" class="empty">无法获取节点状态（slurm 不可用？）</td></tr>
     {% endfor %}
     </tbody>
   </table>

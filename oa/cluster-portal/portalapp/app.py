@@ -25,7 +25,11 @@ from . import ctl
 from . import siteconf
 from .db import (ACTIVE_STATES, DB, STATE_CN, init_db)
 
-USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+# 用户名规则：小写字母/数字/下划线，且以字母或下划线开头（= Linux 账号名）。
+# 与 deploy/portal-ctl 的 USER_RE 必须保持一致 —— 两边都拦，门户的报错才和服务端
+# 实际接受的范围吻合（历史坑：客户端 pattern 写成了 `v` 模式下的非法正则，
+# 被浏览器整条忽略 → 客户端其实什么都没拦，见 admin_users.html 的注释）。
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
 # 与 deploy/portal-ctl RESERVED 对齐：这些 OS 账号不能设配额/建号/托管密钥/被提交作业。
 # 注意 systemd-* 必须用前缀匹配 —— 写成集合里的字面量 "systemd-*" 永远匹配不上。
 RESERVED_OS = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games",
@@ -359,6 +363,13 @@ def create_app(testing=False):
         原因是门户会把该账号的公钥写进它自己的 `~/.ssh/authorized_keys`，而 root 是
         **能登录宿主机**的账号 —— 一旦门户替 root 托管密钥，"偷到门户 root 的口令"
         就等于"拿到宿主机 root"。宿主机 root 的密钥请在节点上手工维护。
+
+        性能约束：这里必须用 ctl.user_exists()（只查管理节点，~0.04s），
+        **不要**换成 ctl.user_status() —— 后者为了给排障提供逐节点 UID 会对每台计算节点
+        各 ssh 一次（实测 ~0.34s/台，其中过半是 pam_motd 会话栈），而本函数在
+        /my、/profile、/apply 的**每个请求**里都会被调用。
+        历史事故：管理员账号打开【我的资源】要 0.89s，其中 0.7s 全花在这上面，
+        换来一份门户从不显示的逐节点明细。详见 portal-ctl 的 cmd_user_exists 注释。
         """
         if is_reserved_os(u["username"]):
             return False
@@ -370,7 +381,7 @@ def create_app(testing=False):
             res = u["os_mode"] in ("provision", "existing")
         else:
             try:
-                res = bool(ctl.user_status(u["username"]).get("exists"))
+                res = bool(ctl.user_exists(u["username"]).get("exists"))
             except ctl.CtlError:
                 res = False
         setattr(g, attr, res)
@@ -1207,7 +1218,7 @@ def create_app(testing=False):
         # 所以这里对保留账号改用一次"实时存在性探测"——它只允许设「不限」清限额。
         if is_reserved_os(u["username"]):
             try:
-                if not ctl.user_status(u["username"]).get("exists"):
+                if not ctl.user_exists(u["username"]).get("exists"):
                     return _json_err("该账号在集群没有同名 OS 账号，无法设置配额")
             except ctl.CtlError as e:
                 return _json_err("查询集群账号失败：%s" % e)
@@ -1228,7 +1239,7 @@ def create_app(testing=False):
         imported_keys = 0
         err = None
         if not USERNAME_RE.match(username):
-            return None, "用户名不合法（小写字母/数字/_-，3-32 位）", 0
+            return None, "用户名不合法（只能用小写字母、数字、下划线，小写字母或下划线开头，1-32 位）", 0
         # 系统/保留账号（root、portal、slurm、sshd…）不能建门户账号。
         # 否则可以造一个叫 portal 的管理员账号，再以它提交作业 —— 该账号的家目录就是
         # /var/lib/cluster-portal，会被 --container-mounts 挂进容器（拿到 DB 与 Flask secret）。
@@ -1256,15 +1267,20 @@ def create_app(testing=False):
         # 且必须显式 set_quota。
         if role == "user" and os_mode not in ("provision", "existing"):
             return None, "普通用户必须选择账号开通方式", 0
-        if role == "user" and not password:
-            return None, "普通用户初始密码不能为空", 0
+        # 普通用户**可以**留空密码 = 随机生成。
+        # 界面（admin_users.html「初始门户密码（留空=随机生成，只显示一次）」）、
+        # README、以及下面的 `pwd = password or random_password()` 和响应里
+        # 「已随机生成初始密码」分支，四处都是这个语义。
+        # 历史 bug：这里曾有一条 `role == "user" and not password` 的硬校验，把「留空」
+        # 直接判成错误（"普通用户初始密码不能为空"）—— 界面让你留空、服务端说你必须填，
+        # 于是根本建不出普通用户。不要再加回来；真要改语义，请连界面与 README 一起改。
         want_os = os_mode == "existing" or (os_mode == "provision" and role == "user")
         if want_os:
             try:
                 if os_mode == "provision":
                     ctl.provision_user(username, quota)
                 else:
-                    if not ctl.user_status(username).get("exists"):
+                    if not ctl.user_exists(username).get("exists"):
                         return None, ("OS 账号 %s 不存在，不能按「OS 账号已存在」开通；"
                                       "请先用 add-user.sh 建号，或改用「自动建号」" % username), 0
                     ctl.init_user(username)

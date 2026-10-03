@@ -4,26 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=17">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=23">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 <header class="topbar">
-  <div class="brand"><a href="{{ url_for('home') }}">⚡ {{ portal_name }}</a></div>
+  {# 导航高亮：仅影响外观，不改动任何链接与权限判断 #}
+  {% set ep = request.endpoint or '' %}
+  <div class="brand"><a href="{{ url_for('home') }}">{{ portal_name }}</a></div>
   {% if cur_user %}
   <nav class="nav">
     {% if cur_role == 'admin' %}
-    <a href="{{ url_for('admin_users') }}">用户管理</a>
-    <a href="{{ url_for('admin_plans') }}">资源套餐</a>
-    <a href="{{ url_for('admin_apply') }}">代申请资源</a>
+    <a href="{{ url_for('admin_users') }}"{% if ep in ('admin_users','admin_user_create','admin_user_role','admin_user_toggle','admin_user_delete','admin_user_quota','admin_user_resetpwd') %} class="active"{% endif %}>用户管理</a>
+    <a href="{{ url_for('admin_plans') }}"{% if ep and ep.startswith('admin_plan') %} class="active"{% endif %}>资源套餐</a>
+    <a href="{{ url_for('admin_apply') }}"{% if ep == 'admin_apply' %} class="active"{% endif %}>代申请资源</a>
     {% endif %}
-    <a href="{{ url_for('my_instances') }}">我的资源</a>
-    <a href="{{ url_for('apply_page') }}">申请资源</a>
-    <a href="{{ url_for('status_page') }}">集群状态</a>
-    <a href="{{ url_for('profile') }}">个人资料</a>
+    <a href="{{ url_for('my_instances') }}"{% if ep in ('my_instances','home') %} class="active"{% endif %}>我的资源</a>
+    <a href="{{ url_for('apply_page') }}"{% if ep == 'apply_page' %} class="active"{% endif %}>申请资源</a>
+    <a href="{{ url_for('status_page') }}"{% if ep == 'status_page' %} class="active"{% endif %}>集群状态</a>
+    <a href="{{ url_for('profile') }}"{% if ep in ('profile','profile_name','profile_password','profile_key_add','profile_port_add') %} class="active"{% endif %}>个人资料</a>
   </nav>
   <div class="userbox">
-    <span class="who" title="{{ cur_user.username }}">{{ cur_user.display_name or cur_user.username }}
+    <span class="who" title="{{ cur_user.username }}">
+      <span class="avatar">{{ (cur_user.display_name or cur_user.username)[:1] }}</span>
+      {{ cur_user.display_name or cur_user.username }}
       {% if cur_role == 'admin' %}<em class="badge-admin">管理员</em>{% endif %}</span>
     <a class="btn btn-ghost btn-sm" href="{{ url_for('logout') }}">退出</a>
   </div>
@@ -45,7 +49,7 @@
 </main>
 
 <footer class="foot">{{ portal_name }}</footer>
-<script src="{{ url_for('static', filename='app.js') }}?v=17"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=23"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

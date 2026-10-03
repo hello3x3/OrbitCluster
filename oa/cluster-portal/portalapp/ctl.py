@@ -67,7 +67,19 @@ def init_user(username):
     return run(["init-user", username], timeout=60)
 
 
+def user_exists(username):
+    """账号是否存在于集群（只查管理节点，**不 ssh 到计算节点**）。
+
+    页面路径（_os_ok）必须用这个：user_status 会逐台计算节点 ssh，实测 ~0.7s。
+    """
+    return run(["user-exists", username], timeout=30)
+
+
 def user_status(username):
+    """完整账号状态（逐节点 UID / Slurm 关联 / 家目录）。
+
+    仅供排障与验收（verify-install.sh、诊断），**不要放进页面请求路径** —— 见 user_exists。
+    """
     return run(["user-status", username], timeout=90)
 
 

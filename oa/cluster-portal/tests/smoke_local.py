@@ -30,7 +30,11 @@ import portalapp.pwfile as pwfile  # noqa: E402
 ctlmod.sinfo = lambda: {"ok": True, "partition": "gpu", "nodes": [
     {"name": "<GPU01>", "state": "idle", "avail": "up", "cpus_alloc": 0,
      "cpus_idle": 16, "cpus_total": 16, "mem_mb": 31933,
-     "gres": "gpu:3060:1", "ip": "<GPU01_IP>"}]}
+     # 「空闲/总」要用的字段：已分配内存、GRES 型号/总量/已用量
+     "mem_alloc_mb": 8192, "mem_free_mb": 23741,
+     "gres": "gpu:3060:1(S:0)", "gres_model": "3060",
+     "gres_total": 1, "gres_used": 1, "gres_free": 0,
+     "ip": "<GPU01_IP>"}]}
 ctlmod.job_state = lambda u, j: {"ok": True, "active": True, "state": "RUNNING",
                                  "node": "<GPU01>", "elapsed": "00:01:00", "name": "x"}
 ctlmod.kill = lambda u, j: {"ok": True, "job_id": j, "cancelled": True}
@@ -39,8 +43,18 @@ ctlmod.rm_log = lambda u, j: {"ok": True, "job_id": j, "removed": True}
 ctlmod.set_keys = lambda u, keys: {"ok": True, "user": u, "keys": len(keys)}
 ctlmod.get_keys = lambda u: {"ok": True, "user": u,
                              "keys": ["ssh-ed25519 AAAA" + "C" * 60 + " eve@x"]}
-ctlmod.user_status = lambda u: {"ok": True, "username": u, "exists": u != "admin",
-                                "uid_admin": "2000", "nodes": {}}
+# 页面热路径：_os_ok() 用的是轻量的 user-exists（只查管理节点）。
+# 语义必须与 user_status 的 exists 一致，否则这里会掩盖真实的回归。
+def _fake_os_exists(u):
+    return u != "admin"
+
+
+ctlmod.user_exists = lambda u: {"ok": True, "username": u,
+                                "exists": _fake_os_exists(u),
+                                "uid": "2000" if _fake_os_exists(u) else None}
+ctlmod.user_status = lambda u: {"ok": True, "username": u, "exists": _fake_os_exists(u),
+                                "uid_admin": "2000" if _fake_os_exists(u) else None,
+                                "nodes": {}}
 ctlmod.provision_user = lambda u, q, skip_os=False: (
     _set_fake_quota(u, (q or "500G")),  # 建号同时写假配额记录
     {"ok": True, "mode": "new", "username": u, "uid": 2000})[1]
@@ -177,6 +191,46 @@ def main():
     _cookies = " ".join(r.headers.getlist("Set-Cookie"))
     assert "CarolInit99" not in _cookies, "初始口令出现在 Set-Cookie 里: %s" % _cookies[:200]
     assert "CarolInit99".encode() in r.data, "初始口令应在响应体里一次性显示"
+
+    # ---- 普通用户「留空密码」应当被随机生成，而不是被拒 ----
+    # 界面写的是「留空=随机生成，只显示一次」（README 同），但服务端曾硬校验
+    # `role == "user" and not password` → 报「普通用户初始密码不能为空」，用户建不出号。
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "blankpwd", "display_name": "留空密码",
+        "role": "user", "os_mode": "provision", "quota": "100G",
+        "password": ""}, follow_redirects=True)
+    assert "初始密码不能为空".encode() not in r.data, \
+        "留空密码被拒了（界面承诺「留空=随机生成」）: %s" % r.data[:600]
+    assert "已随机生成初始密码".encode() in r.data, r.data[:600]
+    _db = appmod.DB(appmod.DB_PATH)
+    try:
+        assert _db.user_by_name("blankpwd") is not None, "留空密码应能建出普通用户"
+    finally:
+        _db.close()
+
+    # ---- 用户名只允许「小写字母/数字/下划线」，且以小写字母或下划线开头 ----
+    # 客户端 pattern 曾写成 `v` 模式下的非法正则被浏览器整条忽略（等于没拦），
+    # 所以服务端这条 USERNAME_RE 是真正的那道闸，必须自己挡住 `-` 和其它字符。
+    for _bad in ("bad-name", "bad.name", "bad name", "9bad", "bad@x"):
+        r = c.post("/admin/users/create", data={
+            "_csrf": tok, "username": _bad, "display_name": "非法名",
+            "role": "user", "os_mode": "provision", "quota": "100G",
+            "password": "BadName1234"}, follow_redirects=True)
+        assert "用户名不合法".encode() in r.data, \
+            "非法用户名 %r 被放过了: %s" % (_bad, r.data[:400])
+    _db = appmod.DB(appmod.DB_PATH)
+    try:
+        for _bad in ("bad-name", "bad.name", "bad name", "9bad", "bad@x"):
+            assert _db.user_by_name(_bad) is None, "非法用户名 %r 被建出来了" % _bad
+        # 正例：数字/下划线可以出现在首字符之后
+        _ok = c.post("/admin/users/create", data={
+            "_csrf": tok, "username": "good_name01", "display_name": "合法名",
+            "role": "user", "os_mode": "provision", "quota": "100G",
+            "password": "GoodName1234"}, follow_redirects=True)
+        assert "用户名不合法".encode() not in _ok.data, _ok.data[:400]
+        assert _db.user_by_name("good_name01") is not None, "合法用户名被拒了"
+    finally:
+        _db.close()
 
     # 管理员 + 「OS 已存在」同样要落地配额（线上事故：某运维账号设了 1T 却显示不限）
     # —— 管理员账号只能由 root 创建，所以这里切换到 root 会话
@@ -509,6 +563,12 @@ def main():
     # 集群状态页
     r = c.get("/status")
     assert r.status_code == 200
+    # 每个资源都要标出「空闲/总」，并且值真的是 空闲/总
+    for _h in ("CPU（空闲/总）", "内存（空闲/总）", "GPU（空闲/总）"):
+        assert _h.encode() in r.data, "状态页表头缺 %s" % _h
+    assert b"16/16" in r.data, "CPU 空闲/总没渲染"
+    assert b"23G/31G" in r.data, "内存 空闲/总没渲染（23741/1024≈23G，总量 31933/1024≈31G）"
+    assert b"0/1" in r.data, "GPU 空闲/总没渲染（已用 1 / 总 1）"
 
     # 管理员页回归：管理员公钥门槛 + 用户列表统计列
     c.get("/logout")
@@ -689,8 +749,37 @@ def main():
     assert "alice" not in pwfile.load_map(), "删除用户后应同步移除密码文件中的行"
 
     check_legacy_dup_db()
+    check_hot_path_is_light()
 
     print("SMOKE_OK (db at %s)" % TMP)
+
+
+def check_hot_path_is_light():
+    """回归保护：页面热路径必须走 user-exists（只查管理节点），不许走 user-status。
+
+    背景（真实线上性能问题）：user-status 为了给排障提供逐节点 UID 会对每台计算节点
+    各 ssh 一次（实测 ~0.34s/台）。_os_ok() 在 /my、/profile、/apply 的每个请求里
+    都会被调用，于是管理员账号打开【我的资源】要 0.89s，其中 0.7s 全花在一份门户
+    从不显示的逐节点明细上。改成 user-exists 后 ~0.04s。
+    这里用计数假实现把"退回慢命令"钉死在测试里。
+    """
+    calls = []
+    orig_status, orig_exists = ctlmod.user_status, ctlmod.user_exists
+    # 专用管理员账号：main() 中途会把 mgr 删掉；root 是保留账号，不走"实时确认"分支
+    appmod.main_bootstrap("hotpathadm", "HotPath1234", "admin")
+    ctlmod.user_status = lambda u: (calls.append(u), orig_status(u))[1]
+    try:
+        c = app.test_client()
+        # admin 角色 → _os_ok 会走"实时向集群确认"的分支（正是出事的那条）
+        login(c, "hotpathadm", "HotPath1234")
+        for path in ("/my", "/profile", "/apply"):
+            r = c.get(path, follow_redirects=True)
+            assert r.status_code == 200, (path, r.status_code)
+    finally:
+        ctlmod.user_status, ctlmod.user_exists = orig_status, orig_exists
+    assert calls == [], \
+        "页面路径调用了慢命令 user-status（应改用 user_exists）: %s" % calls
+    assert ctlmod.user_exists("hotpathadm")["exists"] is True
 
 
 def check_legacy_dup_db():

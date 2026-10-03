@@ -24,8 +24,12 @@
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     <div class="row">
       <label>用户名（= OS 账号名）
-        <input name="username" required pattern="[a-z_][a-z0-9_-]{0,31}" maxlength="32"
-               placeholder="例如 alice" title="小写字母开头，字母数字 _ -">
+        {# 这里必须是 `v` 模式下的合法正则：Chrome 从 111 起按 HTML 规范用 `v` 标志编译
+           pattern，非法就**整条忽略**该属性（例：把 `-` 不加转义放在字符类末尾），
+           等于客户端什么都没拦。规则与服务端 USERNAME_RE / portal-ctl USER_RE 一致：
+           小写字母/数字/下划线，且以字母或下划线开头。 #}
+        <input name="username" required pattern="[a-z_][a-z0-9_]{0,31}" maxlength="32"
+               placeholder="例如 shujiuhe" title="只能用小写字母、数字、下划线；小写字母或下划线开头">
       </label>
       <label>姓名/显示名 <input name="display_name" maxlength="64" placeholder="可选"></label>
       <label>角色
@@ -55,7 +59,7 @@
       </label>
     </div>
     <button class="btn btn-primary" type="submit">开通账号</button>
-    <span class="muted small">提交后请立即把初始密码告知用户（仅本次显示）。</span>
+    <span class="muted small">提交后请立即把初始密码告知用户（仅本次显示）</span>
   </form>
 </section>
 
@@ -68,7 +72,7 @@
       <th title="该用户端口池中登记的端口数（10000-65535，全门户唯一，用于容器 sshd 监听）">端口数</th>
       <th>活跃资源</th>
       <th title="/share 实际磁盘配额（OS repquota 实读）：已用 / 硬上限">配额（OS 实读）</th>
-      <th>上次登录</th><th>创建时间</th><th>操作</th>
+      <th>上次登录</th><th>操作</th>
     </tr></thead>
     <tbody>
     {% for u in users %}
@@ -80,7 +84,6 @@
         <td title="SSH 公钥数">{{ u.key_cnt }}</td><td title="端口池登记数">{{ u.port_cnt }}</td><td>{{ u.active_cnt }}</td>
         <td class="mono small">{% if u.quota_os_present %}{{ u.quota_used }} / {{ u.quota_hard }}{% else %}—{% endif %}{% if u.quota_mismatch %}<span class="badge-warn" title="门户库里记录的是 {{ u.quota_portal }}，但 OS 实际硬限是 {{ u.quota_hard }}（说明额度没有真正落到 OS）。用这行的「改配额」按钮重设一次即可对齐。">门户记 {{ u.quota_portal }} ≠ OS</span>{% endif %}</td>
         <td class="small">{{ u.last_login }}</td>
-        <td class="small">{{ u.created }}</td>
         <td class="ops">
           {% if cur_user.username == 'root' and u.username != 'root' %}
             {% if u.role == 'admin' %}

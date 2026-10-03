@@ -18,7 +18,10 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   init-user <u>                            仅初始化已有 OS 用户的 .ssh/.portal 目录
   ensure-assoc <u>                         确保该用户在会计里有账户关联(幂等；缺关联会
                                            导致 sbatch 报 Invalid account...)
-  user-status <u>                          查看账号在管理节点/各节点的状态
+  user-status <u>                          查看账号在管理节点/各节点的状态(逐节点 ssh，
+                                           慢，仅供排障/验收用)
+  user-exists <u>                          只判断账号是否存在(仅查本机，不 ssh 到
+                                           计算节点；门户每次开页面都用它)
   submit               读取 stdin JSON, 以该用户身份 sbatch 提交容器交互作业
   kill <u> <jobid>                         停机(校验属主后 scancel)
   job-state <u> <jobid>                    查单个作业状态(squeue→sacct 回退)
@@ -45,7 +48,10 @@ import subprocess
 import sys
 import tempfile
 
-USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+# 用户名规则：小写字母/数字/下划线，且以字母或下划线开头（= Linux 账号名）。
+# 与 portalapp/app.py 的 USERNAME_RE 必须保持一致：门户能建出来的名字，
+# 这里的 valid_user()/name_ok() 就必须认，否则账号建出来却每条命令都被判"非法用户名"。
+USER_RE = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
 QUOTA_RE = re.compile(r"^[1-9][0-9]{0,2}[GgTtMm]$")
 # 「不限配额」的规范写法；另接受 0 / UNLIMITED 作为输入别名
 QUOTA_UNLIMITED = "不限"
@@ -302,7 +308,7 @@ def name_ok(u):
     """仅格式校验，**不排除**系统/保留账号。
 
     只允许用于「纯读取、且不以该账号身份执行」的命令：
-        user-status（探测账号是否存在，_os_ok 需要）
+        user-exists / user-status（探测账号是否存在，_os_ok 需要）
         quota / quota-all
         slurm-info
     其它一切命令（submit / kill / job-state / log / rm-log / get-keys / set-keys /
@@ -410,6 +416,53 @@ def cmd_ping():
     out({"ok": True, "whoami": sh_out(["id", "-un"]), "host": node_hostname()})
 
 
+def _gres_count(s):
+    """从 `gpu:3060:1(S:0)` / `gpu:3060:2(S:0-1)` / `gpu:3060:1(IDX:0)` 里取卡数合计。"""
+    n = 0
+    for item in (s or "").split(","):
+        m = re.search(r":(\d+)(?:\(|$)", item.strip())
+        if m:
+            n += int(m.group(1))
+    return n
+
+
+def _gres_model(s):
+    """从 `gpu:3060:1(S:0)` 里取型号（3060），只用于页面展示。"""
+    m = re.search(r"^[A-Za-z0-9_]+:([^:()]+):\d+", (s or "").strip())
+    return m.group(1) if m else ""
+
+
+def _nodes_alloc_mem():
+    """节点 -> 已分配内存(MB)。sinfo 没有这个字段，只能问 scontrol（一次列出全部节点）。
+
+    口径很重要：**不要**拿 sinfo 的 %e / scontrol 的 FreeMem 当「空闲内存」—— 那是 OS 的
+    空闲内存，受 page cache 影响（实测一台完全空闲的 32G 节点只剩 686M「空闲」），
+    拿它当"节点快满了"会把人误导死。调度口径的空闲 = RealMemory - AllocMem。
+    """
+    got = {}
+    raw = sh_out(["scontrol", "show", "node"], timeout=30)
+    for chunk in raw.split("NodeName=")[1:]:
+        parts = chunk.split()
+        if not parts:
+            continue
+        m = re.search(r"\bAllocMem=(\d+)", chunk)
+        if m:
+            got[parts[0].strip()] = int(m.group(1))
+    return got
+
+
+def _nodes_gres_used():
+    """节点 -> 已用 GPU 卡数。sinfo 的 -o 短说明符里没有「已用 GRES」，只能走 --Format。"""
+    used = {}
+    raw = sh_out(["sinfo", "-h", "-p", partition_name(), "-N",
+                  "--Format=NodeList,GresUsed"], timeout=30)
+    for ln in raw.splitlines():
+        f = ln.split(None, 1)
+        if len(f) == 2 and f[0]:
+            used[f[0].strip()] = _gres_count(f[1].strip())
+    return used
+
+
 def cmd_sinfo():
     part = partition_name()
     raw = sh_out(["sinfo", "-h", "-p", part, "-N", "-o", "%N|%T|%C|%G|%m|%a"],
@@ -417,6 +470,11 @@ def cmd_sinfo():
     fields = [ln.strip().split("|") for ln in raw.splitlines()]
     fields = [f for f in fields if len(f) >= 6]
     ips = nodes_ips([f[0] for f in fields])
+    # 页面上要让每个资源都显示「空闲/总」，而 sinfo 只给总量：内存的已用量只有 scontrol 有，
+    # GPU 的已用量只有 sinfo --Format 有。两次额外调用都很轻（各 ~40ms）。
+    # 取不到就置 None，页面显示「—」，绝不假装 0（假装 0 会显示成"全部空闲"）。
+    alloc_mem = _nodes_alloc_mem()
+    gres_used = _nodes_gres_used()
     nodes = []
     for f in fields:
         name, state, cpus, gres, mem_mb, avail = f[0], f[1], f[2], f[3], f[4], f[5]
@@ -428,10 +486,19 @@ def cmd_sinfo():
             mem = int(mem_mb)
         except ValueError:
             mem = 0
+        gt = _gres_count(gres)
+        am = alloc_mem.get(name)
+        gu = gres_used.get(name)
         nodes.append({
             "name": name, "state": state, "avail": avail,
             "cpus_alloc": ca, "cpus_idle": ci, "cpus_other": co, "cpus_total": ct,
             "mem_mb": mem, "gres": gres,
+            "mem_alloc_mb": am,
+            "mem_free_mb": (max(0, mem - am) if am is not None else None),
+            "gres_model": _gres_model(gres),
+            "gres_total": gt,
+            "gres_used": gu,
+            "gres_free": (max(0, gt - gu) if gu is not None else None),
             "ip": ips.get(name, ""),
         })
     out({"ok": True, "partition": part, "nodes": nodes})
@@ -735,7 +802,30 @@ def cmd_unprovision_user(username):
     out({"ok": True, "username": username, "uid": int(uid)})
 
 
+def cmd_user_exists(username):
+    """轻量「账号是否存在」探测：**只查本机（管理节点）**，不 ssh 到计算节点。
+
+    为什么需要它（真实性能问题，别再退回 user-status）：
+      门户的 _os_ok() 在 /my、/profile、/apply 三个页面的**每个请求**里都要问一次
+      「这个账号在不在集群里」。它只用 `exists` 这一个字段，而该字段本来就是由
+      **本机** 的 `id -u` 决定的（家目录在 /share，各节点看到的是同一份账号、
+      同一份 authorized_keys）。但 user-status 为了给排障提供逐节点 UID，
+      会对每台计算节点各开一次 ssh —— 实测每台 ~0.34s（其中过半是 Ubuntu
+      pam_motd 每次会话都要跑一遍 /etc/update-motd.d 的开销），两台串行 ~0.7s。
+      结果：管理员账号打开【我的资源】要等 0.89s，其中 0.7s 用来采集一份
+      门户**从来不显示**的逐节点明细。
+    本命令把这段砍掉：0.75s → ~0.04s。语义完全一致（exists 一向来自本机那一次查询）。
+
+    name_ok（不排除保留账号）：与 user-status 同类——纯读取、不以该账号身份执行。
+    """
+    if not name_ok(username):
+        die("非法用户名")
+    uid = sh_out(["id", "-u", username])
+    out({"ok": True, "username": username, "exists": bool(uid), "uid": uid or None})
+
+
 def cmd_user_status(username):
+    """完整账号状态（逐节点 UID / Slurm 关联 / 家目录）——排障与验收用，勿放进页面路径。"""
     if not name_ok(username):
         die("非法用户名")
     host = node_hostname()
@@ -1462,6 +1552,10 @@ def main():
             if not ok:
                 die(err)
             out({"ok": True, "user": sys.argv[2], "assoc": "ok"})
+        elif cmd == "user-exists":
+            if len(sys.argv) < 3:
+                die("用法: user-exists <用户名>")
+            cmd_user_exists(sys.argv[2])
         elif cmd == "user-status":
             if len(sys.argv) < 3:
                 die("用法: user-status <用户名>")

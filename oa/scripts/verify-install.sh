@@ -38,6 +38,24 @@ chk "套餐>=1"                "python3 -c 'import sqlite3;c=sqlite3.connect(\"/
 echo "== 安全边界（门户用户不得登录宿主机 / 不得篡改门户代码）=="
 chk "应用代码不属于 portal"  "bash -c 'st=\$(stat -c %U /opt/cluster-portal/portalapp); test \"\$st\" = root'"
 chk "portal 不能写应用代码"  "! runuser -u portal -- test -w /opt/cluster-portal/portalapp"
+# 沙箱的反面：能给 portal-ctl 留下写 /share 的口子吗？
+# ProtectSystem=strict 会把整个层级（含 /share 这个挂载点）挂成只读，只有 ReadWritePaths
+# 里列了的目录才可写；漏了 /share，门户就"只能看不能动"——提交作业 / 保存镜像 / 登记公钥 /
+# 开通用户 / 注销用户全部报 EROFS（线上真实事故）。sudo→portal-ctl 的 root 子进程继承
+# 同一挂载命名空间，所以必须在**服务的命名空间里**试写，在宿主机上试写是测不出来的。
+SVC_PID="$(systemctl show cluster-portal -p MainPID --value 2>/dev/null || true)"
+if [ -n "$SVC_PID" ] && [ -d "/proc/$SVC_PID" ]; then
+  if nsenter -t "$SVC_PID" -m -- bash -c 'touch /share/.verify-share-wtest 2>/dev/null && rm -f /share/.verify-share-wtest' 2>/dev/null; then
+    echo "  [OK] 门户沙箱内 /share 可写（ReadWritePaths 没漏掉 /share）"
+  else
+    echo "  [FAIL] 门户沙箱内 /share 是只读的 —— portal-ctl 写任何用户数据都会失败"
+    echo "         表现：提交资源报 OSError: [Errno 30] Read-only file system: '/share/home/<用户>/.portal/logs'"
+    echo "         修法：systemd 单元里 ReadWritePaths=... 补上 /share，再 daemon-reload + restart cluster-portal"
+    fail=1
+  fi
+else
+  echo "  [i] 服务未运行，跳过「沙箱内 /share 可写」检查"
+fi
 ALLOW="$(sshd -T 2>/dev/null | awk '/^allowusers /{print}')"
 if [ -n "$ALLOW" ]; then
   echo "  [OK] sshd 白名单生效：$ALLOW"

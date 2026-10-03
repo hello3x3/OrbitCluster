@@ -125,11 +125,21 @@ RestartSec=3
 # 注意：不要开 NoNewPrivileges —— web 需经 sudoers 白名单调 root 助手 portal-ctl
 PrivateTmp=true
 # ---- 沙箱加固（纵深防御）------------------------------------------------
-# 门户只应写数据目录与 /etc/cluster-portal（密码文件回写）；应用代码只读。
+# 门户只应写「数据目录 + 密码文件 + /share 集群数据区」；应用代码只读。
 # 这样即使门户被攻破，也无法篡改自己的代码（与 install.sh 里的属主设置互为双保险）。
 # /run、/dev、/proc、/sys 以及 PrivateTmp 提供的 /tmp 仍可写，sudo 不受影响。
+#
+# ⚠ /share 必须列进来：ProtectSystem=strict 会把**整个层级**（含所有挂载点）挂成只读，
+#   而 portal-ctl 干的活全在 /share 上 —— 建 ~/.portal/logs 与 ~/.ssh/authorized_keys、
+#   userdel -r 删家目录、写 /share/images 个人镜像、quotactl 落地配额。少写这一项，
+#   门户就变成"只能看不能动"：提交作业报
+#   OSError: [Errno 30] Read-only file system: '/share/home/<u>/.portal/logs'
+#   （本项目线上真实事故，2026-10-01 加沙箱时漏掉，10-03 才被发现）。
+#   注意 sudo→portal-ctl 的 root 子进程**继承同一挂载命名空间**，所以这里放宽是必须的，
+#   不是"反正 root 能写"。SHARE_HOME/IMAGES_ROOT 在 portal-ctl 里固定为 /share/*，
+#   若将来改到别处，这里要跟着加。
 ProtectSystem=strict
-ReadWritePaths=$DATA_DIR /etc/cluster-portal
+ReadWritePaths=$DATA_DIR /etc/cluster-portal /share
 ProtectHome=read-only
 PrivateDevices=yes
 RestrictSUIDSGID=yes

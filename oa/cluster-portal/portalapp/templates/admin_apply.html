@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}代申请资源 - {{ portal_name }}{% endblock %}
+{% block body_class %}form-page{% endblock %}
 {% block content %}
 <div class="page-head"><h1>代申请资源（管理员）</h1>
   <p class="muted">帮某个普通用户提交资源申请：先选「帮谁申请」，再选该用户端口池里的端口。
@@ -12,55 +13,86 @@
 <form id="admin-apply-form" class="card" autocomplete="off">
   <input type="hidden" name="_csrf" value="{{ csrf_token }}">
 
-  <h2>① 帮谁申请（有集群 OS 账号的普通用户）</h2>
-  <select name="user_id" id="target-sel" required>
-    <option value="">请选择用户…</option>
-  </select>
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">1</span>帮谁申请
+      <span class="muted small">（有集群 OS 账号的普通用户）</span></h2>
+    <select name="user_id" id="target-sel" required>
+      <option value="">请选择用户…</option>
+    </select>
+  </section>
 
-  <h2>② 任务名称 <span class="muted small">（必填，3-10 个字符）</span></h2>
-  <label>名称 <input name="task_name" id="atask" required placeholder="3-10 个字符"></label>
-  <p class="field-hint" id="atask-hint" hidden></p>
-  <p class="muted small">任务名在该用户下不能重复（不区分大小写）；停机不会释放名称，
-    需先删除那条记录才能再次使用。</p>
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">2</span>任务名称
+      <span class="muted small">（必填）</span></h2>
+    <label><input name="task_name" id="atask" required placeholder="3-10 个字符"
+                  aria-label="任务名称"></label>
+    <p class="field-hint" id="atask-hint" hidden></p>
+    <p class="field-note">任务名在该用户下不能重复（不区分大小写）；停机不会释放名称，
+      需先删除那条记录才能再次使用。</p>
+  </section>
 
-  <h2>③ 镜像 / 套餐</h2>
-  <div class="row">
-    <label>镜像 <span class="muted small">（含该用户的个人镜像）</span>
-      <select name="image" id="aimg-sel" required disabled>
-        <option value="">先选择用户…</option>
-      </select>
-    </label>
-    <label>套餐
-      <select name="plan_id" id="plan-sel" required>
-        {% for pl in plans %}
-        <option value="{{ pl.id }}" data-maxtime="{{ pl.maxtime_h }}">
-          {{ pl.name }}（{% if pl.gpus %}GPU {{ pl.gpu_model }}/{{ pl.gpus }}卡{% else %}纯CPU{% endif %} ·
-          {{ pl.cpus }}核 · {{ pl.mem_gb }}G · 最长{{ pl.maxtime_h }}h）
-        </option>
-        {% endfor %}
-      </select>
-    </label>
-  </div>
+  {# 镜像 / 套餐：各占一行、左对齐（标签在上、控件在下）。
+     两行必须同宽，否则控件会因两个标签的文字长短不同而左右错开。 #}
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">3</span>镜像 / 套餐</h2>
+    <div class="field-stack">
+      <label>镜像 <span class="muted small">（含该用户的个人镜像）</span>
+        <select name="image" id="aimg-sel" required disabled>
+          <option value="">先选择用户…</option>
+        </select>
+      </label>
+      <label>套餐
+        <select name="plan_id" id="plan-sel" required>
+          {% for pl in plans %}
+          <option value="{{ pl.id }}" data-maxtime="{{ pl.maxtime_h }}">
+            {{ pl.name }}（{% if pl.gpus %}GPU {{ pl.gpu_model }}/{{ pl.gpus }}卡{% else %}纯CPU{% endif %} ·
+            {{ pl.cpus }}核 · {{ pl.mem_gb }}G · 最长{{ pl.maxtime_h }}h）
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+  </section>
 
-  <h2>④ 时长</h2>
-  <label>小时数 <input type="number" name="hours" id="ahours" min="1" max="720" value="{{ default_hours }}" required></label>
-  <p class="field-hint" id="ahours-hint" hidden></p>
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">4</span>时长
+      <span class="muted small">（小时）</span></h2>
+    <div class="hours-block">
+      <label class="hours">
+        <input type="number" name="hours" id="ahours" min="1" max="720"
+               value="{{ default_hours }}" required aria-label="时长（小时）">
+        <span class="unit">小时</span>
+      </label>
+      <div class="chips">
+        <button type="button" class="chip" data-hours="12">12</button>
+        <button type="button" class="chip" data-hours="24">24</button>
+        <button type="button" class="chip" data-hours="48">48</button>
+        <button type="button" class="chip" data-hours="72">72</button>
+      </div>
+    </div>
+    <p class="field-hint" id="ahours-hint" hidden></p>
+  </section>
 
-  <h2>⑤ 节点</h2>
-  <select name="node">
-    <option value="">自动分配（推荐）</option>
-    {% for n in nodes %}
-    <option value="{{ n.name }}">{{ n.name }}（{{ n.state }} · {{ n.cpus_idle }}/{{ n.cpus_total }}核 · {{ (n.mem_mb/1024)|round|int }}G）</option>
-    {% endfor %}
-  </select>
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">5</span>节点</h2>
+    <select name="node">
+      <option value="">自动分配（推荐）</option>
+      {% for n in nodes %}
+      <option value="{{ n.name }}">{{ n.name }}（{{ n.state }} · {{ n.cpus_idle }}/{{ n.cpus_total }}核 · {{ (n.mem_mb/1024)|round|int }}G）</option>
+      {% endfor %}
+    </select>
+  </section>
 
-  <h2>⑥ SSH 端口 <span class="muted small">（所选用户端口池；使用中不可选）</span></h2>
-  <select name="port" id="aport" required>
-    <option value="">先在上方选择用户…</option>
-  </select>
-  <p class="field-hint" id="aport-hint" hidden></p>
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">6</span>SSH 端口
+      <span class="muted small">（所选用户端口池；使用中不可选）</span></h2>
+    <select name="port" id="aport" required>
+      <option value="">先在上方选择用户…</option>
+    </select>
+    <p class="field-hint" id="aport-hint" hidden></p>
+  </section>
 
-  <div style="margin-top:14px">
+  <div class="form-actions">
     <button class="btn btn-primary btn-lg" type="submit" id="btn-admin-submit" disabled>代提交申请</button>
   </div>
 </form>

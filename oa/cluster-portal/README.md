@@ -134,8 +134,12 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 - **应用代码归 root**（`portalapp/` 不允许 `portal` 可写）：`verify-install.sh` / `bootstrap.py`
   以 root 运行并导入这些模块，若 `portal` 可写，门户被攻破就能换来 root RCE。
   自检脚本自身也不再以 root 导入应用代码（改用标准库 sqlite3 读库）。
-- systemd 单元启用 `ProtectSystem=strict` + `ReadWritePaths=/var/lib/cluster-portal /etc/cluster-portal`：
-  门户只能写数据目录与密码文件，改不了自己的代码。
+- systemd 单元启用 `ProtectSystem=strict` + `ReadWritePaths=/var/lib/cluster-portal /etc/cluster-portal /share`：
+  门户只能写数据目录、密码文件与 `/share` 集群数据区，改不了自己的代码。
+  **`/share` 不能漏**：`strict` 会把整个层级（含挂载点）挂成只读，而 portal-ctl 的活全在
+  `/share`（家目录/镜像/配额），且 `sudo` 子进程继承同一挂载命名空间 —— 漏了它，提交作业就会报
+  `OSError: [Errno 30] Read-only file system: '/share/home/<用户>/.portal/logs'`。
+  `verify-install.sh` 会在服务的命名空间里试写 `/share` 守住这条。
 - **会话 12 小时绝对过期，并且可吊销**：`PERMANENT_SESSION_LIFETIME=12h`；
   另用 `users.session_epoch`，在改密 / 管理员重置口令 / 停用 / 权限变更 / 主动登出时 +1，
   旧 Cookie 立即失效（Flask 的 session 是无状态签名 Cookie，没有这一步吊销不掉）。
