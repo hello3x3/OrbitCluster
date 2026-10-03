@@ -1,0 +1,4 @@
+# ---- 追加到计算节点的 /etc/chrony/chrony.conf ----
+# 以管理节点为本地时钟源（公网 pool 自动降级为备份，不必删）
+# munge 跨机认证依赖时钟一致，漂了会报 Protocol authentication error
+server @@MGR_NAME@@ iburst prefer

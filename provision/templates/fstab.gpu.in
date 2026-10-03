@@ -1,0 +1,6 @@
+# ---- 追加到计算节点 /etc/fstab（挂 NFS）----
+# 由 provision/render.sh 生成。系统盘那几行请保留安装器写的原文。
+#
+# ⚠️ 第二条（镜像盘）的 x-systemd.requires-mounts-for= 很关键：保证开机时
+#    先挂 SHARE_MOUNT 再挂它的子路径，否则挂载点还不存在会导致挂载失败。
+@@FSTAB_GPU_LINES@@

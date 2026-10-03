@@ -1,0 +1,11 @@
+# ============================================================================
+# gres.conf —— 由 provision/render.sh 生成（mode=auto）
+#
+# AutoDetect=nvml 让 slurmd 从 NVML 自动探测 GPU。
+# ⚠️ 它推导出的类型名是**设备名清洗后**的结果，例如 RTX 3090 → `nvidia_geforce_rtx_3090`。
+#    于是 slurm.conf 的 NodeName Gres= 必须逐字对齐那串名字，否则节点
+#    IDLE+DRAIN+INVALID_REG；门户的 GPU 型号下拉也会显示成那串长名字。
+#    若你希望类型名干净（gpu:3090:3），请把 cluster.conf 的 GRES_MODE 改成 explicit，
+#    由生成器显式写出 Type=<型号>。
+# ============================================================================
+AutoDetect=nvml

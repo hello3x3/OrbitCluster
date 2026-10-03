@@ -1,0 +1,14 @@
+# ============================================================================
+# enroot.conf —— 由 provision/render.sh 生成（全节点内容相同）
+# ⚠️ 第 5.2 节：每台各一份。改这里的值要全集群一起改，否则容器行为不一致。
+# ============================================================================
+ENROOT_RUNTIME_PATH /run/enroot/user-$(id -u)
+ENROOT_CACHE_PATH   /share/enroot-cache/group-$(id -g)
+ENROOT_DATA_PATH    /scratch/enroot-data/user-$(id -u)
+ENROOT_MOUNT_HOME   n
+ENROOT_RESTRICT_DEV y
+ENROOT_ROOTFS_WRITABLE y
+# ⚠️ 安全：保持 n。改成 y 会让容器以 root 运行，而镜像内置 sshd 是
+#    PermitRootLogin yes + 固定口令，enroot 又共享宿主机网络 → 等于把
+#    固定口令的 sshd 暴露到内网。verify-install.sh 会逐台检查这一项。
+ENROOT_REMAP_ROOT   n

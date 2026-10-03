@@ -1,0 +1,6 @@
+# ---- 追加到管理节点 @@MGR_NAME@@ 的 /etc/fstab（数据盘）----
+# 由 provision/render.sh 生成。系统盘那几行（/ 与 /boot/efi）请保留安装器写的原文，不要动。
+#
+# ⚠️ 执行前先 `lsblk` 确认 SHARE_DEVICE 是**数据盘**而不是系统盘
+#    （系统盘是带 / 挂载点的那块）。
+@@FSTAB_MGR_LINES@@

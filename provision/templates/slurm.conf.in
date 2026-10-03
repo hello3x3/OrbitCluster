@@ -1,0 +1,49 @@
+# ============================================================================
+# slurm.conf —— 由 provision/render.sh 从 cluster.conf 生成，勿手改
+#   集群名 ClusterName=@@CLUSTER_NAME@@
+#   管理节点（slurmctld + slurmdbd）: @@MGR_NAME@@
+#   节点列表: @@NODE_LIST@@
+#   CPUs / RealMemory 取自各节点 `slurmd -C` 实测输出
+# ============================================================================
+ClusterName=@@CLUSTER_NAME@@
+SlurmctldHost=@@MGR_NAME@@
+
+AuthType=auth/munge
+CryptoType=crypto/munge
+SlurmUser=slurm
+MpiDefault=pmix
+ProctrackType=proctrack/cgroup
+ReturnToService=1
+SlurmctldPidFile=/run/slurmctld.pid
+SlurmdPidFile=/run/slurmd.pid
+SlurmctldPort=6817
+SlurmdPort=6818
+StateSaveLocation=/var/lib/slurm/slurmctld
+SlurmdSpoolDir=/var/lib/slurm/slurmd
+SwitchType=switch/none
+
+GresTypes=gpu
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+SchedulerType=sched/backfill
+TaskPlugin=task/cgroup,task/affinity
+
+# ---- 节点（CPUs/RealMemory 必须与本机 slurmd -C 实测一致）----
+@@NODE_LINES@@
+MailProg=/bin/true
+
+PartitionName=@@PARTITION@@ Nodes=ALL Default=YES MaxTime=INFINITE State=UP
+
+# ---- 会计 (slurmdbd) ----
+# ⚠️ AccountingStorageHost 必须是 slurmdbd 所在主机名，不能写 localhost：
+#    写 localhost 时只有管理节点本机能连会计，计算节点会去连自己的 6819 报 Connection refused
+AccountingStorageType=accounting_storage/slurmdbd
+AccountingStorageHost=@@MGR_NAME@@
+AccountingStoragePort=6819
+JobAcctGatherType=jobacct_gather/linux
+JobAcctGatherFrequency=30
+
+# ---- 静态优先级(管理员调控) + 强制关联 ----
+PriorityWeightQOS=1
+PriorityFlags=NO_NORMAL_QOS
+AccountingStorageEnforce=associations,limits

@@ -76,3 +76,10 @@ scratch/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ------------------------------------------------- 部署生成器（provision/）
+# cluster.conf 是**你这套集群的实值**（含 IP），在本机编辑、不入库；
+# 入库的是 cluster.conf.example 与 conf/ 下的两套回归示例。
+provision/cluster.conf
+provision/out/
+provision/out-*/

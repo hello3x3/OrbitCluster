@@ -1,0 +1,18 @@
+# /etc/hosts —— 由 provision/render.sh 从 cluster.conf 生成
+# 每台节点内容相同，**只有第二行的 127.0.1.1 是各自的主机名**（见下）。
+#
+# ⚠️ 手册 1.3 的踩坑点：系统安装时会自动写一行 `127.0.1.1 <安装时主机名>`，
+#    必须改成该机**正式**主机名 —— 缺失或写错会导致 slurmd 重启后
+#    `Unable to bind listen port (6818)`、scontrol/slurmctld 解析失败。
+127.0.0.1 localhost
+127.0.1.1 @@LOCAL_NAME@@
+
+# The following lines are desirable for IPv6 capable hosts
+::1     ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+# ---- 集群节点：每台都要包含**自己**（内容全节点一致）----
+@@NODE_HOSTS@@

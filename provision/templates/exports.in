@@ -1,0 +1,7 @@
+# /etc/exports —— 由 provision/render.sh 从 cluster.conf 生成
+# 客户端网段 LAN_CIDR=@@LAN_CIDR@@；管理节点 @@MGR_NAME@@
+#
+# ⚠️ 若 IMAGES_MOUNT 是挂在 SHARE_MOUNT 之下的**另一个文件系统**，必须像下面这样
+#    单独导出一行 —— 否则计算节点上那个目录会是空的（exports(5)：嵌套挂载点默认被隐藏），
+#    作业找不到镜像，--container-image 全挂。
+@@EXPORTS_LINES@@

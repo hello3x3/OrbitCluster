@@ -1,0 +1,58 @@
+# ============================================================================
+# cluster.conf —— OrbitCluster 集群描述（**部署时唯一需要编辑的文件**）
+#
+#   用法:
+#     cp provision/cluster.conf.example provision/cluster.conf   # 拷一份改
+#     provision/render.sh -c provision/cluster.conf --clean      # 生成到 provision/out/
+#     然后照 provision/out/MANIFEST.md 把文件分发到各节点
+#
+#   格式规则:
+#     * 每行 `KEY=VALUE`；`#` 起注释；键名大小写不敏感；空行忽略
+#     * 节点用 `NODE <主机名>=<IP> 字段...` 描述，**顺序即 /etc/hosts 顺序**
+#     * **第一个 NODE 行必须是管理节点**（NFS 服务端 + slurmctld + slurmdbd + 门户）
+#
+#   ⚠️ 改完必须重新 render —— 所有目标配置都是生成出来的，不要直接改机器上的文件
+#      （否则下次渲染会覆盖，且 slurm.conf 与 gres.conf 容易不同步）
+# ============================================================================
+
+# ---------------------------------------------------------------- 集群标识
+CLUSTER_NAME=lab              # slurm.conf ClusterName，与 sacctmgr 的 cluster 必须同名
+ACCOUNT=lab                   # Slurm 会计账户名（sacctmgr account），建号脚本与门户共用
+
+# ---------------------------------------------------------------- 网络 / 系统
+LAN_CIDR=192.168.1.0/24      # 内网网段：NFS 导出白名单、chrony allow 用
+SSH_PORT=22                   # 集群 sshd 端口（非 22 时门户靠它连计算节点）
+TIMEZONE=Asia/Shanghai
+OPS_USER=lab                  # 运维账号（建号脚本里的免密 sudo 账号）
+
+# ---------------------------------------------------------------- 存储
+SHARE_DEVICE=/dev/sdb         # 管理节点上做 /share 的数据盘
+                              # ⚠️ 执行前先 `lsblk` 确认它**不是**系统盘（系统盘带 / 挂载点）
+SHARE_MOUNT=/share
+IMAGES_DEVICE=                # 镜像盘的设备（或 UUID=...）；**留空 = 镜像与 /share 同盘**
+                              # 独立盘时需要单独导出+单独挂载，见生成出来的 /etc/exports 与 fstab
+IMAGES_MOUNT=/share/images
+
+# ---------------------------------------------------------------- Slurm
+SLURM_VERSION=26.05.1
+PARTITION=gpu                 # 分区名（门户按 sinfo 运行时探测，这里只影响生成的 slurm.conf）
+GRES_MODE=explicit            # explicit = 显式写 gres.conf（类型名干净，推荐）
+                              # auto     = AutoDetect=nvml（类型名会变成 nvidia_geforce_rtx_3090）
+GPU_PREFIX=RTX                # 门户展示名前缀：型号 3090 → RTX 3090
+
+# ---------------------------------------------------------------- 门户
+PORTAL_PORT=8000
+
+# ---------------------------------------------------------------- 节点
+# 字段: role=mgr,gpu|mgr|gpu    management|compute 角色（可兼任）
+#       gpus=<卡数>            该节点 GPU 张数
+#       gpu_model=<型号token>  与 slurm gres 的 Type 一致（纯数字，如 3060 / 3090）
+#       cpus=<线程数> mem_mb=<MB>
+#           ↑ 这两个取自该机 `slurmd -C | head -1` 的实测输出（CPUs= / RealMemory=）。
+#             **留空也能渲染**，但 slurm.conf 里会是 `@@待实测@@` 占位符，并出现在
+#             MANIFEST 的"待实测回填"清单里 —— 上线前必须填。
+#
+# 示例（把主机名/IP/卡型换成你的）：
+NODE mgmt01=192.168.1.10  role=mgr,gpu  gpus=1  gpu_model=3060  cpus=16  mem_mb=31933
+NODE gpu01=192.168.1.11   role=gpu      gpus=1  gpu_model=3060  cpus=16  mem_mb=31933
+NODE gpu02=192.168.1.12   role=gpu      gpus=1  gpu_model=3060  cpus=16  mem_mb=31933

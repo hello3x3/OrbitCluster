@@ -1,0 +1,10 @@
+# ============================================================================
+# gres.conf —— 由 provision/render.sh 生成（mode=explicit）
+#
+# 显式声明每张卡，避免 AutoDetect=nvml 把类型名推导成 `nvidia_geforce_rtx_3090`
+# 那串长名字（会让门户下拉显示难看、且 slurm.conf 必须逐字对齐否则 INVALID_REG）。
+#
+# ⚠️ 换卡 / 增减卡数时改 cluster.conf 的 gpus=/gpu_model= 后**重新渲染**，
+#    本文件与 slurm.conf 的 NodeName Gres= 会一起更新，不会不同步。
+# ============================================================================
+@@GRES_BODY@@

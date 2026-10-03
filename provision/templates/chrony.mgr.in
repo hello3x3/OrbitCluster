@@ -1,0 +1,3 @@
+# ---- 追加到管理节点 @@MGR_NAME@@ 的 /etc/chrony/chrony.conf ----
+# 允许内网客户端查询（自身继续用默认公网 pool）
+allow @@LAN_CIDR@@
