@@ -27,17 +27,20 @@
 
 ```bash
 # 在仓库根目录：一条 make 就够（首次会自动生成 provision/cluster.conf 并提示你先改）
-make                      # 渲染到 provision/out/
+make                      # ★ 就地替换：文档 + 机器配置都写回当前仓库
 make SET="SSH_PORT=2222 USER=alice"   # 临时覆盖个别配置项，不写回文件
-make check                # 渲染 + 打印「需要人工核对」清单
+make check                # 打印「需要人工核对」清单
+make reset                # 还原仓库模板
+make out                  # 不改仓库，另存到 provision/out/
 make help                 # 全部目标
 
 # 等价的手工方式：
 cp provision/cluster.conf.example provision/cluster.conf   # 1) 拷一份，改里面的值
 $EDITOR provision/cluster.conf
-provision/render.sh -c provision/cluster.conf --clean      # 2) 生成到 provision/out/
-cat provision/out/MANIFEST.md                              # 3) 看"哪台机器放哪些文件"
+provision/render.sh -c provision/cluster.conf --in-place   # 2) 就地替换到仓库
+cat MANIFEST.md                                            # 3) 看"哪台机器放哪些文件"
 provision/render.sh -c provision/cluster.conf --print      #    只打印不落盘（先看效果）
+provision/reset.sh                                         # 4) 还原模板
 ```
 
 `render.sh` **只生成文件，不 ssh 任何机器、不改任何系统状态**。

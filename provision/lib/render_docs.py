@@ -21,6 +21,7 @@
 import argparse
 import os
 import re
+import shutil
 import sys
 
 SKIP_DIRS = ('.git', 'provision', os.path.join('oa', 'sites'), os.path.join('oa', 'config-snapshot'))
@@ -54,6 +55,9 @@ def main():
     ap.add_argument('--repo', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--map', required=True, help='TOKEN=VALUE 文件（每行一条）')
+    ap.add_argument('--report', help='报告落盘路径（默认 <out>/_REPLACEMENT-REPORT.md）')
+    ap.add_argument('--backup-dir', help='就地替换前，把会被覆盖的原文件快照到这里（仅首次）')
+    ap.add_argument('--list-out', help='把实际写出的文件（相对仓库根）逐行列到这个文件')
     ap.add_argument('--print', action='store_true')
     a = ap.parse_args()
 
@@ -72,11 +76,18 @@ def main():
     # 由 <ADMIN> 替换出来的 admin 会被误报成"漏了占位符"。
     admin_re = re.compile(r'(?<![\w-])admin(?![\w-])')
 
+    report_path = a.report or os.path.join(a.out, '_REPLACEMENT-REPORT.md')
+    # 报告本身不能被当成待渲染文档（就地模式下它可能落在仓库里）
+    report_rel = os.path.relpath(report_path, a.repo) if a.report else None
+
     total = {}
     leftovers = []
     unmapped = {}
+    written = []
     nodeish = re.compile(r'<((?:ADMIN|GPU\d+)(?:_[A-Z0-9]+)?)>')
     for rel in collect_md(a.repo):
+        if report_rel and rel == report_rel:
+            continue
         src = os.path.join(a.repo, rel)
         try:
             text = open(src, encoding='utf-8').read()
@@ -98,16 +109,30 @@ def main():
         if a.print:
             continue
         dst = os.path.join(a.out, rel)
+        # 就地替换：先把"原始模板"快照一份（只在首次，之后不再覆盖 —— 这样
+        # 连跑多次 make 后 make reset 拿到的仍然是仓库最初的模板，而不是上一次的渲染结果）
+        if a.backup_dir and os.path.isfile(dst):
+            b = os.path.join(a.backup_dir, rel)
+            if not os.path.exists(b):
+                os.makedirs(os.path.dirname(b) or '.', exist_ok=True)
+                shutil.copy2(dst, b)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, 'w', encoding='utf-8') as fh:
             fh.write(text)
+        written.append(rel)
+
+    if a.list_out:
+        with open(a.list_out, 'w', encoding='utf-8') as fh:
+            for rel in written:
+                fh.write(rel + '\n')
 
     if a.print:
         print("（--print：未落盘）")
         return 0
 
     changed = {k: v for k, v in total.items() if v}
-    with open(os.path.join(a.out, '_REPLACEMENT-REPORT.md'), 'w', encoding='utf-8') as fh:
+    os.makedirs(os.path.dirname(report_path) or '.', exist_ok=True)
+    with open(report_path, 'w', encoding='utf-8') as fh:
         fh.write("# 文档渲染报告（由 provision/render.sh 生成）\n\n")
         # 节点占位符 ↔ 本集群节点：新增机器后这里会多出 <GPU02>、<GPU03>…
         # 文档正文里**没有**的节点不会被自动补写（文档是示例，不会凭空长段落）；

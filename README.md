@@ -70,22 +70,38 @@ OrbitCluster/
 ### ⓪ 生成配置与文档（不碰集群，在任意一台能编辑仓库的机器上做）
 
 只编辑 **一个文件** `provision/cluster.conf`（节点名 / IP / 卡型卡数 / sshd 端口 / 账户 /
-存储布局），然后：
+存储布局），然后在仓库根目录执行 `make`：
 
 ```bash
-make                                   # → provision/out/：各节点配置 + 实值版文档
-make SET="SSH_PORT=2222 USER=alice"    # 临时覆盖个别配置项，不写回文件
-make check                             # 渲染 + 打印「需要人工核对」清单
+make                                   # ★ 就地替换：文档 + 机器配置都写回**当前仓库**
+make SET="SSH_PORT=2222 USER=alice"    # 临时覆盖个别配置项（不写回 cluster.conf）
+make check                             # 打印「需要人工核对」清单
+make reset                             # 还原仓库模板（撤销就地替换）
+make print                             # 只打印，不落盘（先看效果）
+make out                               # 不改仓库，另存到 provision/out/
 make help                              # 全部目标
 ```
 
+`make` 做两件事，**都只落在当前仓库里**：
+
+1. **文档就地替换** —— `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` 里的
+   `<ADMIN>` / `<GPU01>` / `<LAN_CIDR>` / `<USER>` 等占位符被填成本集群实值，直接可读、可交付。
+   （`oa/sites/**`、`oa/config-snapshot/**` 不参与 —— 它们本就是别的站点 / 现场实值档案。）
+2. **机器配置写进仓库对应路径** —— `etc/`、`opt/`、`MANIFEST.md` 落在仓库根，目录结构与目标机一致。
+
 首次执行会从 `cluster.conf.example` 生成 `cluster.conf` 并停下，提示你先改 ——
-不会拿一份没看过的模板渲染出"看着能部署"的文件。变量表、渲染规则、与真机的对照结果见
-`provision/README.md`。
+不会拿一份没看过的模板渲染出"看着能部署"的文件。
 
-`provision/out/` 的目录结构与目标机路径一一对应，`MANIFEST.md` 写明哪台机器该放哪些文件：
+> ⚠️ **就地替换只做一次**：占位符被用掉之后再跑 `make` 会被明确拒绝，并提示先 `make reset`。
+> 这是刻意的 —— 否则你会以为重新渲染过了，实际文档一个字都没变。
+>
+> ⚠️ **不要把这些改动 commit 进 git**：就地替换后的文档装的是你这套集群的实值，不是通用模板。
+> `make reset` 会把它们还原成模板 —— 它从 `provision/.render-state/` 里**首次渲染前**的快照恢复，
+> 不跑 `git checkout`，所以不会误伤你其它未提交的改动。
 
-| 生成物 | 目标位置 | 哪台机器 |
+`MANIFEST.md` 写明哪台机器该放哪些文件：
+
+| 生成物（仓库内路径） | 目标位置 | 哪台机器 |
 |---|---|---|
 | `etc/hosts.<节点>` | `/etc/hosts`（**每台只有 `127.0.1.1` 那行不同**） | 每台 |
 | `etc/slurm/slurm.conf`、`gres.conf` | `/etc/slurm/` | 每台 |
@@ -95,15 +111,16 @@ make help                              # 全部目标
 | `etc/exports` | `/etc/exports` | 管理节点 |
 | `etc/chrony/*`、`etc/cluster-portal/*` | 追加 / 同路径 | 管理节点 |
 | `opt/cluster-admin/*.sh` | `/opt/cluster-admin/` | 管理节点 |
-| `docs/**` | 直接阅读（占位符已填成实值） | — |
+| `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` | 就地替换，直接阅读 | — |
+| `MANIFEST.md` | 下发清单本身 | — |
 
 ### ① 部署底层集群（管理节点 + 各计算节点）
 
-按 **`provision/out/docs/base-cluster/all-in-one-cluster-manual.md`** 逐章执行 —— 认准**渲染后**的
+按 **`base-cluster/all-in-one-cluster-manual.md`** 逐章执行 —— 认准**渲染后**的
 这一份：里面的占位符已全部填成你的真实值，每章都带验收命令。
 
 - 手册里凡是要落地 `/etc/hosts`、`slurm.conf`、`/etc/exports`、`/etc/fstab` 的地方，
-  **直接用 `provision/out/etc/` 下生成好的那份**，不要手写。
+  **直接用仓库里生成好的 `etc/` 那份**，不要手写。
 - `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`（或 `out/opt/cluster-admin/`）。
 - 交互容器镜像的构建源在 `base-cluster/images/`，含加固过的 `start_ssh.sh`。
 
@@ -113,7 +130,7 @@ make help                              # 全部目标
 
 ### ② 部署门户（管理节点）
 
-按 **`provision/out/docs/oa/01-部署手册.md`** 把 `oa/cluster-portal/` 拷到管理节点一键安装：
+按 **`oa/01-部署手册.md`** 把 `oa/cluster-portal/` 拷到管理节点一键安装：
 
 ```bash
 deploy/install.sh <代码目录> <端口> [站点目录]   # 幂等

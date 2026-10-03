@@ -65,17 +65,16 @@ OrbitCluster/
 
 **⓪ 生成配置与文档**（在任意一台机器上做，不碰集群）
 在仓库根目录编辑 `provision/cluster.conf`（节点名/IP/卡型卡数/sshd 端口/账户/存储布局）后执行 `make`，
-得到 `provision/out/`：各节点的全部配置文件 + 占位符已填成**实值**的文档。
+得到**就地替换后的仓库**：各节点的全部配置文件（`etc/`、`opt/`、`MANIFEST.md`）+ 仓库内文档已填成**实值**。
 首次执行会从样例生成 `cluster.conf` 并停下，提示你先改。细节见 `provision/README.md`。
 
-> 下面两步请读 `provision/out/docs/` 下**渲染后**的手册：里面的占位符已全部填成你的真实值，
-> 可以照抄。
+> 下面两步请读仓库里**已就地替换**的手册：里面的占位符已全部填成你的真实值，可以照抄。
 
-1. **① 部署底层集群**：按 `provision/out/docs/base-cluster/all-in-one-cluster-manual.md` 逐章执行
+1. **① 部署底层集群**：按 `base-cluster/all-in-one-cluster-manual.md` 逐章执行
    （Slurm 26.05.1 + enroot + pyxis + 会计 + 配额 + 多用户）。要落地的 `/etc/hosts`、`slurm.conf`、
-   `/etc/exports`、`/etc/fstab` 直接用 `provision/out/etc/` 生成好的那份；
+   `/etc/exports`、`/etc/fstab` 直接用仓库里生成好的 `etc/` 那份；
    `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`。
-2. **② 部署门户**：按 `provision/out/docs/oa/01-部署手册.md` 把 `cluster-portal/` 拷到管理节点一键
+2. **② 部署门户**：按 `oa/01-部署手册.md` 把 `cluster-portal/` 拷到管理节点一键
    安装（`install.sh <代码目录> <端口> [站点目录]`，幂等；自动创建默认管理员 root，初始密码落盘
    `/root/.cluster-portal-admin`）+ 按需初始化/迁移账号。
 3. **账号与套餐**：迁移或重设门户密码（`config-snapshot/README.md`「密码」一节），按需用管理页

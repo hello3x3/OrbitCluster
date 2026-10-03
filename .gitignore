@@ -83,3 +83,13 @@ desktop.ini
 provision/cluster.conf
 provision/out/
 provision/out-*/
+
+# ------------------------------------- 就地渲染产物（make 生成，make reset 清除）
+# ⚠️ 这几条必须带前导斜杠、只锚定仓库根，不要写成 "etc/" 之类会误伤
+#    oa/config-snapshot/etc-cluster-portal/ 的规则。
+/etc/
+/opt/
+/MANIFEST.md
+provision/REPLACEMENT-REPORT.md
+provision/.render-state/
+

@@ -7,6 +7,8 @@
 #     ./render.sh -c cluster.conf -o /tmp/out --clean
 #     ./render.sh -c cluster.conf --print              # 只打印不落盘
 #     ./render.sh -c cluster.conf -s SSH_PORT=2222 -s USER=alice   # 临时覆盖个别配置项
+#     ./render.sh -c cluster.conf --in-place           # ★ 就地改写仓库文件（make 的默认动作）
+#                                                      #   文档与机器配置都落回仓库，可 make reset 还原
 #
 #   设计目标：部署新集群时**只编辑 cluster.conf 一个文件**，
 #   不再做「把手册里的 <IP>/<GPU01> 全文替换成实际值」这种容易出错的操作。
@@ -36,15 +38,17 @@ CONF=""
 OUT="$HERE/out"
 CLEAN=0
 PRINT=0
+INPLACE=0
 OVERRIDES=()
 
-usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { awk '/^# ===/{n++; if (n==2) exit} n>=1' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -c|--config) CONF="$2"; shift 2 ;;
     -o|--out)    OUT="$2";  shift 2 ;;
     -s|--set)    OVERRIDES+=("$2"); shift 2 ;;
+    --in-place)  INPLACE=1; shift ;;
     --clean)     CLEAN=1;   shift ;;
     --print)     PRINT=1;   shift ;;
     -h|--help)   usage 0 ;;
@@ -58,6 +62,34 @@ done
 case "$OUT" in
   /|/etc|/usr|/var|"$HOME"|"") echo "拒绝输出到 $OUT" >&2; exit 1 ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 输出模式
+#   默认     → 写到 provision/out/（不动仓库里的文件）
+#   --in-place → 直接改写仓库：文档就地替换、机器配置写到仓库根的 etc/ 与 opt/
+# ---------------------------------------------------------------------------
+DOC_OUT="$OUT/docs"
+REPORT="$OUT/docs/_REPLACEMENT-REPORT.md"
+STATE=""
+if [ "$INPLACE" = 1 ]; then
+  [ "$CLEAN" = 1 ] && { echo "--in-place 不能与 --clean 同用（那会对仓库执行删除）" >&2; exit 1; }
+  OUT="$REPO"
+  DOC_OUT="$REPO"
+  REPORT="$HERE/REPLACEMENT-REPORT.md"
+  STATE="$HERE/.render-state"
+  if [ -d "$STATE" ]; then
+    echo "==> 仓库当前已经是**实值版**，不能再次就地渲染。" >&2
+    echo "    上次渲染: $(head -1 "$STATE/meta" 2>/dev/null)" >&2
+    echo "    就地替换会把文档里的占位符用掉，再跑一次不会生效 —— 这是设计如此。" >&2
+    echo "    要改参数:   make reset   （回到模板）  然后  make" >&2
+    echo "    只想看效果: make print   （不落盘）" >&2
+    exit 1
+  fi
+  mkdir -p "$STATE/backup"
+fi
+
+# 已写出的文件（用于收尾清单与 make reset）
+declare -a GENERATED=()
 
 # ---------------------------------------------------------------------------
 # 1) 解析 cluster.conf
@@ -258,6 +290,7 @@ render() {   # render <模板> <输出文件>
   else
     mkdir -p "$(dirname "$out")"
     subst_text < "$tpl" > "$out"
+    GENERATED+=("$out")
   fi
 }
 
@@ -268,6 +301,7 @@ write_text() {  # write_text <内容> <输出文件>
   else
     mkdir -p "$(dirname "$out")"
     printf '%s\n' "$content" > "$out"
+    GENERATED+=("$out")
   fi
 }
 
@@ -307,6 +341,7 @@ render_hosts() {
   else
     mkdir -p "$(dirname "$out")"
     subst_text < "$tpl" | sed "s|@@LOCAL_NAME@@|${name}|g" > "$out"
+    GENERATED+=("$out")
   fi
 }
 for n in "${N_NAME[@]}"; do render_hosts "$OUT/etc/hosts.$n" "$n"; done
@@ -394,19 +429,27 @@ DOCMAP="$(mktemp)"
   echo "<PARTITION>=${PARTITION}"
   echo "<SLURM_VERSION>=${SLURM_VERSION}"
 } > "$DOCMAP"
+DOCLIST="$(mktemp)"
 if command -v python3 >/dev/null 2>&1; then
+  DOC_ARGS=(--repo "$REPO" --out "$DOC_OUT" --map "$DOCMAP" --report "$REPORT" --list-out "$DOCLIST")
+  [ -n "$STATE" ] && DOC_ARGS+=(--backup-dir "$STATE/backup")
   if [ "$PRINT" = 1 ]; then
-    python3 "$HERE/lib/render_docs.py" --repo "$REPO" --out "$OUT/docs" --map "$DOCMAP" --print
+    python3 "$HERE/lib/render_docs.py" "${DOC_ARGS[@]}" --print
   else
-    python3 "$HERE/lib/render_docs.py" --repo "$REPO" --out "$OUT/docs" --map "$DOCMAP"
+    python3 "$HERE/lib/render_docs.py" "${DOC_ARGS[@]}"
+    while IFS= read -r p; do [ -n "$p" ] && GENERATED+=("$DOC_OUT/$p"); done < "$DOCLIST"
   fi
 else
   echo "  [警告] 未找到 python3，跳过文档渲染（只生成配置文件）" >&2
 fi
-rm -f "$DOCMAP"
+rm -f "$DOCMAP" "$DOCLIST"
 
 # ---- MANIFEST ----
 if [ "$PRINT" = 0 ]; then
+  # 产物在仓库里的相对位置：out 模式是 provision/out，就地模式是仓库根（空）
+  REL_OUT="$(realpath --relative-to="$REPO" "$OUT" 2>/dev/null || echo .)"
+  [ "$REL_OUT" = "." ] && REL_OUT=""
+  P="$REL_OUT"; [ -n "$P" ] && P="$P/"
   {
     echo "# 下发清单（由 provision/render.sh 生成，勿手改）"
     echo
@@ -414,39 +457,48 @@ if [ "$PRINT" = 0 ]; then
     echo
     echo "## 每台节点（全部 ${#N_NAME[@]} 台，内容相同）"
     echo '```'
-    echo "/etc/hosts                       ← out/etc/hosts"
-    echo "/etc/slurm/slurm.conf            ← out/etc/slurm/slurm.conf"
-    echo "/etc/slurm/gres.conf             ← out/etc/slurm/gres.conf"
-    echo "/etc/enroot/enroot.conf          ← out/etc/enroot/enroot.conf（先装好 enroot）"
-    echo "/etc/ssh/sshd_config.d/10-portal-only.conf ← out/etc/ssh/sshd_config.d/"
+    echo "/etc/hosts                       ← ${P}etc/hosts"
+    echo "/etc/slurm/slurm.conf            ← ${P}etc/slurm/slurm.conf"
+    echo "/etc/slurm/gres.conf             ← ${P}etc/slurm/gres.conf"
+    echo "/etc/enroot/enroot.conf          ← ${P}etc/enroot/enroot.conf（先装好 enroot）"
+    echo "/etc/ssh/sshd_config.d/10-portal-only.conf ← ${P}etc/ssh/sshd_config.d/"
     echo '```'
     echo
     echo "## 仅管理节点 \`${MGR_NAME}\`"
     echo '```'
-    echo "/etc/exports                     ← out/etc/exports"
-    echo "/etc/fstab                       ← 追加 out/etc/fstab.${MGR_NAME} 里的数据盘行"
-    echo "/etc/chrony/chrony.conf          ← 追加 out/etc/chrony/chrony.conf.append.mgr"
-    echo "/etc/cluster-portal/site.conf    ← out/etc/cluster-portal/site.conf"
-    echo "/etc/cluster-portal/plans.json   ← out/etc/cluster-portal/plans.json"
-    echo "/opt/cluster-admin/*.sh          ← out/opt/cluster-admin/"
+    echo "/etc/exports                     ← ${P}etc/exports"
+    echo "/etc/fstab                       ← 追加 ${P}etc/fstab.${MGR_NAME} 里的数据盘行"
+    echo "/etc/chrony/chrony.conf          ← 追加 ${P}etc/chrony/chrony.conf.append.mgr"
+    echo "/etc/cluster-portal/site.conf    ← ${P}etc/cluster-portal/site.conf"
+    echo "/etc/cluster-portal/plans.json   ← ${P}etc/cluster-portal/plans.json"
+    echo "/opt/cluster-admin/*.sh          ← ${P}opt/cluster-admin/"
     echo '```'
     echo
     echo "## 仅计算节点"
     echo '```'
     for i in "${!N_NAME[@]}"; do
       [ "$i" = 0 ] && continue
-      echo "${N_NAME[$i]}: /etc/fstab ← 追加 out/etc/fstab.${N_NAME[$i]}；/etc/chrony/chrony.conf ← 追加 out/etc/chrony/chrony.conf.append.gpu"
+      echo "${N_NAME[$i]}: /etc/fstab ← 追加 ${P}etc/fstab.${N_NAME[$i]}；/etc/chrony/chrony.conf ← 追加 ${P}etc/chrony/chrony.conf.append.gpu"
     done
     echo '```'
     echo
-    echo "## 文档（已渲染成本集群实值，直接给部署人员看）"
-    echo '```'
-    echo "out/docs/README.md                                   ← 仓库总览"
-    echo "out/docs/base-cluster/all-in-one-cluster-manual.md    ← 底层集群部署手册（1–8 章）"
-    echo "out/docs/oa/01-部署手册.md / 02-管理手册.md / 03-使用手册.md"
-    echo "out/docs/oa/cluster-portal/README.md                  ← 门户自身文档"
-    echo "out/docs/_REPLACEMENT-REPORT.md                       ← 替换统计 + 残留 admin 核对清单"
-    echo '```'
+    if [ "$INPLACE" = 1 ]; then
+      echo "## 文档（已**就地**替换成本集群实值）"
+      echo '```'
+      echo "README.md / base-cluster/**/*.md / oa/**/*.md  ← 仓库内同名文件，占位符已填成实值"
+      echo "provision/REPLACEMENT-REPORT.md                ← 替换统计 + 待人工核对清单"
+      echo "（oa/sites/**、oa/config-snapshot/** 不参与替换，保持原样）"
+      echo '```'
+    else
+      echo "## 文档（已渲染成本集群实值，直接给部署人员看）"
+      echo '```'
+      echo "${P}docs/README.md                                   ← 仓库总览"
+      echo "${P}docs/base-cluster/all-in-one-cluster-manual.md    ← 底层集群部署手册（1–8 章）"
+      echo "${P}docs/oa/01-部署手册.md / 02-管理手册.md / 03-使用手册.md"
+      echo "${P}docs/oa/cluster-portal/README.md                  ← 门户自身文档"
+      echo "${P}docs/_REPLACEMENT-REPORT.md                       ← 替换统计 + 待人工核对清单"
+      echo '```'
+    fi
     if [ -n "$NEED_MEASURE" ]; then
       echo
       echo "## ⚠️ 待实测回填"
@@ -457,14 +509,34 @@ if [ "$PRINT" = 0 ]; then
       echo '```'
     fi
   } > "$OUT/MANIFEST.md"
+  GENERATED+=("$OUT/MANIFEST.md")
+fi
+
+# ---- 就地模式：记录状态，供 make reset 精确还原 ----
+if [ "$PRINT" = 0 ] && [ -n "$STATE" ]; then
+  { printf '%s\n' "${GENERATED[@]}" | sed "s|^$REPO/||"; echo "provision/REPLACEMENT-REPORT.md"; } \
+    | sort -u > "$STATE/files.txt"
+  { echo "渲染于 $(date '+%F %T')"
+    echo "配置文件: $CONF"
+    echo "集群: $CLUSTER_NAME  管理节点: $MGR_NAME"; } > "$STATE/meta"
 fi
 
 echo
 if [ "$PRINT" = 0 ]; then
   echo "==> 完成，产物："
-  (cd "$OUT" && find . -type f | sort | sed 's|^\./|    |')
+  if [ -n "$STATE" ]; then
+    printf '%s\n' "${GENERATED[@]}" | sed "s|^$REPO/||" | sort | sed 's/^/    /'
+    echo "    provision/REPLACEMENT-REPORT.md"
+  else
+    printf '%s\n' "${GENERATED[@]}" | sed "s|^$OUT/||" | sort | sed 's/^/    /'
+  fi
   echo
   echo "    下发清单: $OUT/MANIFEST.md"
+  if [ -n "$STATE" ]; then
+    echo
+    echo "    ⚠️ 仓库已被**就地改写**：以上跟踪文件现在装的是本集群的实值，不是通用模板。"
+    echo "       不要把这些改动提交进 git；参数要改或要回到模板：make reset"
+  fi
 fi
 [ -n "$NEED_MEASURE" ] && echo "    ⚠️ 有节点缺 cpus/mem_mb，slurm.conf 中是占位符：$NEED_MEASURE"
 exit 0

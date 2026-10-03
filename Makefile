@@ -1,18 +1,20 @@
 # ============================================================================
 # OrbitCluster —— 一条 make 完成「变量替换」
 #
-#   make                                用 provision/cluster.conf 渲染到 provision/out/
-#   make CONF=... OUT=...               换配置文件 / 输出目录
+#   make                                就地替换：文档 + 机器配置都写回**当前仓库**（默认）
+#   make CONF=...                       换用别的 cluster.conf
 #   make SET="SSH_PORT=2222 USER=alice" 临时覆盖个别配置项（不写回 cluster.conf）
-#   make print                          只打印到屏幕，不落盘
+#   make reset                          还原仓库模板（撤销就地替换）
+#   make print                          只打印到屏幕，不落盘（先看效果）
+#   make out                            不动仓库，另存到 provision/out/
 #   make sites                          渲染两套回归夹具（与真机 / 站点档案对照用）
 #   make check                          渲染后打印「需要人工核对」清单
 #   make test                           跑门户本地测试（CTL 安全 + 冒烟）
-#   make clean                          清掉生成物
+#   make clean                          清掉 provision/out*
 #   make help                           显示本帮助
 #
-# 只生成文件，不 ssh 任何机器、不改任何系统状态。
-# 生成的 out/ 目录结构与目标机路径一一对应（见 provision/out/MANIFEST.md）。
+# 就地替换会把仓库里的文档改写成本集群的实值版，**不要顺手 git commit**；
+# 参数有变或要回到模板：make reset 后再 make。
 # ============================================================================
 
 SHELL       := bash
@@ -22,37 +24,45 @@ CONF    ?= provision/cluster.conf
 EXAMPLE := provision/cluster.conf.example
 OUT     ?= provision/out
 RENDER  := provision/render.sh
+RESET   := provision/reset.sh
+REPORT  := provision/REPLACEMENT-REPORT.md
 SET     ?=
 
 # make SET="A=1 B=2" → -s 'A=1' -s 'B=2'
 SET_ARGS  := $(foreach kv,$(SET),-s '$(kv)')
-BASE_ARGS := -c $(CONF) -o $(OUT) $(SET_ARGS)
 
 .DEFAULT_GOAL := render
-.PHONY: render print sites check test clean help _need_conf
+.PHONY: render out print reset sites check test clean help _need_conf
 
-# ---- 默认目标：渲染 ----------------------------------------------------------
+# ---- 默认目标：就地替换到当前仓库 --------------------------------------------
 render: _need_conf
-	@$(RENDER) $(BASE_ARGS) --clean
+	@$(RENDER) -c $(CONF) $(SET_ARGS) --in-place
 
-# ---- 只打印，不落盘（先看效果）------------------------------------------------
+# ---- 不改仓库，另存到 provision/out/ -----------------------------------------
+out: _need_conf
+	@$(RENDER) -c $(CONF) -o $(OUT) $(SET_ARGS) --clean
+
+# ---- 只打印，不落盘 ----------------------------------------------------------
 print: _need_conf
-	@$(RENDER) $(BASE_ARGS) --print
+	@$(RENDER) -c $(CONF) $(SET_ARGS) --print
+
+# ---- 还原仓库模板 ------------------------------------------------------------
+reset:
+	@$(RESET)
 
 # ---- 回归夹具：两套真实集群的参数，用来验证生成器 ----------------------------
 sites:
 	@$(RENDER) -c provision/conf/field-3node.conf -o provision/out-field --clean
 	@$(RENDER) -c provision/conf/3090-2node.conf  -o provision/out-3090  --clean
 
-# ---- 渲染后把「需要人工核对」的清单打出来 -------------------------------------
-check: render
-	@echo
-	@echo "==> 需要人工核对（详见 $(OUT)/docs/_REPLACEMENT-REPORT.md）"
-	@sed -n '/^## 渲染后仍保留的小写/,/^>/p' $(OUT)/docs/_REPLACEMENT-REPORT.md \
-	   | grep '^- ' || true
-	@echo
-	@sed -n '/^## 未能替换的节点类占位符/,$$p' $(OUT)/docs/_REPLACEMENT-REPORT.md \
-	   | grep '^- ' || true
+# ---- 把「需要人工核对」的清单打出来（先 make，再 check）-----------------------
+check:
+	@if [ ! -f $(REPORT) ]; then \
+	   echo "还没有渲染过 —— 先执行 make"; exit 1; \
+	 fi
+	@echo "==> 需要人工核对（详见 $(REPORT)）"
+	@sed -n '/^## 渲染后仍保留的小写/,/^>/p' $(REPORT) | grep '^- ' || true
+	@sed -n '/^## 未能替换的节点类占位符/,$$p' $(REPORT) | grep '^- ' || true
 
 # ---- 本地测试（不需要集群）---------------------------------------------------
 test:
@@ -78,4 +88,4 @@ _need_conf:
 	 fi
 
 help:
-	@sed -n '4,15p' $(lastword $(MAKEFILE_LIST)) | sed 's/^# \{0,1\}//'
+	@sed -n '4,19p' $(lastword $(MAKEFILE_LIST)) | sed 's/^# \{0,1\}//'
