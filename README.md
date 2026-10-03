@@ -18,69 +18,135 @@
 ```
 OrbitCluster/
 ├── README.md                        # 本文件
+├── Makefile                         # ★ 一条 make 完成变量替换（见「部署顺序与使用方法」）
 ├── .gitignore / .gitattributes
+├── provision/                       # ⓪ 部署生成器（动手前先做：一个 cluster.conf → 全部配置与文档）
+│   ├── README.md                    #   变量表 / 渲染规则 / 与真机对照的自检结果
+│   ├── cluster.conf.example         #   ★ 拷成 cluster.conf 后**只改这一个文件**
+│   ├── render.sh                    #   生成器（只生成文件，不 ssh、不改任何机器）
+│   ├── lib/render_docs.py           #   markdown 占位符替换 + 待人工核对的报告
+│   ├── templates/                   #   目标文件模板（hosts/slurm/gres/exports/fstab/sshd…）
+│   ├── conf/                        #   两套**真实**集群参数（回归夹具，与真机对照用）
+│   └── out/                         #   生成物（已 gitignore）
 ├── base-cluster/                    # ① 底层集群（门户的前提）
-│   ├── all-in-one-cluster-manual.md # 全量部署手册（1690 行，逐章带验收命令）
+│   ├── all-in-one-cluster-manual.md # 全量部署手册（1753 行，逐章带验收命令）
 │   ├── grafana-slurm-dashboard.json # Grafana 仪表盘（= 手册附录 B）
 │   ├── important.md                 # 交互容器 SSH 登录的 srun 示例
+│   ├── images/                      # 交互容器镜像的构建源（Dockerfile + 加固的 start_ssh.sh）
 │   └── scripts/cluster-admin/       # /opt/cluster-admin 三个脚本（手册 7.5 的正文版）
 │       └── add-user.sh / set-quota.sh / show-quota.sh
 │                                    #   ★ 不写死主机名：靠 /share 是否本地盘自动判定
 │                                    #     自己是管理节点还是计算节点，两套集群通用
 └── oa/                              # ② 门户交付包
-    ├── README.md                    # ★ 交付包总览 + 五步复现路线（先读这个）
+    ├── README.md                    # ★ 交付包总览 + 复现路线（先读这个）
     ├── 01-部署手册.md               # 门户安装/初始化/验收（在 base-cluster 之后读）
     ├── 02-管理手册.md               # 用户/套餐/代申请/密码文件/备份恢复/排障
     ├── 03-使用手册.md               # 面向最终用户：登录、资料、申请、连接、日志、停机
     ├── cluster-portal/              # 门户完整源码（Flask + SQLite + waitress）
     │   ├── portalapp/               #   应用、鉴权、DB、站点配置、特权助手客户端、模板
     │   ├── deploy/                  #   install.sh 一键安装 + portal-ctl（root 特权助手）
-    │   ├── tests/                   #   smoke_local（假 ctl，免集群）/ e2e_live（真机）/ e2e_ssh_flake
+    │   ├── tests/                   #   smoke_local（免集群）/ e2e_live（真机）/ test_ctl_security
     │   ├── run.py / bootstrap.py    #   生产入口 / 账号初始化与重置
     │   └── README.md                #   门户自身文档（功能、安全模型、已知边界）
     ├── sites/                       # ★ 站点档案：同一份代码适配不同集群，换机器不用改代码
-    │   └── 3090-2node/              #   <ADMIN>(管理+计算) + <GPU01>(计算)，各 3×RTX 3090
+    │   └── 3090-2node/              #   另一套实例的档案：2 节点，各 3×RTX 3090，sshd 2022
     │       ├── README.md            #   本站点差异清单 + 三个坑 + 部署顺序
     │       ├── site.conf            #   ssh 端口 / GPU 型号 / 套餐种子
     │       ├── plans.json           #   首次建库的套餐
     │       ├── slurm.conf / gres.conf
     │       └── e2e_verify.py        #   本站点端到端验收脚本（27 项断言）
     ├── config-snapshot/             # 现场非密钥配置快照（env-notes.md 换机器必看）
-    └── scripts/                     # backup-portal.sh（整机备份）/ verify-install.sh（自检）
+    └── scripts/                     # backup-portal.sh / verify-install.sh / e2e_security.sh / e2e_accounts.py
 ```
 
 代码与文档中出现的 `base-cluster/…`、`oa/…` 均相对**本仓库根目录**；`/opt/cluster-portal`、
 `/var/lib/cluster-portal`、`/etc/cluster-portal` 等则是目标机器上的绝对路径。
 
-## 从零复现
+## 部署顺序与使用方法
 
-> **推荐先走生成器**：编辑 `provision/cluster.conf` 一个文件（节点名 / IP / 卡型 / 端口 /
-> 存储布局 / 账户），执行 `make`，即得到各节点的全部配置文件与实值版文档。
-> 首次执行会从样例生成 `provision/cluster.conf` 并停下，提示你先改。详见 `provision/README.md`。
->
-> ```bash
-> make                      # 用 provision/cluster.conf 渲染到 provision/out/
-> make SET="SSH_PORT=2222 USER=alice"   # 临时覆盖个别配置项
-> make check                # 渲染 + 打印「需要人工核对」清单
-> make help
-> ```
->
-> 下面 1–5 步仍适用（生成器目前只覆盖配置与文档，安装动作仍按手册执行）。
+整条链路是 **⓪ 生成配置 → ① 底层集群 → ② 门户 → ③ 验收**，前一步的产物是后一步的输入。
+**顺序不能颠倒**：门户依赖 Slurm / NFS / enroot 已就绪。
 
-1. **读现场快照**：`oa/config-snapshot/env-notes.md`，记下要替换的变量（主机名 / IP / ssh 端口
-   / 分区 / 镜像清单）。
-   > 若目标集群与快照那套不同（节点数 / 卡型 / ssh 端口不一样），**先照 `oa/sites/3090-2node/`
-   > 做一个自己的 `oa/sites/<站点>/`**（`site.conf` + `plans.json` + `slurm.conf` + `gres.conf`）。
-   > 门户代码不写死 ssh 端口与 GPU 型号，节点列表/分区名是运行时探测，因此**换机器不需要改代码**。
-2. **部署底层集群**：照 `base-cluster/all-in-one-cluster-manual.md` 逐章执行并跑每章验收；
-   `/opt/cluster-admin/` 三个脚本直接取 `base-cluster/scripts/cluster-admin/`。
-3. **部署门户**：照 `oa/01-部署手册.md` 把 `oa/cluster-portal/` 拷到管理节点一键安装
-   （`deploy/install.sh <代码目录> <端口> [站点目录]`，幂等；自动创建默认管理员 `root`，
-   初始口令落盘 `/root/.cluster-portal-admin`）。
-4. **迁移或重设账号**：复制旧机 `/etc/cluster-portal/users.passwd`，或在管理页重建套餐/用户。
-5. **验收**：`oa/scripts/verify-install.sh` 自检 + 手册「验收」一节做端到端验证。
+### ⓪ 生成配置与文档（不碰集群，在任意一台能编辑仓库的机器上做）
 
-日常管理与最终用户说明分别见 `oa/02-管理手册.md`、`oa/03-使用手册.md`。
+只编辑 **一个文件** `provision/cluster.conf`（节点名 / IP / 卡型卡数 / sshd 端口 / 账户 /
+存储布局），然后：
+
+```bash
+make                                   # → provision/out/：各节点配置 + 实值版文档
+make SET="SSH_PORT=2222 USER=alice"    # 临时覆盖个别配置项，不写回文件
+make check                             # 渲染 + 打印「需要人工核对」清单
+make help                              # 全部目标
+```
+
+首次执行会从 `cluster.conf.example` 生成 `cluster.conf` 并停下，提示你先改 ——
+不会拿一份没看过的模板渲染出"看着能部署"的文件。变量表、渲染规则、与真机的对照结果见
+`provision/README.md`。
+
+`provision/out/` 的目录结构与目标机路径一一对应，`MANIFEST.md` 写明哪台机器该放哪些文件：
+
+| 生成物 | 目标位置 | 哪台机器 |
+|---|---|---|
+| `etc/hosts.<节点>` | `/etc/hosts`（**每台只有 `127.0.1.1` 那行不同**） | 每台 |
+| `etc/slurm/slurm.conf`、`gres.conf` | `/etc/slurm/` | 每台 |
+| `etc/enroot/enroot.conf` | `/etc/enroot/` | 每台 |
+| `etc/ssh/sshd_config.d/10-portal-only.conf` | 同路径（**只允许 root 登录宿主机**） | 每台 |
+| `etc/fstab.<节点>` | 追加到 `/etc/fstab`（只给数据盘 / NFS 行，系统盘行别动） | 管理 + 各计算 |
+| `etc/exports` | `/etc/exports` | 管理节点 |
+| `etc/chrony/*`、`etc/cluster-portal/*` | 追加 / 同路径 | 管理节点 |
+| `opt/cluster-admin/*.sh` | `/opt/cluster-admin/` | 管理节点 |
+| `docs/**` | 直接阅读（占位符已填成实值） | — |
+
+### ① 部署底层集群（管理节点 + 各计算节点）
+
+按 **`provision/out/docs/base-cluster/all-in-one-cluster-manual.md`** 逐章执行 —— 认准**渲染后**的
+这一份：里面的占位符已全部填成你的真实值，每章都带验收命令。
+
+- 手册里凡是要落地 `/etc/hosts`、`slurm.conf`、`/etc/exports`、`/etc/fstab` 的地方，
+  **直接用 `provision/out/etc/` 下生成好的那份**，不要手写。
+- `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`（或 `out/opt/cluster-admin/`）。
+- 交互容器镜像的构建源在 `base-cluster/images/`，含加固过的 `start_ssh.sh`。
+
+> 若目标集群与现场快照差异较大（节点数 / 卡型 / ssh 端口不同），先照 `oa/sites/3090-2node/`
+> 做一个自己的站点档案。门户代码不写死 ssh 端口与 GPU 型号，节点列表、分区名是运行时探测，
+> 因此**换机器不需要改代码**。
+
+### ② 部署门户（管理节点）
+
+按 **`provision/out/docs/oa/01-部署手册.md`** 把 `oa/cluster-portal/` 拷到管理节点一键安装：
+
+```bash
+deploy/install.sh <代码目录> <端口> [站点目录]   # 幂等
+                                                # 自动创建默认管理员 root
+                                                # 初始口令落盘 /root/.cluster-portal-admin
+```
+
+安装器会把应用代码设为 **root 属主**（`portal` 进程不可写代码），并对 systemd 单元做沙箱加固
+（`ProtectSystem=strict` + `ReadWritePaths` + `UMask=0077`）。
+
+### ③ 验收
+
+```bash
+oa/scripts/verify-install.sh     # 安装自检：含 sshd 白名单 / 代码属主 / enroot 断言
+oa/scripts/e2e_security.sh       # 端到端安全验收：用户能进自己的容器、不能进宿主机
+oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完自动清理并断言无残留）
+```
+
+再按 `01-部署手册.md` 的「验收」一节做一遍人工确认。
+
+### ④ 日常使用
+
+| 我要做什么 | 看哪本 / 敲什么 |
+|---|---|
+| 开通用户、改配额、代申请、备份恢复、排障 | `oa/02-管理手册.md` |
+| 登录门户、申请资源、连容器、看日志、停机 | `oa/03-使用手册.md` |
+| 加机器 / 换卡型 / 换端口等改参数 | 编辑 `provision/cluster.conf` → `make` → 下发变化的文件 |
+| 整机备份、安装自检 | `oa/scripts/backup-portal.sh`、`oa/scripts/verify-install.sh` |
+| 本地跑测试（不需要集群） | `make test` |
+
+> **改参数的正确姿势**：永远改 `provision/cluster.conf` 后重新 `make`。
+> 直接改机器上的生成物，下次渲染会被覆盖，而且 `slurm.conf` 的 `Gres=` 与 `gres.conf`
+> 很容易不同步（3090 站点 README 记过这个坑）。
 
 ## 站点无关设计（为什么换机器不用改代码）
 
@@ -131,10 +197,13 @@ Python 3.12 · Flask 3.1.3 + waitress。
 
 已落地的两套实例：
 
-| 实例 | 节点 | 卡 | sshd | 门户 | 档案 |
+| 实例 | 节点构成 | 卡 | sshd | 门户 | 档案（含真实主机名/IP） |
 |---|---|---|---|---|---|
-| 现场（2026-09） | `<ADMIN>`(管理/登录) + `<GPU01>`/`<GPU02>` | 各 1×RTX 3060 | 2180 | `http://<ADMIN>:8000` | `oa/config-snapshot/` |
-| 3090 集群 | `<ADMIN>`(管理+计算) + `<GPU01>`(计算) | 各 **3×RTX 3090** | 2022 | `http://<ADMIN>:8000` | `oa/sites/3090-2node/` |
+| A（2026-09 现场） | 3 节点：管理/登录 + 2 计算 | 各 1×RTX 3060 | 2180 | 管理节点 :8000 | `oa/config-snapshot/` |
+| B（另一套） | 2 节点：管理兼计算 + 1 计算 | 各 **3×RTX 3090** | 2022 | 管理节点 :8000 | `oa/sites/3090-2node/` |
+
+> 本表刻意不写主机名 —— 它同时描述两套集群，写成占位符会在渲染时被填成**本集群**的值而失真。
+> 两套的真实主机名/IP 分别在各自的档案目录里。
 
 版本细节见 `oa/config-snapshot/versions.txt`；3090 集群的差异与踩坑见
 `oa/sites/3090-2node/README.md`。

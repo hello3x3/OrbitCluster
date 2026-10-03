@@ -125,6 +125,10 @@ Name=gpu Type=3090 File=/dev/nvidia2
 
 ## 部署顺序（本次实际执行顺序）
 
+> 这是当时**手工**执行的记录，仍有参考价值。其中第 1–3 步要落地的 `/etc/hosts`、
+> `slurm.conf`、`gres.conf`、`/etc/exports`、`fstab` 行，现在都可以用 `provision/`
+> （仓库根目录 `make`）一次生成 —— 见仓库根 `README.md`「部署顺序与使用方法」。
+
 1. **前置**：`/etc/hosts`（`127.0.1.1` 必须是本机名，否则 Slurm 解析错）、root 双向互信、chrony
 2. **共享盘**：`nvme0n1` → `mkfs.ext4` → `/share/images`；`/share` 开 `usrquota` + `quotarpc`；
    目录 `home/datasets/enroot-cache/images`；`/etc/exports` 两行
