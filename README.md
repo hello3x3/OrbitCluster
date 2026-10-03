@@ -87,7 +87,9 @@ make help                              # 全部目标
 1. **文档就地替换** —— `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` 里的
    `<ADMIN>` / `<GPU01>` / `<LAN_CIDR>` / `<USER>` 等占位符被填成本集群实值，直接可读、可交付。
    （`oa/sites/**`、`oa/config-snapshot/**` 不参与 —— 它们本就是别的站点 / 现场实值档案。）
-2. **机器配置写进仓库对应路径** —— `etc/`、`opt/`、`MANIFEST.md` 落在仓库根，目录结构与目标机一致。
+2. **机器配置写进 `deploy/`** —— `deploy/etc/` 的目录结构与目标机一一对应
+   （`deploy/etc/hosts` → `/etc/hosts`），`deploy/MANIFEST.md` 是下发清单。
+   下发就是 `rsync -a deploy/etc/ root@<节点>:/etc/`。
 
 首次执行会从 `cluster.conf.example` 生成 `cluster.conf` 并停下，提示你先改 ——
 不会拿一份没看过的模板渲染出"看着能部署"的文件。
@@ -99,20 +101,20 @@ make help                              # 全部目标
 > `make reset` 会把它们还原成模板 —— 它从 `provision/.render-state/` 里**首次渲染前**的快照恢复，
 > 不跑 `git checkout`，所以不会误伤你其它未提交的改动。
 
-`MANIFEST.md` 写明哪台机器该放哪些文件：
+`deploy/MANIFEST.md` 写明哪台机器该放哪些文件：
 
 | 生成物（仓库内路径） | 目标位置 | 哪台机器 |
 |---|---|---|
-| `etc/hosts.<节点>` | `/etc/hosts`（**每台只有 `127.0.1.1` 那行不同**） | 每台 |
-| `etc/slurm/slurm.conf`、`gres.conf` | `/etc/slurm/` | 每台 |
-| `etc/enroot/enroot.conf` | `/etc/enroot/` | 每台 |
-| `etc/ssh/sshd_config.d/10-portal-only.conf` | 同路径（**只允许 root 登录宿主机**） | 每台 |
-| `etc/fstab.<节点>` | 追加到 `/etc/fstab`（只给数据盘 / NFS 行，系统盘行别动） | 管理 + 各计算 |
-| `etc/exports` | `/etc/exports` | 管理节点 |
-| `etc/chrony/*`、`etc/cluster-portal/*` | 追加 / 同路径 | 管理节点 |
-| `opt/cluster-admin/*.sh` | `/opt/cluster-admin/` | 管理节点 |
+| `deploy/etc/hosts.<节点>` | `/etc/hosts`（**每台只有 `127.0.1.1` 那行不同**） | 每台 |
+| `deploy/etc/slurm/slurm.conf`、`gres.conf` | `/etc/slurm/` | 每台 |
+| `deploy/etc/enroot/enroot.conf` | `/etc/enroot/` | 每台 |
+| `deploy/etc/ssh/sshd_config.d/10-portal-only.conf` | 同路径（**只允许 root 登录宿主机**） | 每台 |
+| `deploy/etc/fstab.<节点>` | 追加到 `/etc/fstab`（只给数据盘 / NFS 行，系统盘行别动） | 管理 + 各计算 |
+| `deploy/etc/exports` | `/etc/exports` | 管理节点 |
+| `deploy/etc/chrony/*`、`deploy/etc/cluster-portal/*` | 追加 / 同路径 | 管理节点 |
+| `base-cluster/scripts/cluster-admin/*.sh` | `/opt/cluster-admin/` | 管理节点（就地模式不复制副本，直接 rsync 源目录）|
 | `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` | 就地替换，直接阅读 | — |
-| `MANIFEST.md` | 下发清单本身 | — |
+| `deploy/MANIFEST.md` | 下发清单本身 | — |
 
 ### ① 部署底层集群（管理节点 + 各计算节点）
 
@@ -120,7 +122,7 @@ make help                              # 全部目标
 这一份：里面的占位符已全部填成你的真实值，每章都带验收命令。
 
 - 手册里凡是要落地 `/etc/hosts`、`slurm.conf`、`/etc/exports`、`/etc/fstab` 的地方，
-  **直接用仓库里生成好的 `etc/` 那份**，不要手写。
+  **直接用 `deploy/etc/` 那份**，不要手写。
 - `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`（或 `out/opt/cluster-admin/`）。
 - 交互容器镜像的构建源在 `base-cluster/images/`，含加固过的 `start_ssh.sh`。
 

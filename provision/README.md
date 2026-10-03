@@ -57,7 +57,9 @@ provision/
 │   ├── field-3node.conf       # 现场集群（admin+gpu02+gpu03，1×RTX3060，sshd 2180）
 │   └── 3090-2node.conf        # 3090 集群（2 节点，3×RTX3090，sshd 2022，镜像独立盘）
 ├── templates/                 # 目标文件的模板（@@变量@@ 占位）
-└── out/                       # 生成物（已 gitignore）
+├── reset.sh                   # 撤销就地替换，把仓库还原成模板
+├── .render-state/             # 就地渲染前快照（make reset 用；gitignore）
+└── out/                       # `make out` 的产物（gitignore）
 ```
 
 ## `cluster.conf` 里要改什么
@@ -73,9 +75,32 @@ provision/
 
 `cpus` / `mem_mb` 取自该机 `slurmd -C | head -1`；`sockets`/`threads` 不填则按单路 2 线程估算。
 留空 `cpus`/`mem_mb` 也能渲染，但 `slurm.conf` 里会是 `@@待实测@@` 占位符，并出现在
-`MANIFEST.md` 的"待实测回填"清单里 —— **上线前必须填**。
+`deploy/MANIFEST.md` 的"待实测回填"清单里 —— **上线前必须填**。
 
 ## 生成物
+
+`make`（默认，就地）把机器配置写到**仓库根的 `deploy/`**，路径与目标机一一对应：
+
+```
+deploy/
+├── etc/hosts.<节点>            ← 每台一份：只有 127.0.1.1 那行不同（用手册 1.3 的踩坑点）
+├── etc/slurm/slurm.conf        ← 节点行由 NODE 行生成（含 Gres=）
+├── etc/slurm/gres.conf         ← explicit 模式按卡数生成；auto 模式就是 AutoDetect=nvml
+├── etc/enroot/enroot.conf
+├── etc/ssh/sshd_config.d/10-portal-only.conf   ← 门户模式必做（禁止用户登录宿主机）
+├── etc/exports                 ← 单盘一行 / 独立镜像盘两行
+├── etc/fstab.<节点>            ← 只给"要追加的数据盘/NFS 行"，系统盘行保留安装器原文
+├── etc/chrony/chrony.conf.append.{mgr,gpu}
+├── etc/cluster-portal/site.conf + plans.json   ← 门户站点配置与套餐种子
+└── MANIFEST.md                 ← 下发清单（哪台机器放哪些文件）
+```
+
+> `/opt/cluster-admin/*.sh` **不在** `deploy/` 里 —— 仓库里已有原文，下发时直接
+> `rsync -a base-cluster/scripts/cluster-admin/ root@<管理节点>:/opt/cluster-admin/`，
+> 避免同一份脚本在仓库里存两遍。
+
+`make out` 则把同样内容（外加自包含的 `opt/cluster-admin/`）写到 `provision/out/`，不动仓库。
+下面这段是 `make out` 的产物结构：
 
 ```
 out/

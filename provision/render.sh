@@ -73,8 +73,8 @@ REPORT="$OUT/docs/_REPLACEMENT-REPORT.md"
 STATE=""
 if [ "$INPLACE" = 1 ]; then
   [ "$CLEAN" = 1 ] && { echo "--in-place 不能与 --clean 同用（那会对仓库执行删除）" >&2; exit 1; }
-  OUT="$REPO"
-  DOC_OUT="$REPO"
+  OUT="$REPO/deploy"          # 要下发到机器的东西都在这儿（不再冒充仓库根的 /etc、/opt）
+  DOC_OUT="$REPO"             # 文档则真正就地替换
   REPORT="$HERE/REPLACEMENT-REPORT.md"
   STATE="$HERE/.render-state"
   if [ -d "$STATE" ]; then
@@ -85,7 +85,7 @@ if [ "$INPLACE" = 1 ]; then
     echo "    只想看效果: make print   （不落盘）" >&2
     exit 1
   fi
-  mkdir -p "$STATE/backup"
+  mkdir -p "$STATE/backup" "$OUT"
 fi
 
 # 已写出的文件（用于收尾清单与 make reset）
@@ -376,8 +376,11 @@ render chrony.gpu.in "$OUT/etc/chrony/chrony.conf.append.gpu"
 render cluster-portal-site.conf.in "$OUT/etc/cluster-portal/site.conf"
 write_text "$(gen_plans_json)" "$OUT/etc/cluster-portal/plans.json"
 
-# ---- 建号脚本（直接从仓库拷贝，不重复维护）----
-if [ "$PRINT" = 0 ]; then
+# ---- 建号脚本 ----
+# 就地模式：仓库里已经有 base-cluster/scripts/cluster-admin/ 原文，不再拷一份重复的，
+#          MANIFEST 直接指过去用 rsync 下发。
+# out  模式：要求输出树自包含，所以拷一份。
+if [ "$PRINT" = 0 ] && [ "$INPLACE" = 0 ]; then
   mkdir -p "$OUT/opt/cluster-admin"
   cp -p "$REPO"/base-cluster/scripts/cluster-admin/*.sh "$OUT/opt/cluster-admin/"
   # 必须记进产物清单，否则 make reset 会漏删这三个脚本
@@ -473,7 +476,11 @@ if [ "$PRINT" = 0 ]; then
     echo "/etc/chrony/chrony.conf          ← 追加 ${P}etc/chrony/chrony.conf.append.mgr"
     echo "/etc/cluster-portal/site.conf    ← ${P}etc/cluster-portal/site.conf"
     echo "/etc/cluster-portal/plans.json   ← ${P}etc/cluster-portal/plans.json"
-    echo "/opt/cluster-admin/*.sh          ← ${P}opt/cluster-admin/"
+    if [ "$INPLACE" = 1 ]; then
+      echo "/opt/cluster-admin/*.sh          ← rsync -a base-cluster/scripts/cluster-admin/ root@${MGR_NAME}:/opt/cluster-admin/（就地模式不复制副本）"
+    else
+      echo "/opt/cluster-admin/*.sh          ← ${P}opt/cluster-admin/"
+    fi
     echo '```'
     echo
     echo "## 仅计算节点"

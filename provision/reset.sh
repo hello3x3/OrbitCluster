@@ -4,7 +4,7 @@
 #
 # 只动 .render-state/files.txt 里记录过的文件：
 #   · 有备份的（原本就存在、被覆盖的文档）→ 从备份恢复成**最初**的模板
-#   · 没有备份的（本次新生成的 etc/、opt/、MANIFEST.md…）→ 删除
+#   · 没有备份的（本次新生成的 deploy/etc/、deploy/MANIFEST.md…）→ 删除
 #
 # 因此**不会误伤**你任何未提交的其它改动 —— 它不跑 git checkout。
 # 备份只在首次渲染时快照，所以连跑多次 make 之后还原，拿到的仍是仓库最初的模板。
@@ -45,8 +45,9 @@ while IFS= read -r rel; do
   fi
 done < "$STATE/files.txt"
 
-# 清掉因此变空的目录（只限渲染时新建的 etc/ 与 opt/）
-for d in "$REPO/etc" "$REPO/opt"; do
+# 清掉因此变空的目录。
+# deploy/ 是当前布局；etc/ 与 opt/ 是早期布局留下的，一并扫掉以便从旧版升级过来。
+for d in "$REPO/deploy" "$REPO/etc" "$REPO/opt"; do
   [ -d "$d" ] || continue
   find "$d" -type d -empty -delete 2>/dev/null || true
   rmdir "$d" 2>/dev/null || true
