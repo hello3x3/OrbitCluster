@@ -6,6 +6,7 @@
 #     ./render.sh -c conf/field-3node.conf            # 输出到 ./out/
 #     ./render.sh -c cluster.conf -o /tmp/out --clean
 #     ./render.sh -c cluster.conf --print              # 只打印不落盘
+#     ./render.sh -c cluster.conf -s SSH_PORT=2222 -s USER=alice   # 临时覆盖个别配置项
 #
 #   设计目标：部署新集群时**只编辑 cluster.conf 一个文件**，
 #   不再做「把手册里的 <IP>/<GPU01> 全文替换成实际值」这种容易出错的操作。
@@ -35,13 +36,15 @@ CONF=""
 OUT="$HERE/out"
 CLEAN=0
 PRINT=0
+OVERRIDES=()
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -c|--config) CONF="$2"; shift 2 ;;
     -o|--out)    OUT="$2";  shift 2 ;;
+    -s|--set)    OVERRIDES+=("$2"); shift 2 ;;
     --clean)     CLEAN=1;   shift ;;
     --print)     PRINT=1;   shift ;;
     -h|--help)   usage 0 ;;
@@ -105,6 +108,16 @@ while IFS= read -r raw || [ -n "$raw" ]; do
   fi
   echo "  [警告] $CONF:$lineno 无法解析: $line" >&2
 done < "$CONF"
+
+# ---- -s/--set 命令行覆盖（优先级最高，不写回 cluster.conf）----
+if [ "${#OVERRIDES[@]}" -gt 0 ]; then
+  for kv in "${OVERRIDES[@]}"; do
+    [[ "$kv" == *=* ]] || { echo "  [错误] -s 需要 KEY=VALUE 形式，收到: $kv" >&2; exit 1; }
+    k="$(printf '%s' "${kv%%=*}" | tr 'a-z' 'A-Z')"; v="${kv#*=}"
+    CFG["$k"]="$v"
+    echo "  [覆盖] $k=$v"
+  done
+fi
 
 cfg() { printf '%s' "${CFG[${1:-}]:-${2:-}}"; }
 

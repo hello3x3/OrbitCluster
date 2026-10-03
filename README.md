@@ -54,6 +54,19 @@ OrbitCluster/
 
 ## 从零复现
 
+> **推荐先走生成器**：编辑 `provision/cluster.conf` 一个文件（节点名 / IP / 卡型 / 端口 /
+> 存储布局 / 账户），执行 `make`，即得到各节点的全部配置文件与实值版文档。
+> 首次执行会从样例生成 `provision/cluster.conf` 并停下，提示你先改。详见 `provision/README.md`。
+>
+> ```bash
+> make                      # 用 provision/cluster.conf 渲染到 provision/out/
+> make SET="SSH_PORT=2222 USER=alice"   # 临时覆盖个别配置项
+> make check                # 渲染 + 打印「需要人工核对」清单
+> make help
+> ```
+>
+> 下面 1–5 步仍适用（生成器目前只覆盖配置与文档，安装动作仍按手册执行）。
+
 1. **读现场快照**：`oa/config-snapshot/env-notes.md`，记下要替换的变量（主机名 / IP / ssh 端口
    / 分区 / 镜像清单）。
    > 若目标集群与快照那套不同（节点数 / 卡型 / ssh 端口不一样），**先照 `oa/sites/3090-2node/`
