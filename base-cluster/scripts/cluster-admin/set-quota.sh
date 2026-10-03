@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# set-quota.sh —— 设置/扩容某用户在 /share 上的磁盘配额（只能在 NFS 服务端执行）
+# set-quota.sh —— 设置/扩容/取消某用户在 /share 上的磁盘配额（只能在 NFS 服务端执行）
 #
-# 用法: set-quota.sh <用户名> <大小 如 500G|1T|200M> [挂载点...，默认 /share]
+# 用法: set-quota.sh <用户名> <大小 如 500G|1T|200M|不限> [挂载点...，默认 /share]
 #
 # ext4 按 UID 计配额，覆盖该用户在该文件系统上的全部文件。
 # soft = hard 相等 => 无宽限期、到顶即拒写；setquota 对已挂载文件系统立即生效。
+# 传 0 / 不限 => soft=hard=0，即**取消该用户的配额限制**。
 # 站点无关：只校验"是不是本地文件系统 + 有没有开 usrquota"，不写死主机名。
 set -eu
 
-USAGE="用法: set-quota.sh <用户名> <大小如 500G|1T> [挂载点...，默认 /share]"
+USAGE="用法: set-quota.sh <用户名> <大小如 500G|1T|不限> [挂载点...，默认 /share]"
 [ -n "${1:-}" ] || { echo "$USAGE"; exit 1; }
 [ -n "${2:-}" ] || { echo "$USAGE"; exit 1; }
 U="$1"
 SZ="$2"
 
 case "$SZ" in
+  0|不限|unlimited|UNLIMITED) BLK=0 ;;
   *[Gg]) N="${SZ%[Gg]}"; BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024*1024}")" ;;
   *[Tt]) N="${SZ%[Tt]}"; BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024*1024*1024}")" ;;
   *[Mm]) N="${SZ%[Mm]}"; BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024}")" ;;
-  *) echo "大小需带单位 M/G/T, 如 500G"; exit 1 ;;
+  *) echo "大小需带单位 M/G/T（如 500G），或写 0/不限 表示不限额"; exit 1 ;;
 esac
 
 id "$U" >/dev/null 2>&1 || { echo "用户 $U 不存在"; exit 1; }
