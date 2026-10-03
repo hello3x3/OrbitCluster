@@ -178,7 +178,7 @@ def main():
     assert "CarolInit99" not in _cookies, "初始口令出现在 Set-Cookie 里: %s" % _cookies[:200]
     assert "CarolInit99".encode() in r.data, "初始口令应在响应体里一次性显示"
 
-    # 管理员 + 「OS 已存在」同样要落地配额（线上事故：shujiuhe 设了 1T 却显示不限）
+    # 管理员 + 「OS 已存在」同样要落地配额（线上事故：某运维账号设了 1T 却显示不限）
     # —— 管理员账号只能由 root 创建，所以这里切换到 root 会话
     c.get("/logout")
     login(c, "root", "RootPass1234")

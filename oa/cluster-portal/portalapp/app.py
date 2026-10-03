@@ -1252,7 +1252,7 @@ def create_app(testing=False):
         #   1) 整段被 `if role == "user"` 挡住 —— 管理员选「OS 已存在」时 OS 侧什么都不做；
         #   2) 即使普通用户走 existing，init-user 也从不落地配额。
         #   而额度仍被写进门户库，页面显示的是 OS 实读值 → DB 说 1T、OS 说不限。
-        # 现在：existing 对任何角色都生效（管理员也可以带 OS 账号，本站 shujiuhe/root 就是），
+        # 现在：existing 对任何角色都生效（管理员也可以带 OS 账号，本站的运维账号/root 就是），
         # 且必须显式 set_quota。
         if role == "user" and os_mode not in ("provision", "existing"):
             return None, "普通用户必须选择账号开通方式", 0

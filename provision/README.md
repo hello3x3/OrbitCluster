@@ -44,7 +44,7 @@ provision/
 | 段 | 键 | 说明 |
 |---|---|---|
 | 集群标识 | `CLUSTER_NAME` / `ACCOUNT` | slurm 集群名 / 会计账户名（建号脚本与门户共用） |
-| 网络系统 | `LAN_CIDR` / `SSH_PORT` / `TIMEZONE` / `OPS_USER` | 网段、sshd 端口、时区、运维账号 |
+| 网络系统 | `LAN_CIDR` / `SSH_PORT` / `TIMEZONE` / `OPS_USER` / `SENIOR_USER` | 网段、sshd 端口、时区、运维账号、示例里用的"高级用户" |
 | 存储 | `SHARE_DEVICE` / `SHARE_MOUNT` / `IMAGES_DEVICE` / `IMAGES_MOUNT` | 数据盘与镜像盘（`IMAGES_DEVICE` 留空=同盘） |
 | Slurm | `SLURM_VERSION` / `PARTITION` / `GRES_MODE` / `GPU_PREFIX` | 版本、分区名、gres 生成方式、展示名前缀 |
 | 门户 | `PORTAL_PORT` | 门户监听端口 |
@@ -86,9 +86,11 @@ out/
 | `<GPU01>`…`<GPU0N>`、`<GPU01_IP>`… | 第 1…N-1 个**计算**节点（按位置从 01 编号；管理节点只算 `<ADMIN>`） |
 | `<ADMIN_CPUS>` / `<GPU01_MEM>` / `<GPU01_GPUS>` … | 各 NODE 行的 cpus/mem_mb/gpus（手册 §4.2 的 slurm.conf 示例用） |
 | `<GPU_TYPE>` | 第一个带卡节点的 gpu_model |
-| `<LAN_CIDR>` `<SSH_PORT>` `<CLUSTER_NAME>` `<ACCOUNT>` `<OPS_USER>` `<TIMEZONE>` `<PORTAL_PORT>` `<SHARE_MOUNT>` `<IMAGES_MOUNT>` `<PARTITION>` `<SLURM_VERSION>` | 同名配置键 |
+| `<LAN_CIDR>` `<SSH_PORT>` `<CLUSTER_NAME>` `<ACCOUNT>` `<OPS_USER>` `<SENIOR_USER>` `<TIMEZONE>` `<PORTAL_PORT>` `<SHARE_MOUNT>` `<IMAGES_MOUNT>` `<PARTITION>` `<SLURM_VERSION>` | 同名配置键 |
 
-不参与替换的（本就不是站点值）：`<USER>` `<UID>` `<KEY>` `<YYYYMMDD_HHMM>` `<GRAFANA_PASSWORD>` `<SLURMDB_PASSWORD>`。
+不参与替换的（本就不是站点值）：`<USER>` `<UID>` `<KEY>` `<YYYYMMDD_HHMM>` `<GRAFANA_PASSWORD>` `<SLURMDB_PASSWORD>`；`base-cluster/images/**/Dockerfile` 里的 `<MAINTAINER_NAME>` / `<MAINTAINER_EMAIL>` 也不渲染（Dockerfile 不在 markdown 渲染范围内，构建时自行替换）。
+
+> **仓库里不写任何真实姓名**：文档示例中的用户名一律是 `<SENIOR_USER>`（渲染成 cluster.conf 里配的那个"高级用户"），真实用户只出现在 `oa/config-snapshot/users.json` 的 `<USERNAME>` 占位里。
 
 ### `admin` 的处理（重要，最容易误伤）
 

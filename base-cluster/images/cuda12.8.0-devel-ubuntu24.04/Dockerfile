@@ -4,7 +4,7 @@
 # CUDA 12.8 只需驱动 >= 570（实际 595.71 满足，且完全兼容 12.8 运行时）。
 FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
 
-LABEL maintainer="shujiuhe <shujiuhe@outlook.com>"
+LABEL maintainer="<MAINTAINER_NAME> <MAINTAINER_EMAIL>"  # 构建时按需改成你自己的
 
 SHELL [ "/bin/bash", "--login", "-c" ]
 

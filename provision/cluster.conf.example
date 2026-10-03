@@ -24,6 +24,9 @@ LAN_CIDR=192.168.1.0/24      # 内网网段：NFS 导出白名单、chrony allow
 SSH_PORT=22                   # 集群 sshd 端口（非 22 时门户靠它连计算节点）
 TIMEZONE=Asia/Shanghai
 OPS_USER=lab                  # 运维账号（建号脚本里的免密 sudo 账号）
+SENIOR_USER=lab               # 文档示例里出现的"高级用户"（有集群 OS 账号、会提交容器）。
+                              # 仓库里不写任何真实姓名，一律用 <SENIOR_USER> 占位；
+                              # 不填则与 OPS_USER 同值。
 
 # ---------------------------------------------------------------- 存储
 SHARE_DEVICE=/dev/sdb         # 管理节点上做 /share 的数据盘
