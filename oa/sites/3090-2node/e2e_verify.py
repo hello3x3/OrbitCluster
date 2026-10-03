@@ -9,6 +9,16 @@
   → 三卡套餐（单节点 3 卡）→ 停机 → 删号并验证清理
 
 只用标准库；ssh 通过 subprocess 调系统 ssh。
+
+注意（测试账号卫生）：
+  本脚本创建的测试账号由 `oa/scripts/e2e_accounts.py` 的 TestAccountGuard 托管 ——
+  正常结束/断言失败/异常/Ctrl-C 都会清理，并在结束时**断言真的清理干净**
+  （OS 账号两节点/家目录/配额记录/Slurm 关联/门户记录/个人镜像目录），
+  有残留就计入 FAIL 并以非 0 退出。
+  需要自建 OS 账号时请用 `GUARD.create_os_account()`（走正规 add-user.sh，
+  UID 强制取保留号段 59000-59999），**不要再用裸 useradd** ——
+  2026-09-13 的线上事故正是一个裸 useradd 建出、又没清理的测试账号（sshtest2, uid 1002）
+  撞上了真实用户 lnq 的 UID，导致容器内解析不到 lnq、ssh 报 Permission denied (publickey)。
 """
 import http.cookiejar
 import json
@@ -23,7 +33,7 @@ import urllib.request
 
 BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8000")
 MGT = os.environ.get("E2E_MGT", "<ADMIN>")
-PEER = os.environ.get("E2E_PEER", "<GPU02>")
+PEER = os.environ.get("E2E_PEER", "<GPU01>")
 SSH_PORT = os.environ.get("E2E_SSH_PORT", "2022")
 GPU_MODEL = os.environ.get("E2E_GPU_MODEL", "RTX 3090")
 IMAGE_SUB = os.environ.get("E2E_IMAGE", "cuda12.8.0")
@@ -31,6 +41,10 @@ USER = os.environ.get("E2E_USER", "e2etest")
 PWD = os.environ.get("E2E_PWD", "E2eTest_2026x")
 KEY = "/tmp/e2e_key"
 PORT1, PORT2 = 28771, 28772
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts"))
+import e2e_accounts as ea      # noqa: E402  (oa/scripts/e2e_accounts.py)
 
 PASS, FAIL = [], []
 
@@ -68,6 +82,12 @@ def run_argv(argv, timeout=90):
 def peer(cmd, timeout=90):
     return run_argv(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
                      "-o", "LogLevel=ERROR", "-p", SSH_PORT, "root@" + PEER, cmd], timeout)
+
+
+# 测试账号守卫：号段隔离 + 保证清理（atexit/信号）+ 断言清理干净。
+# 教训：2026-09-13 的事故正是一个**没清理的测试账号**（sshtest2, uid 1002）撞了真实用户 lnq，
+# 导致容器里解析不到 lnq、ssh 报 Permission denied (publickey)。见 oa/scripts/e2e_accounts.py。
+GUARD = ea.TestAccountGuard(run_local=sh, run_peer=peer, peer_name=PEER, log=log)
 
 
 def node_ip(name):
@@ -186,9 +206,9 @@ def main():
         _, body = a.post("/admin/users/%s/delete" % old, {}, a.csrf("/admin/users"))
         log("  清理结果: %s" % body[:120])
         time.sleep(3)
-    sh("id %s >/dev/null 2>&1 && userdel -r %s 2>/dev/null; rm -rf /share/home/%s; "
-       "setquota -u %s 0 0 0 0 /share 2>/dev/null; true" % (USER, USER, USER, USER))
-    peer("id %s >/dev/null 2>&1 && userdel %s 2>/dev/null; true" % (USER, USER))
+    # 登记 + 走守卫的完整清理（门户注销 + 兜底 + 清配额记录/会计关联）
+    GUARD.reserve(USER)
+    GUARD.cleanup(force=True)
 
     log("=== 1. 门户自动建号（100G 配额）===")
     _, body = a.post("/admin/users/create",
@@ -318,6 +338,17 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         traceback.print_exc()
+    finally:
+        # 无论正常结束、断言失败、异常还是 Ctrl-C：先清干净，再断言真的干净。
+        # 有残留就计入 FAIL → 脚本非 0 退出，不允许悄悄留下测试账号。
+        try:
+            GUARD.cleanup(force=True)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        for r in GUARD.verify_clean():
+            FAIL.append("清理残留: " + r)
+            log("  [FAIL] 清理残留: " + r)
     print("\n===== 汇总 =====")
     print("PASS %d / FAIL %d" % (len(PASS), len(FAIL)))
     for f in FAIL:
