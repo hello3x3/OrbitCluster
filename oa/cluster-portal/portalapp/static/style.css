@@ -32,6 +32,9 @@ h3{font-size:15px;margin:0 0 6px}
 .who{font-size:13.5px;color:#e2e8f0}
 .badge-admin{background:#7c3aed;color:#fff;border-radius:6px;padding:1px 7px;font-size:11px;
   font-style:normal;margin-left:4px}
+/* 门户库记录的额度与 OS 实际硬限不一致时的告警标记 */
+.badge-warn{background:#b45309;color:#fff;border-radius:6px;padding:1px 7px;font-size:11px;
+  font-style:normal;margin-left:4px;cursor:help}
 .foot{color:var(--muted);text-align:center;font-size:12px;padding:22px 10px 26px}
 
 /* ---------- layout ---------- */
@@ -154,6 +157,12 @@ textarea{resize:vertical}
 .logbox{background:#0f172a;color:#d7e6ff;border-radius:8px;margin:0;padding:12px;
   font-size:12.5px;line-height:1.6;overflow:auto;min-height:220px;max-height:56vh;
   white-space:pre-wrap;word-break:break-all}
+/* 日志弹窗里的分节标题（容器日志 / 门户操作日志） */
+.log-cap{padding:8px 18px 4px;font-size:13px;font-weight:600}
+.log-cap .muted{font-weight:400}
+/* 门户操作日志：条数少，不需要那么高 */
+.logbox-events{min-height:70px;max-height:26vh;margin:0 18px 10px}
+.modal .logbox{margin:0 18px}
 
 /* 申请页：套餐单选卡片 */
 .plan-opt{cursor:pointer}

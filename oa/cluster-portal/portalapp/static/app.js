@@ -94,7 +94,7 @@
     $$(".act-quota").forEach(b => {
       b.addEventListener("click", async () => {
         const user = b.dataset.user || "";
-        const size = window.prompt("为 " + user + " 设置 /share 磁盘配额（软=硬，例：100G / 500G / 1T）：", "");
+        const size = window.prompt("为 " + user + " 设置 /share 磁盘配额（软=硬。例：100G / 500G / 1T；填「不限」表示不限额）：", "");
         if (size === null || !size.trim()) return;
         try {
           const fd = new FormData();
@@ -211,10 +211,25 @@
         $("#log-modal").hidden = false;
         $("#log-title").textContent = "（作业 #" + id + "）";
         $("#log-body").textContent = "加载中…";
+        $("#log-events").textContent = "加载中…";
         try {
           const d = await get("/instances/" + id + "/log?lines=300");
-          $("#log-body").textContent = d.ok ? d.text : ("错误：" + d.error);
-        } catch (e) { $("#log-body").textContent = "读取失败：" + e.message; }
+          if (!d.ok) {
+            $("#log-body").textContent = "错误：" + d.error;
+            $("#log-events").textContent = "—";
+          } else {
+            $("#log-body").textContent = d.log_error
+              ? ("（读不到容器日志：" + d.log_error + "）")
+              : (d.text || "（暂无输出）");
+            const ev = d.events || [];
+            $("#log-events").textContent = ev.length
+              ? ev.map(e => `${e.ts}  [${e.label}] ${e.message}`).join("\n")
+              : "（暂无门户操作记录）";
+          }
+        } catch (e) {
+          $("#log-body").textContent = "读取失败：" + e.message;
+          $("#log-events").textContent = "—";
+        }
       } else if (b.classList.contains("act-detail")) {
         const i = last[id];
         if (!i) return;

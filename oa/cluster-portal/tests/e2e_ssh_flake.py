@@ -60,7 +60,7 @@ def main():
             j = p.json(p.post_json("/apply", data={
                 "image": img, "plan_id": str(gpu_plan["id"]),
                 "task_name": "sshflk", "hours": "1",
-                "node": "<GPU02>", "port": str(port)}))
+                "node": "<GPU01>", "port": str(port)}))
             assert j["ok"], j
             iid = j["instance_id"]
             # 轮询到 RUNNING
@@ -73,7 +73,7 @@ def main():
                     break
                 time.sleep(4)
             assert inst, "not running"
-            rr = ssh_run_retry(kpath, user, NODE_IP["<GPU02>"], port,
+            rr = ssh_run_retry(kpath, user, NODE_IP["<GPU01>"], port,
                                "echo SSHOK-$(id -un)")
             if rr.returncode == 0:
                 check("轮次%d ssh OK" % i, "SSHOK-" + user in rr.stdout)
@@ -83,7 +83,7 @@ def main():
                 lj = p.json(p.get("/instances/%d/log?lines=200" % iid))
                 log("---- 作业日志 ----\n" + lj.get("text", lj.get("error", ""))[-1500:])
                 # 节点侧 authorized_keys 指纹
-                r2 = ssh_exec("ssh -o BatchMode=yes -p 2180 root@<GPU02> '"
+                r2 = ssh_exec("ssh -o BatchMode=yes -p 2180 root@<GPU01> '"
                               "ls -l /share/home/%s/.ssh/authorized_keys; "
                               "head -c 120 /share/home/%s/.ssh/authorized_keys; echo'"
                               % (user, user))

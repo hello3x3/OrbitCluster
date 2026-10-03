@@ -100,7 +100,10 @@
   <div class="modal">
     <div class="modal-head"><h3>作业日志 <span id="log-title"></span></h3>
       <button class="btn btn-ghost btn-sm" data-close="log-modal">✕</button></div>
+    <div class="log-cap">容器日志<span class="muted small">（sshd / 作业输出）</span></div>
     <pre class="logbox" id="log-body">加载中…</pre>
+    <div class="log-cap">门户操作日志<span class="muted small">（提交 / 保存镜像 / 停机等，含耗时与失败原因）</span></div>
+    <pre class="logbox logbox-events" id="log-events">—</pre>
     <div class="modal-foot">
       <button class="btn btn-ghost btn-sm" data-close="log-modal">关闭</button>
     </div>

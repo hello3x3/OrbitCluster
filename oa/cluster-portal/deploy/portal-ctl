@@ -10,34 +10,52 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
 命令一览（见 main()）:
   ping                健康自检
   sinfo               节点状态(含 IP / 内存 / gres / 分区)
-  provision-user <u> <quota> [--skip-os]   开通集群账号(admin+计算节点)或仅初始化
+  provision-user <u> <quota> [--skip-os] [--uid N]
+                                           开通集群账号(admin+计算节点)或仅初始化；
+                                           --uid 可把账号钉在指定 UID（测试/CI 用
+                                           保留号段 59000-59999，避免占用真实用户号段）
   unprovision-user <u>                     注销集群账号(危险，仅测试/清理用)
   init-user <u>                            仅初始化已有 OS 用户的 .ssh/.portal 目录
   ensure-assoc <u>                         确保该用户在会计里有账户关联(幂等；缺关联会
                                            导致 sbatch 报 Invalid account...)
-  user-status <u>                          查看账号在 admin/各节点的状态
+  user-status <u>                          查看账号在管理节点/各节点的状态
   submit               读取 stdin JSON, 以该用户身份 sbatch 提交容器交互作业
   kill <u> <jobid>                         停机(校验属主后 scancel)
   job-state <u> <jobid>                    查单个作业状态(squeue→sacct 回退)
   log <u> <jobid> [lines]                  读取作业输出日志尾部
   rm-log <u> <jobid>                      删除某作业日志文件(清理已删除实例残留)
   save-image <u> <jobid> <name> [force]   把运行中容器的当前状态保存为个人镜像
-                                          (/share/images/<u>/<name>.sqsh, 计入用户配额)
+                                          (/share/images/<u>/<name>.sqsh)
+                                          是否计入 /share 配额取决于站点：/share/images 与
+                                          /share 同一文件系统则计入，独立盘(如本站的 nvme)
+                                          则不计入、需单独关注该盘容量
   images <u>                              列出 /share/images/<u> 下该用户个人镜像
   get-keys <u> / set-keys <u>              读写 authorized_keys
   quota <u>                                读取 /share 磁盘配额(实际 OS 值)
   quota-all                                批量读取 /share 全部用户配额
-  set-quota <u> <大小>                     设置 /share 配额(实际 OS 值, 软=硬)
+  set-quota <u> <大小|不限>                设置 /share 配额(实际 OS 值, 软=硬;
+                                           「不限」= 清除限额)
   slurm-info <u>                           读取 slurm 关联/QoS/优先级/限额(经 sacctmgr)
 """
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 QUOTA_RE = re.compile(r"^[1-9][0-9]{0,2}[GgTtMm]$")
+# 「不限配额」的规范写法；另接受 0 / UNLIMITED 作为输入别名
+QUOTA_UNLIMITED = "不限"
+_QUOTA_UNLIMITED_RE = re.compile(r"^(?:不限|0|UNLIMITED)$", re.IGNORECASE)
+
+
+def quota_valid(size):
+    """额度是否合法：'100G' / '1T' / '200M' 之类，或「不限」。"""
+    s = (size or "").strip()
+    return bool(QUOTA_RE.match(s) or _QUOTA_UNLIMITED_RE.match(s))
 HOURS_RE = re.compile(r"^\d{1,3}:\d{2}:\d{2}$")
 IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 PUBKEY_RE = re.compile(
@@ -45,9 +63,22 @@ PUBKEY_RE = re.compile(
     r"sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) "
     r"[A-Za-z0-9+/]{20,}={0,2}( [^\r\n]{0,200})?$"
 )
+# 系统/保留账号：绝不允许门户"以它的身份"做事（提交作业、写它的 authorized_keys、
+# 注销它）。注意这里只用**前缀**匹配 systemd-*，不要写成字面量 "systemd-*"
+# —— 字面量永远匹配不上，等于名单里少了一条规则。
 RESERVED = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games",
             "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup",
-            "list", "irc", "_apt", "nobody", "systemd-*"}
+            "list", "irc", "_apt"}
+RESERVED_PREFIX = ("systemd-", "nvidia-", "ntp", "chrony", "messagebus", "polkitd",
+                   "mysql", "postgres", "sshd", "dnsmasq", "landscape")
+
+
+def is_reserved(u):
+    """是否系统/保留账号（精确名 + 前缀）。"""
+    u = u or ""
+    return u in RESERVED or u.startswith(RESERVED_PREFIX)
+
+
 CLUSTER_ADMIN_DIR = "/opt/cluster-admin"
 SHARE_HOME = "/share/home"
 
@@ -90,6 +121,7 @@ def user_home(username):
         return parts[5]
     return os.path.join(SHARE_HOME, username)
 CTL = "portal-ctl"
+IMAGES_ROOT = "/share/images"
 
 
 def out(obj, code=0):
@@ -127,28 +159,184 @@ def sh_out(argv, timeout=120):
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+# ----------------------------------------------------------------------------
+# 安全路径原语（重要）
+#
+# 背景（真实可利用的漏洞，不要删掉这段注释）：
+#   用户家目录在 NFS 上，并且被 **rw 挂进他自己的容器**（--container-mounts=$HOME:$HOME），
+#   所以「用户可以在自己家目录里任意创建符号链接」。而本助手是以 root 执行的，
+#   一旦对用户可写路径直接用 open()/os.path.isfile()/install -d，就会出现：
+#     * ln -s /etc/cluster-portal/users.passwd ~/.portal/logs/<jobid>.out
+#         → 用户在网页点「日志」，root 跟随软链把全站明文口令读出来返回（任意 root 文件读）
+#     * ln -s /root/.ssh/authorized_keys ~/.ssh/authorized_keys.portal-tmp
+#         → root 把攻击者公钥写进 /root/.ssh/authorized_keys（任意 root 文件写）
+#     * ln -s /etc/cron.d ~/.portal/logs  然后提交作业
+#         → install -d 跟随软链，把 /etc/cron.d 的属主/权限改成该用户
+#   因此对**任何**位于用户家目录之下的路径，一律：
+#     ① 从家目录起逐级 lstat，任何一级是符号链接就拒绝；
+#     ② realpath 必须仍在该用户家目录之内；
+#     ③ 读文件用 O_NOFOLLOW 且必须是普通文件、属主是本人或 root；
+#     ④ 写文件先在 root 私有目录建临时文件，再 os.replace（替换目录项本身，不跟随软链）。
+# ----------------------------------------------------------------------------
+
+HOME_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+
+
+def _uid_of(username):
+    r = run(["id", "-u", username], timeout=20)
+    v = (r.stdout or "").strip()
+    return int(v) if r.returncode == 0 and v.isdigit() else None
+
+
+def checked_home(username):
+    """取用户家目录并做基本校验（必须是绝对路径、无空格/元字符）。
+
+    返回 (home, err)：家目录会被拼进 ssh 远端命令与 sbatch 的 --export/--chdir，
+    含空格或 shell 元字符会破坏参数边界，因此这里直接拒绝。
+    """
+    home = user_home(username)
+    if not HOME_RE.match(home or ""):
+        return None, "家目录路径异常（含空格或特殊字符），已拒绝：%r" % home
+    return home, None
+
+
+def _link_free_chain(username, path):
+    """从用户家目录逐级 lstat 到 path；任一级是符号链接即返回错误串，否则 None。
+
+    path 尚不存在是允许的（交由创建逻辑负责），但**已存在的每一级**都必须是真目录/真文件。
+    """
+    home = os.path.realpath(user_home(username))
+    p = os.path.abspath(path)
+    if p != home and not p.startswith(home.rstrip("/") + os.sep):
+        return "%s 不在用户家目录 %s 之内" % (p, home)
+    rel = os.path.relpath(p, home)
+    cur = home
+    for seg in ([] if rel == "." else rel.split(os.sep)):
+        cur = os.path.join(cur, seg)
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            return "无法检查 %s：%s" % (cur, e)
+        if stat.S_ISLNK(st.st_mode):
+            return "%s 是符号链接，门户拒绝在软链上读写" % cur
+    return None
+
+
+def _open_user_file(username, path, flags=os.O_RDONLY):
+    """在用户家目录内安全打开一个普通文件，返回 (fd, err)。"""
+    err = _link_free_chain(username, path)
+    if err:
+        return None, err
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return None, "读取失败：%s" % e
+    if not stat.S_ISREG(st.st_mode):
+        return None, "不是普通文件，拒绝访问"
+    uid = _uid_of(username)
+    if uid is not None and st.st_uid not in (uid, 0):
+        return None, "文件属主异常（uid=%s），拒绝访问" % st.st_uid
+    try:
+        return os.open(path, flags | os.O_NOFOLLOW), None
+    except OSError as e:
+        return None, "打开失败：%s" % e
+
+
+def _ensure_user_dir(username, uid, path, mode):
+    """在用户家目录内创建/校正一个目录（拒绝软链）。"""
+    err = _link_free_chain(username, path)
+    if err:
+        die("初始化目录失败：%s" % err)
+    if os.path.lexists(path):
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            die("初始化目录失败：%s 已存在但不是目录（疑似符号链接）" % path)
+    else:
+        os.mkdir(path, mode)
+    os.chown(path, int(uid), int(uid))
+    os.chmod(path, mode)
+
+
+def _ensure_dir_outside_home(path, uid, gid, mode):
+    """在 root 拥有的目录树里（如 /share/images/<user>）创建/校正子目录，拒绝软链。"""
+    if os.path.islink(path):
+        die("%s 是符号链接，拒绝使用" % path)
+    if os.path.lexists(path):
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            die("%s 已存在但不是目录" % path)
+    else:
+        os.mkdir(path, mode)
+    os.chown(path, int(uid), int(gid))
+    os.chmod(path, mode)
+
+
+def _check_regular_outside_home(path, allowed_uids):
+    """校验 /share/images 下的普通文件（拒绝软链、非普通文件、属主异常）。"""
+    real = os.path.realpath(path)
+    root = os.path.realpath(IMAGES_ROOT)
+    if not real.startswith(root.rstrip("/") + os.sep):
+        return "镜像路径越界：%s" % real
+    try:
+        st = os.lstat(real)
+    except OSError:
+        return "镜像不存在：%s" % path
+    if not stat.S_ISREG(st.st_mode):
+        return "镜像必须是普通文件（拒绝软链/设备/目录）：%s" % path
+    if st.st_uid not in allowed_uids:
+        return "镜像属主异常（uid=%s）：%s" % (st.st_uid, path)
+    return None
+
+
 def valid_user(u):
-    return bool(USER_RE.match(u or "")) and u not in RESERVED
+    """账号语义校验：格式合法 **且** 不是系统/保留账号。
+
+    用于一切"以该账号身份执行 / 写它的文件 / 注销它 / 提交它的作业"的命令。
+    """
+    return bool(USER_RE.match(u or "")) and not is_reserved(u)
 
 
 def name_ok(u):
-    """仅格式校验（不排除 root 等真实 OS 账号；root 不能被建号/注销，另有保留名单保护）。"""
+    """仅格式校验，**不排除**系统/保留账号。
+
+    只允许用于「纯读取、且不以该账号身份执行」的命令：
+        user-status（探测账号是否存在，_os_ok 需要）
+        quota / quota-all
+        slurm-info
+    其它一切命令（submit / kill / job-state / log / rm-log / get-keys / set-keys /
+    images / save-image / ensure-assoc / provision / unprovision / init）必须用
+    valid_user()，否则门户就能以 root、portal 等账号的身份做事（写它的 authorized_keys、
+    挂载它的家目录跑容器、注销它）。"""
     return bool(USER_RE.match(u or ""))
 
 
 def reserved_guard(u):
     """建号/注销类命令的保护：保留用户名（root/portal 等）一律拒绝。"""
-    return u in RESERVED
+    return is_reserved(u)
 
 
 def node_hostname():
     return sh_out(["hostname", "-s"])
 
 
+def is_management_node():
+    """/share 是本地文件系统 => 本机就是管理节点。
+
+    与 cluster-admin/add-user.sh 的角色判定同一套口径（findmnt，不写死主机名）。
+    注意：这里以前写的是 `node_hostname() != "admin"` —— "admin" 是老集群的主机名，
+    换到新站点后该条件恒为真，导致「改配额」（portal-ctl set-quota）**全线失效**，
+    门户上的「改配额」按钮也一直报"配额只能在 admin 节点设置"。
+    """
+    fstype = sh_out(["findmnt", "-no", "FSTYPE", "/share"], timeout=15)
+    return bool(fstype) and fstype not in ("nfs", "nfs4")
+
+
 def compute_nodes():
-    """admin 上可用的计算节点名（含 admin 自身），按 sinfo 分区实际输出。"""
+    """管理节点上可用的计算节点名（含管理节点自身），按 sinfo 分区实际输出。"""
     out_txt = sh_out(["sinfo", "-h", "-N", "-o", "%N"], timeout=30)
-    return [x for x in out_txt.split() if x] or ["admin"]
+    return [x for x in out_txt.split() if x] or [node_hostname()]
 
 
 def partition_name():
@@ -194,13 +382,25 @@ def nodes_ips(names=None):
     return ips
 
 
+def _shq(s):
+    """把单个参数安全地变成远端 shell 的一个词（POSIX 单引号转义）。"""
+    return "'" + str(s).replace("'", "'\"'\"'") + "'"
+
+
 def ssh_node(node, argv, timeout=60):
-    """在计算节点上以 root 执行 argv（本机直接执行）。"""
+    """在计算节点上以 root 执行 argv（本机直接执行）。
+
+    注意：ssh 会把 host 之后的 argv **用空格拼成一个字符串**交给远端登录 shell，
+    引号会丢失。历史写法 `["bash", "-c", "ss ... | grep ..."]` 因此被远端重新解析。
+    这里统一把每个参数做单引号转义后再拼，保证语义与本地执行一致（也堵住
+    "参数里带空格/元字符 → 远端被当代码执行" 的隐患）。
+    """
     if node == node_hostname():
         return run(argv, timeout=timeout)
+    remote = " ".join(_shq(a) for a in argv)
     return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                 "-o", "StrictHostKeyChecking=accept-new", "-p", SSH_PORT,
-                "root@" + node] + argv, timeout=timeout)
+                "root@" + node, remote], timeout=timeout)
 
 
 # ----------------------------------------------------------------------------
@@ -268,15 +468,26 @@ def _copy_scripts_to_nodes(nodes):
                   src, "root@%s:%s/add-user.sh" % (n, CLUSTER_ADMIN_DIR)], timeout=60)
         if rr.returncode != 0:
             return False, "向 %s 同步 add-user.sh 失败: %s" % (n, rr.stderr.strip()[:300])
-        ssh_node(n, ["chmod", "+x", "%s/add-user.sh" % CLUSTER_ADMIN_DIR], timeout=30)
+        rc = ssh_node(n, ["chmod", "+x", "%s/add-user.sh" % CLUSTER_ADMIN_DIR], timeout=30)
+        if rc.returncode != 0:
+            return False, "在 %s 上 chmod +x add-user.sh 失败: %s" % (n, rc.stderr.strip()[:200])
     return True, ""
 
 
-def cmd_provision_user(username, quota, skip_os):
+def cmd_provision_user(username, quota, skip_os, uid=None):
     if not valid_user(username):
         die("非法用户名")
-    if not QUOTA_RE.match(quota or ""):
-        die("非法配额值: %s（例 500G / 1T）" % quota)
+    if not quota_valid(quota):
+        die("非法配额值: %s（例 500G / 1T，或「不限」）" % quota)
+    if uid is not None:
+        # 允许调用方（测试/CI）把账号钉在指定 UID，例如保留号段 59000-59999，
+        # 这样测试账号永远不会占用真实用户的 1000+ 号段
+        if not str(uid).isdigit():
+            die("--uid 必须是整数")
+        if not (1000 <= int(uid) < 60000):   # login.defs 的 UID_MIN / UID_MAX
+            die("--uid 必须在 [1000, 60000) 内")
+        uid = str(int(uid))
+    requested_uid = uid          # 调用方指定的 UID（None = 自动分配）
     host = node_hostname()
     nodes = compute_nodes()
 
@@ -288,20 +499,39 @@ def cmd_provision_user(username, quota, skip_os):
         uid = r.stdout.strip()
         if not uid.isdigit():
             die("读取 %s UID 失败" % username)
+        if requested_uid and uid != requested_uid:
+            die("--uid %s 与 %s 上 %s 的现有 UID(%s) 不符"
+                % (requested_uid, host, username, uid))
+        rg = run(["id", "-g", username])
+        gid = rg.stdout.strip() if rg.returncode == 0 else ""
+        gid_warn = []
         for n in nodes:
             if n == host:
                 continue
             rr = ssh_node(n, ["id", "-u", username])
             if rr.returncode != 0 or rr.stdout.strip() != uid:
                 die("OS 账号 %s 在 %s 上不存在或 UID(%s)与 admin(%s) 不一致；"
-                    "请先在计算节点建号（add-user.sh %s -u %s）"
-                    % (username, n, rr.stdout.strip() or "?", uid, username, uid))
+                    "请先在计算节点建号（add-user.sh %s -u %s -g %s）"
+                    % (username, n, rr.stdout.strip() or "?", uid, username, uid, gid or "<GID>"))
+            # UID 一致是硬要求：重复 UID 会让 enroot 只按 UID 注入一条 passwd 记录，
+            # 容器内就解析不到该用户名，用户 ssh 报 Permission denied (publickey)。
+            # GID 漂移不致命（只影响 NFS 上属组），因此只提示不阻断。
+            rn = ssh_node(n, ["id", "-g", username])
+            gid_n = rn.stdout.strip() if rn.returncode == 0 else ""
+            if gid and gid_n and gid_n != gid:
+                gid_warn.append("%s(GID %s≠%s)" % (n, gid_n, gid))
         _init_user_dirs(username, uid)
         # 「OS 账号已存在」这条路不会走 add-user.sh，必须在这里补会计关联，
         # 否则用户能申请但一提交就报 Invalid account or account/partition combination
         assoc_ok, assoc_err = _ensure_assoc(username)
-        out({"ok": True, "mode": "existing", "username": username, "uid": int(uid),
-             "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err})
+        res = {"ok": True, "mode": "existing", "username": username, "uid": int(uid),
+               "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err}
+        if gid.isdigit():
+            res["gid"] = int(gid)
+        if gid_warn:
+            res["gid_mismatch"] = ("warning: 各节点 GID 与管理节点不一致 " + ",".join(gid_warn)
+                                   + "；修正: groupmod -g <主节点GID> <用户> && usermod -g <主节点GID> <用户>")
+        out(res)
         return
 
     _ensure_admin_scripts()
@@ -310,23 +540,38 @@ def cmd_provision_user(username, quota, skip_os):
         die(err)
 
     # 1) admin 建号（建家目录 + 配额 + sacctmgr）
-    r = run([os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"), username, quota], timeout=120)
+    build_argv = [os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"), username, quota]
+    if uid:
+        build_argv += ["-u", uid]
+    r = run(build_argv, timeout=120)
     if r.returncode != 0:
-        die("admin 建号失败: %s" % r.stderr.strip()[:400] or r.stdout.strip()[:400])
+        die("管理节点 %s 建号失败: %s" % (node_hostname(), r.stderr.strip()[:400] or r.stdout.strip()[:400]))
     if "已存在，跳过" in r.stdout:
-        die("用户名 %s 已存在于 admin，拒绝重复开通（如需开通已存在账号请勾选“OS 账号已存在”）" % username)
+        die("用户名 %s 已存在于管理节点 %s，拒绝重复开通（如需开通已存在账号请勾选“OS 账号已存在”）"
+            % (username, host))
 
     r = run(["id", "-u", username])
     if r.returncode != 0:
         die("读取新用户 UID 失败")
-    uid = r.stdout.strip()
+    uid_now = r.stdout.strip()
+    if uid and uid_now != uid:
+        die("建号后 UID 不符：期望 %s，实际 %s" % (uid, uid_now or "?"))
+    uid = uid_now
 
-    # 2) 计算节点建号（-u 强制同 UID）
+    # 主节点的 GID 是权威值，必须一并下发到计算节点：
+    # 只对齐 UID 会让各计算节点自行取 GID，同一用户在 NFS 上的属组不一致
+    # （曾经出现主节点 gid=1002、计算节点 gid=1003 的漂移）
+    rg = run(["id", "-g", username])
+    if rg.returncode != 0:
+        die("读取新用户 GID 失败")
+    gid = rg.stdout.strip()
+
+    # 2) 计算节点建号（-u/-g 强制同 UID/GID）
     for n in nodes:
         if n == host:
             continue
         rr = ssh_node(n, [os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"),
-                          username, "-u", uid], timeout=60)
+                          username, "-u", uid, "-g", gid], timeout=60)
         if rr.returncode != 0:
             die("计算节点 %s 建号失败: %s" % (n, rr.stderr.strip()[:400] or rr.stdout.strip()[:400]))
 
@@ -334,6 +579,7 @@ def cmd_provision_user(username, quota, skip_os):
     # add-user.sh 已经建过关联；这里幂等再确认一次，避免脚本被改动后静默退化
     _ensure_assoc(username)
     out({"ok": True, "mode": "new", "username": username, "uid": int(uid),
+         "gid": int(gid) if gid.isdigit() else None,
          "quota": quota, "nodes": nodes})
 
 
@@ -365,19 +611,36 @@ def _ensure_assoc(username):
 
 
 def _init_user_dirs(username, uid):
-    home = user_home(username)
-    for d in (os.path.join(home, ".ssh"), os.path.join(home, ".portal", "logs")):
-        rr = run(["install", "-d", "-o", username, "-g", username, "-m", "700" if d.endswith(".ssh") else "755", d])
-        if rr.returncode != 0:
-            die("初始化 %s 失败: %s" % (d, rr.stderr.strip()[:300]))
-    # 空 authorized_keys（若不存在）
-    ak = os.path.join(home, ".ssh", "authorized_keys")
-    if not os.path.exists(ak):
-        with open(ak, "w", encoding="utf-8"):
-            pass
-        os.chown(ak, int(uid), int(uid))
+    """初始化 ~/.portal/logs 与 ~/.ssh。
+
+    不用 `install -d`：它会**跟随符号链接**，把属主/权限作用到软链指向的真实目录上
+    （实测：把软链指向 /etc/cron.d 再触发一次，真实目录属主就被改成了普通用户）。
+    这里逐级 lstat 校验后自己 mkdir/chown/chmod。
+
+    目录属主刻意保持现状：`~/.portal` 归 root（用户无法在其中增删条目，因此不能把
+    logs 换成软链）；`~/.portal/logs` 与 `~/.ssh` 归用户（日志与公钥本来就由该用户维护）。
+    """
+    home, err = checked_home(username)
+    if err:
+        die(err)
+    if os.path.islink(home):
+        die("家目录 %s 是符号链接，拒绝初始化" % home)
+    if not os.path.isdir(home):
+        die("用户家目录不存在：%s" % home)
+    _ensure_user_dir(username, 0, os.path.join(home, ".portal"), 0o755)
+    _ensure_user_dir(username, uid, os.path.join(home, ".portal", "logs"), 0o755)
+    ssh_dir = os.path.join(home, ".ssh")
+    _ensure_user_dir(username, uid, ssh_dir, 0o700)
+    ak = os.path.join(ssh_dir, "authorized_keys")
+    if os.path.lexists(ak):
+        st = os.lstat(ak)
+        if not stat.S_ISREG(st.st_mode):
+            die("%s 已存在但不是普通文件（疑似符号链接），拒绝继续" % ak)
         os.chmod(ak, 0o600)
     else:
+        fd = os.open(ak, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        os.chown(ak, int(uid), int(uid))
         os.chmod(ak, 0o600)
     return True
 
@@ -405,6 +668,19 @@ def cmd_unprovision_user(username):
         out({"ok": True, "username": username, "skipped": "not-exists"})
         return
     uid = r.stdout.strip()
+    # 再加一道"像不像门户代建用户"的判断：仅靠名字黑名单不够 ——
+    # sshd / messagebus / mysql / chrony 等系统账号都不在名单里，
+    # 一旦被 `userdel -r` 就会破坏宿主机（例如删掉 /run/sshd 让 sshd 起不来）。
+    # 只允许"正常用户号段 + 家目录在 /share/home 之下"的账号被注销。
+    home = user_home(username)
+    try:
+        uid_i = int(uid)
+    except ValueError:
+        die("读取 %s UID 失败" % username)
+    if not (1000 <= uid_i < 60000) or not home.startswith(SHARE_HOME.rstrip("/") + "/"):
+        die("拒绝注销账号 %s：UID=%s、家目录=%s，不像门户代建用户"
+            "（仅允许 UID∈[1000,60000) 且家目录位于 %s 之下）"
+            % (username, uid, home, SHARE_HOME))
     import time
     # 杀掉该用户所有作业，等待队列清空（容器回收）
     run(["runuser", "-u", username, "--", "scancel", "-u", username], timeout=60)
@@ -414,7 +690,17 @@ def cmd_unprovision_user(username):
             break
         time.sleep(2)
 
+    def _exists_on(node):
+        argv = ["id", "-u", username]
+        return (run(argv, timeout=30) if node == host else ssh_node(node, argv, timeout=30)).returncode == 0
+
     def _del_on_node(node, rm_home=False):
+        # 幂等：本机/该节点本来就没有这个账号，也算"删干净"。
+        # 否则 userdel 对不存在的账号返回非 0，会被误报成"删除残留失败" ——
+        # 而"只在某一个节点上存在的残留账号"正是最需要能干净注销的情况
+        # （例如历史上在计算节点上用裸 useradd 建出来、没清理的测试账号）。
+        if not _exists_on(node):
+            return True
         argv = ["userdel"] + (["-r"] if rm_home else []) + [username]
         last = ssh_node(node, argv, timeout=60) if node != host else run(argv, timeout=120)
         for _ in range(5):
@@ -422,6 +708,8 @@ def cmd_unprovision_user(username):
                 return True
             time.sleep(3)
             last = ssh_node(node, argv, timeout=60) if node != host else run(argv, timeout=120)
+        if not _exists_on(node):
+            return True
         return last
 
     # 先删计算节点（进程/容器在本机，避免 admin 家目录删除时被占用）
@@ -488,11 +776,10 @@ def cmd_submit():
         if k not in spec:
             die("缺少字段 %s" % k)
     user = str(spec["user"])
-    if not name_ok(user):
-        die("非法用户名")
-    if run_ok(["id", user]) is False:
-        # id 存在性
-        pass
+    # 保留账号（root/portal/slurm…）绝不能"以它的身份"提交作业：
+    # 它的家目录就是 /root 或 /var/lib/cluster-portal，会被 --container-mounts 挂进容器。
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     if run(["id", "-u", user]).returncode != 0:
         die("OS 账号 %s 不存在" % user)
 
@@ -503,9 +790,14 @@ def cmd_submit():
         die("节点 %s 不在分区内（可用: %s）" % (node, ",".join(nodes)))
 
     image = str(spec["image"])
-    if not image.startswith("/share/images/") or not image.endswith(".sqsh") \
-            or not os.path.isfile(image):
-        die("镜像路径非法或不存在: %s" % image)
+    if not image.startswith(IMAGES_ROOT + "/") or not image.endswith(".sqsh"):
+        die("镜像路径非法: %s" % image)
+    if ".." in image.split("/") or "//" in image:
+        die("镜像路径非法（含 .. 或 //）: %s" % image)
+    ierr = _check_regular_outside_home(image, (0, _uid_of(user)))
+    if ierr:
+        die(ierr)
+    image = os.path.realpath(image)
 
     try:
         gpus = int(spec["gpus"])
@@ -558,11 +850,17 @@ def cmd_submit():
         if not _preflight_port_on_node(node, port):
             die("端口 %d 在 %s 上已被占用（可能与门户外任务冲突），请换端口" % (port, node))
 
-    home = user_home(user)
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
     if not os.path.isdir(home):
         die("用户家目录 %s 不存在" % home)
     logdir = os.path.join(home, ".portal", "logs")
-    run(["install", "-d", "-o", user, "-g", user, "-m", "755", logdir], timeout=30)
+    # 不用 install -d（会跟随软链改真实目录的属主/权限）
+    if os.path.isdir(os.path.join(home, ".portal")):
+        _ensure_user_dir(user, _uid_of(user), logdir, 0o755)
+    else:
+        _init_user_dirs(user, _uid_of(user))
 
     # 兜底：确保会计关联存在。缺关联时 sbatch 会以
     # "Invalid account or account/partition combination specified" 失败；
@@ -582,9 +880,10 @@ def cmd_submit():
             #   error: couldn't chdir to `/opt/cluster-portal': No such file or directory
             # 家目录在 NFS 上、各节点都有，是最自然的工作目录。
             "--chdir=" + home,
-            # PWD 也要一起纠正：--export=ALL 会把门户进程的 PWD(=/opt/cluster-portal)
-            # 透传进来，和实际 cwd 不一致，部分程序会据此走错路径。
-            "--export=ALL,SSH_PORT=%d,PWD=%s" % (port, home),
+            # 环境只导出**显式白名单**：历史写法 --export=ALL 会把本助手进程的整份环境
+            # （sudo 的 SUDO_* 、门户服务的 PORTAL_* 等）带进用户容器；现在只带这几个。
+            "--export=HOME=%s,USER=%s,LOGNAME=%s,PATH,PWD=%s,SSH_PORT=%d"
+            % (home, user, user, home, port),
             "--container-image=" + image,
             "--container-env=SSH_PORT",
             "--container-mounts=%s:%s" % (home, home),
@@ -596,6 +895,14 @@ def cmd_submit():
         argv.insert(argv.index("-J"), node)
     if gpus >= 1:
         argv.insert(argv.index("-J"), "--gres=gpu:%d" % gpus)
+    # 安全约束：绝不加 --container-remap-root。
+    # 镜像内 /opt/start_ssh.sh 只在**非 root 分支**才关掉口令认证（UsePAM=no /
+    # PasswordAuthentication=no）；容器一旦以 root 运行，sshd 就沿用镜像内置配置
+    # （PermitRootLogin yes + PermitEmptyPasswords yes + 内置口令 root:5233），
+    # 而 enroot 共享宿主机网络命名空间 → 等于把一个固定口令的 sshd 暴露给整个内网。
+    # 当前安全完全依赖 ENROOT_REMAP_ROOT=n 且这里不传该参数，因此显式拦住。
+    if any(str(a).startswith("--container-remap-root") for a in argv):
+        die("内部错误：门户作业禁止使用 --container-remap-root（会让容器变 root 模式）")
     # 显式设置提交环境 HOME/USER，避免 runuser/服务目录把 HOME 带进作业（--export=ALL 会透传）
     r = run(["runuser", "-u", user, "--"] + argv, timeout=60,
             env={"HOME": home, "USER": user, "LOGNAME": user})
@@ -612,8 +919,8 @@ def cmd_submit():
 
 
 def cmd_kill(user, job_id):
-    if not name_ok(user):
-        die("非法用户名")
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     try:
         job_id = int(job_id)
     except ValueError:
@@ -637,8 +944,8 @@ def cmd_kill(user, job_id):
 
 
 def cmd_job_state(user, job_id):
-    if not name_ok(user):
-        die("非法用户名")
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     try:
         job_id = int(job_id)
     except ValueError:
@@ -663,24 +970,34 @@ def cmd_job_state(user, job_id):
 
 
 def cmd_log(user, job_id, lines):
-    if not name_ok(user):
-        die("非法用户名")
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     try:
         job_id = int(job_id)
         lines = max(1, min(int(lines), 5000))
     except ValueError:
         die("非法参数")
-    path = os.path.join(user_home(user), ".portal", "logs", "%d.out" % job_id)
-    if not os.path.isfile(path):
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
+    path = os.path.join(home, ".portal", "logs", "%d.out" % job_id)
+    if not os.path.lexists(path):
         die("日志文件不存在: %s" % path)
+    # 安全：绝不能用 os.path.isfile()+open() —— 用户可以在自己家目录里把
+    # <jobid>.out 换成软链（例如指向 /etc/cluster-portal/users.passwd），
+    # root 一旦跟随就变成"任意 root 文件读"。_open_user_file 会拒绝软链/非普通文件/他人所有。
+    fd, oerr = _open_user_file(user, path, os.O_RDONLY)
+    if oerr:
+        die("读取日志失败：%s" % oerr)
     try:
-        with open(path, "rb") as fh:
-            fh.seek(0, 2)
-            size = fh.tell()
-            fh.seek(max(0, size - lines * 4096))
-            data = fh.read()
+        size = os.fstat(fd).st_size
+        start = max(0, size - lines * 4096)
+        os.lseek(fd, start, os.SEEK_SET)
+        data = os.read(fd, max(0, size - start))
     except OSError as e:
         die("读取日志失败: %s" % e)
+    finally:
+        os.close(fd)
     text = data.decode("utf-8", "replace")
     tail = text.splitlines()[-lines:]
     out({"ok": True, "job_id": job_id, "path": path,
@@ -692,14 +1009,20 @@ def cmd_log(user, job_id, lines):
 # ----------------------------------------------------------------------------
 def cmd_get_keys(user):
     """读取某用户 authorized_keys 中的有效公钥行（root 才有权限读 600 文件）。"""
-    if not name_ok(user):
-        die("非法用户名")
-    home = user_home(user)
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
     ak = os.path.join(home, ".ssh", "authorized_keys")
     keys = []
-    if os.path.isfile(ak):
+    if os.path.lexists(ak):
+        # 同样拒绝软链：~/.ssh/authorized_keys 可以被换成指向任意 root 可读文件的软链
+        fd, oerr = _open_user_file(user, ak, os.O_RDONLY)
+        if oerr:
+            die("读取 authorized_keys 失败：%s" % oerr)
         try:
-            with open(ak, "r", encoding="utf-8", errors="replace") as fh:
+            with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as fh:
                 for ln in fh:
                     s = ln.strip()
                     if s and PUBKEY_RE.match(s) and s not in keys:
@@ -710,8 +1033,8 @@ def cmd_get_keys(user):
 
 
 def cmd_set_keys(user):
-    if not name_ok(user):
-        die("非法用户名")
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     try:
         keys = json.load(sys.stdin)
     except Exception:
@@ -728,20 +1051,67 @@ def cmd_set_keys(user):
     r = run(["id", "-u", user])
     if r.returncode != 0:
         die("OS 账号 %s 不存在" % user)
-    uid = r.stdout.strip()
-    home = user_home(user)
-    sshd = os.path.join(home, ".ssh")
-    run(["install", "-d", "-o", user, "-g", user, "-m", "700", sshd], timeout=30)
-    ak = os.path.join(sshd, "authorized_keys")
-    tmp = ak + ".portal-tmp"
+    uid = int(r.stdout.strip())
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
+    sshd_dir = os.path.join(home, ".ssh")
+    # 安全：~/.ssh 属于用户本人（0700），因此用户可以在这里建软链。
+    # 历史实现把临时文件写成 authorized_keys + ".portal-tmp"（固定可猜名）并用
+    # open(...,"w") 写 —— 用户只需
+    #     ln -s /root/.ssh/authorized_keys ~/.ssh/authorized_keys.portal-tmp
+    # 就能让 root 把公钥写进 /root/.ssh/authorized_keys。
+    # 现在：① 逐级拒绝软链；② 目标必须属主正确；③ 临时文件建在 root 私有目录。
+    err = _link_free_chain(user, sshd_dir)
+    if err:
+        die("写入 authorized_keys 失败：%s" % err)
+    if os.path.islink(sshd_dir) or not os.path.isdir(sshd_dir):
+        die("写入 authorized_keys 失败：%s 不是目录或为符号链接" % sshd_dir)
+    if os.lstat(sshd_dir).st_uid != uid:
+        die("写入 authorized_keys 失败：%s 的属主不是 %s" % (sshd_dir, user))
+    ak = os.path.join(sshd_dir, "authorized_keys")
+    if os.path.lexists(ak) and not stat.S_ISREG(os.lstat(ak).st_mode):
+        die("写入 authorized_keys 失败：%s 已存在但不是普通文件（疑似符号链接）" % ak)
+
+    # 临时文件：必须与目标**同一个文件系统**（否则 os.replace 会 EXDEV —— /run 是 tmpfs，
+    # 家目录在 NFS 上），因此建在 .ssh 目录内，但满足两个关键约束：
+    #   ① 名字随机（tempfile.mkstemp），不是可猜的 固定名；
+    #   ② 以 O_CREAT|O_EXCL|O_NOFOLLOW 打开 → 用户预置的软链只会让 open 直接 EEXIST 失败，
+    #      绝不可能被"跟随"（历史漏洞正是 open("authorized_keys.portal-tmp","w") 跟随软链）。
+    # 写入后按 **inode** 校验替换结果，防止用户在替换窗口内掉包。
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd, tmp = tempfile.mkstemp(prefix=".ak-", dir=sshd_dir)
+    except OSError as e:
+        die("写入 authorized_keys 失败（无法创建临时文件）: %s" % e)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(cleaned) + "\n")
-        os.chown(tmp, int(uid), int(uid))
+            fh.flush()
+            os.fsync(fh.fileno())
+            st_created = os.fstat(fh.fileno())
         os.chmod(tmp, 0o600)
+        os.chown(tmp, uid, uid)
+        # os.replace 替换的是目录项本身，不跟随软链；同文件系统内是原子操作
         os.replace(tmp, ak)
     except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         die("写入 authorized_keys 失败: %s" % e)
+    try:
+        st_now = os.lstat(ak)
+    except OSError as e:
+        die("写入 authorized_keys 失败：结果不可读 %s" % e)
+    if (not stat.S_ISREG(st_now.st_mode)
+            or st_now.st_ino != st_created.st_ino
+            or st_now.st_dev != st_created.st_dev
+            or os.path.islink(ak)):
+        try:
+            os.unlink(ak)
+        except OSError:
+            pass
+        die("写入 authorized_keys 失败：写入结果被替换（检测到符号链接/掉包），已回滚")
     out({"ok": True, "user": user, "keys": len(cleaned),
          "path": ak})
 
@@ -749,7 +1119,6 @@ def cmd_set_keys(user):
 # ----------------------------------------------------------------------------
 # /share 磁盘配额（实际从 OS 读取；配额软=硬，block 单位为 1K）
 # ----------------------------------------------------------------------------
-QUOTA_SIZE_RE = re.compile(r"^[1-9][0-9]{0,3}[GgTt]$")
 
 
 def _quota_rows():
@@ -803,17 +1172,23 @@ def cmd_quota_all():
 
 def cmd_set_quota(username, size):
     """设置 /share 配额（软=硬）。校验后调用 /opt/cluster-admin/set-quota.sh。"""
-    if not valid_user(username):
-        die("非法用户名（不能对系统/保留账号设置配额）")
+    if not USER_RE.match(username or ""):
+        die("非法用户名")
     if run(["id", "-u", username]).returncode != 0:
         die("OS 账号 %s 不存在" % username)
-    if not QUOTA_SIZE_RE.match(size or ""):
-        die("配额格式错误: %s（例 100G / 500G / 1T）" % size)
+    if not quota_valid(size):
+        die("配额格式错误: %s（例 100G / 500G / 1T，或「不限」）" % size)
+    # 保留账号（root/slurm/nobody 等）不允许设**具体额度**，但允许设「不限」——
+    # 那是清除限额，也是把库里遗留的具体值（如 root 的建号默认 500G）与 OS 现状对齐的途径
+    if is_reserved(username) and not _QUOTA_UNLIMITED_RE.match((size or "").strip()):
+        die("系统/保留账号不能设置具体配额（可设为「不限」清除限额）")
     if not os.path.isfile(os.path.join(CLUSTER_ADMIN_DIR, "set-quota.sh")):
         die("缺少 %s/set-quota.sh" % CLUSTER_ADMIN_DIR)
-    # 仅 admin 本机可设（set-quota.sh 内部也会检查）
-    if node_hostname() != "admin":
-        die("配额只能在 admin 节点设置")
+    # 仅管理节点可设：/share 必须是本地文件系统（计算节点上 /share 是 NFS，
+    # setquota 无意义）。set-quota.sh 内部也会按 findmnt 再判一次。
+    if not is_management_node():
+        die("配额只能在管理节点设置：本机 /share 不是本地文件系统"
+            "（管理节点 = /share 为本地盘的那台）")
     r = run(["bash", os.path.join(CLUSTER_ADMIN_DIR, "set-quota.sh"), username, size],
             timeout=90)
     if r.returncode != 0:
@@ -881,14 +1256,20 @@ def cmd_slurm_info(username):
 
 def cmd_rm_log(user, job_id):
     """删除某作业日志文件（用户删除实例记录时同步清理，避免残留）。"""
-    if not name_ok(user):
-        die("非法用户名")
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
     try:
         job_id = int(job_id)
     except ValueError:
         die("非法 jobid")
-    path = os.path.join(user_home(user), ".portal", "logs", "%d.out" % job_id)
-    if os.path.isfile(path):
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
+    path = os.path.join(home, ".portal", "logs", "%d.out" % job_id)
+    cerr = _link_free_chain(user, path)
+    if cerr:
+        die("删除日志失败：%s" % cerr)
+    if os.path.lexists(path):
         try:
             os.remove(path)
         except OSError as e:
@@ -900,13 +1281,12 @@ def cmd_rm_log(user, job_id):
 # ----------------------------------------------------------------------------
 # 个人镜像（保存运行中容器 → /share/images/<user>/<name>.sqsh）
 # ----------------------------------------------------------------------------
-IMAGES_ROOT = "/share/images"
 
 
 def cmd_images(username):
     """列出 /share/images/<username> 下该用户的个人镜像（web 以 root 视角读取 700 目录）。"""
-    if not name_ok(username):
-        die("非法用户名")
+    if not valid_user(username):
+        die("非法用户名或系统保留账号: %s" % username)
     d = os.path.join(IMAGES_ROOT, username)
     imgs = []
     if os.path.isdir(d):
@@ -937,8 +1317,8 @@ def cmd_save_image(username, job_id, name, force):
       /share，文件归用户所有 → 计入该用户磁盘配额）；
     - 用户名 root(uid 0) 从计算节点写 NFS 会被 root_squash，故先导出到节点本地再 scp 回 admin。
     """
-    if not name_ok(username):
-        die("非法用户名")
+    if not valid_user(username):
+        die("非法用户名或系统保留账号: %s" % username)
     if not IMG_NAME_RE.match(name or ""):
         die("镜像名只能包含英文/数字/下划线（1-64 位），不含空格或特殊字符")
     try:
@@ -968,12 +1348,13 @@ def cmd_save_image(username, job_id, name, force):
     if not uid.isdigit():
         die("读取 %s UID 失败" % username)
 
-    home = user_home(username)
+    home, herr = checked_home(username)
+    if herr:
+        die(herr)
     tdir = os.path.join(IMAGES_ROOT, username)
-    # 镜像目录（在 admin 上创建/校正属主，root 真实权限；web 用户由 images 命令经本脚本读取）
-    rr = run(["install", "-d", "-o", username, "-g", username, "-m", "700", tdir])
-    if rr.returncode != 0:
-        die("创建个人镜像目录失败: %s" % (rr.stderr.strip()[:200] or rr.stdout.strip()[:200]))
+    # 不用 install -d：改为显式拒绝软链后 mkdir/chown/chmod（/share/images 本身 root 755，
+    # 正常不会被外人写，这里是纵深防御）
+    _ensure_dir_outside_home(tdir, int(uid), int(uid), 0o700)
     target = os.path.join(tdir, name + ".sqsh")
     if os.path.exists(target) and not force:
         die("个人镜像已存在: %s（如需覆盖请重新提交并确认覆盖）" % target)
@@ -982,10 +1363,15 @@ def cmd_save_image(username, job_id, name, force):
     export_argv = ["enroot", "export"] + (["-f"] if force else []) + \
                   ["-o", target, container]
     timeout = 3600
+    import time as _time
+    t0 = _time.time()
+    # 收集导出过程的输出（尾部），供门户写进"门户操作日志"，失败时便于定位
+    chunks = []
 
     if node == host:
         # 本机（admin）直接执行（真实 root 环境；uid=0 也无 root_squash 问题）
         r = run(_as_user_argv(username, home, export_argv), timeout=timeout)
+        chunks.append((r.stdout or "") + (r.stderr or ""))
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
@@ -995,6 +1381,7 @@ def cmd_save_image(username, job_id, name, force):
         r0 = ssh_node(node, _as_user_argv(username, "/",
                                            ["enroot", "export", "-o", local_tmp, container]),
                       timeout=timeout)
+        chunks.append((r0.stdout or "") + (r0.stderr or ""))
         if r0.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r0.stderr.strip()[-300:] or r0.stdout.strip()[-300:]))
@@ -1008,6 +1395,7 @@ def cmd_save_image(username, job_id, name, force):
         os.replace(target + ".tmp", target)
     else:
         r = ssh_node(node, _as_user_argv(username, home, export_argv), timeout=timeout)
+        chunks.append((r.stdout or "") + (r.stderr or ""))
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
@@ -1019,8 +1407,11 @@ def cmd_save_image(username, job_id, name, force):
     if size <= 0:
         _cleanup_partial(target)
         die("镜像导出结果为空文件（导出被中断？），请重试")
+    dur = int(_time.time() - t0)
+    tail = "".join(chunks).strip()
     out({"ok": True, "user": username, "job_id": job_id, "name": name,
-         "path": target, "size": size, "node": node})
+         "path": target, "size": size, "node": node,
+         "duration_s": dur, "output": tail[-1500:]})
 
 
 def _cleanup_partial(target):
@@ -1045,8 +1436,15 @@ def main():
             cmd_sinfo()
         elif cmd == "provision-user":
             if len(sys.argv) < 4:
-                die("用法: provision-user <用户名> <配额> [--skip-os]")
-            cmd_provision_user(sys.argv[2], sys.argv[3], "--skip-os" in sys.argv[4:])
+                die("用法: provision-user <用户名> <配额> [--skip-os] [--uid N]")
+            rest = sys.argv[4:]
+            uid_opt = None
+            if "--uid" in rest:
+                i = rest.index("--uid")
+                if i + 1 >= len(rest):
+                    die("--uid 需要一个整数值")
+                uid_opt = rest[i + 1]
+            cmd_provision_user(sys.argv[2], sys.argv[3], "--skip-os" in rest, uid_opt)
         elif cmd == "unprovision-user":
             if len(sys.argv) < 3:
                 die("用法: unprovision-user <用户名>")
@@ -1058,6 +1456,8 @@ def main():
         elif cmd == "ensure-assoc":
             if len(sys.argv) < 3:
                 die("用法: ensure-assoc <用户名>")
+            if not valid_user(sys.argv[2]):
+                die("非法用户名或系统保留账号: %s" % sys.argv[2])
             ok, err = _ensure_assoc(sys.argv[2])
             if not ok:
                 die(err)

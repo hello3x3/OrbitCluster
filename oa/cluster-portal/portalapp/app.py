@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -25,11 +26,37 @@ from . import siteconf
 from .db import (ACTIVE_STATES, DB, STATE_CN, init_db)
 
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-# 与 deploy/portal-ctl RESERVED 对齐：这些 OS 账号不能设配额/建号
+# 与 deploy/portal-ctl RESERVED 对齐：这些 OS 账号不能设配额/建号/托管密钥/被提交作业。
+# 注意 systemd-* 必须用前缀匹配 —— 写成集合里的字面量 "systemd-*" 永远匹配不上。
 RESERVED_OS = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games",
                "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup",
-               "list", "irc", "_apt", "systemd-*"}
+               "list", "irc", "_apt"}
+RESERVED_OS_PREFIX = ("systemd-", "nvidia-", "ntp", "chrony", "messagebus", "polkitd",
+                      "mysql", "postgres", "sshd", "dnsmasq", "landscape")
+
+
+def is_reserved_os(name):
+    """是否系统/保留账号（精确名 + 前缀）。"""
+    name = name or ""
+    return name in RESERVED_OS or name.startswith(RESERVED_OS_PREFIX)
+
+
 QUOTA_SIZE_RE = re.compile(r"^[1-9][0-9]{0,3}[GT]$")
+# 「不限配额」的规范写法（入库与展示统一用它）；另接受 0 / UNLIMITED 作为输入别名
+QUOTA_UNLIMITED = "不限"
+_QUOTA_UNLIMITED_RE = re.compile(r"^(?:不限|0|UNLIMITED)$", re.IGNORECASE)
+
+
+def quota_canonical(size):
+    """额度写法归一化：不限 统一成 QUOTA_UNLIMITED，其余转大写（500g → 500G）。"""
+    s = (size or "").strip()
+    return QUOTA_UNLIMITED if _QUOTA_UNLIMITED_RE.match(s) else s.upper()
+
+
+def quota_valid(size):
+    """额度是否合法：'100G' / '1T' 之类，或「不限」。"""
+    s = quota_canonical(size)
+    return bool(QUOTA_SIZE_RE.match(s) or s == QUOTA_UNLIMITED)
 # 个人镜像名：仅英文/数字/下划线（保存路径 /share/images/<user>/<name>.sqsh）
 IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
@@ -53,6 +80,23 @@ NODE_IP = {}
 
 def _row_dict(row):
     return {k: row[k] for k in row.keys()}
+
+
+# 门户事件类型 → 展示用中文标签（见 db.add_event 的调用点）
+EVENT_CN = {
+    "submit": "提交", "start": "启动", "stop": "停机",
+    "save": "保存镜像", "save-detail": "保存输出",
+    "expire": "到期", "error": "错误",
+}
+
+
+def _events_payload(db, iid):
+    """把某实例的门户事件整理成前端直接可渲染的列表（时间正序）。"""
+    return [{"ts": (r["ts"] or "").replace("T", " ")[:19],
+             "kind": r["kind"],
+             "label": EVENT_CN.get(r["kind"], r["kind"]),
+             "message": r["message"]}
+            for r in db.events_for(iid)]
 
 
 # ------------------------------------------------------------------ 镜像（公共 / 个人）
@@ -115,10 +159,43 @@ def _fmt_limit(kb):
     return "不限" if not kb else _fmt_bytes(kb)
 
 
+def _quota_to_kb(size):
+    """把门户里的额度写法换成 KB，与 repquota 口径一致（1K=1024B）；「不限」= 0。"""
+    s = quota_canonical(size)
+    if s == QUOTA_UNLIMITED:
+        return 0
+    m = re.match(r"^([1-9][0-9]{0,3})([GT])$", s)
+    if not m:
+        return 0
+    n = int(m.group(1))
+    return n * 1024 * 1024 if m.group(2) == "G" else n * 1024 * 1024 * 1024
+
+
 def safe_json(obj):
     """JSON 序列化并转义 < > &，可安全嵌入 <script> 块。"""
     return (json.dumps(obj, ensure_ascii=False)
             .replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e"))
+
+
+def dup_task_msg(inst, task_name):
+    """任务名重复时的统一提示（用户申请页与管理员代申请页共用）。
+
+    命名规则：同一用户下任务名唯一，且停机/取消都不释放名称，必须删除记录才能复用。
+    """
+    state = STATE_CN.get(inst["state"], inst["state"])
+    who = ("作业 #%s" % inst["job_id"]) if inst["job_id"] else ("记录 #%d" % inst["id"])
+    return ("任务名称「%s」已被占用：%s（%s）。同一用户下任务名不能重复，"
+            "停机也不会释放名称——请换一个名称，或先在「我的资源」里删除那条记录后再复用"
+            % (task_name, who, state))
+
+
+def rollback_submit(username, job_id):
+    """入库失败时回滚刚提交的作业，避免出现门户里看不见的孤儿作业。"""
+    try:
+        ctl.kill(username, job_id)
+        return "已回滚作业 #%s" % job_id
+    except ctl.CtlError as e:
+        return "作业 #%s 回滚失败（%s），请管理员手动 scancel" % (job_id, str(e)[:80])
 
 
 def _secret():
@@ -141,6 +218,15 @@ def create_app(testing=False):
     app.secret_key = _secret()
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # 会话**绝对**过期 12 小时（登录时置 session.permanent=True）。
+    # 注意 Flask 的 session 是无状态签名 Cookie：不设这个 + 不在下面校验 session_epoch，
+    # 被偷走的 Cookie 就会**永久有效**（改密/登出都吊销不了）。
+    app.config["PERMANENT_SESSION_LIFETIME"] = datetime.timedelta(hours=12)
+    app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+    # 门户默认跑在明文 HTTP 上，所以 Secure 默认关闭；一旦前面架了 TLS，
+    # 用 PORTAL_COOKIE_SECURE=1 打开（否则浏览器不会回传 Cookie，登录会坏）。
+    if os.environ.get("PORTAL_COOKIE_SECURE", "0") == "1":
+        app.config["SESSION_COOKIE_SECURE"] = True
     app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
     app.node_cache = ctl.NodeCache(ttl=5)
 
@@ -155,6 +241,11 @@ def create_app(testing=False):
             return None
         row = get_db().user_by_id(uid)
         if row is None or not row["is_active"]:
+            return None
+        # 会话吊销：Cookie 里的 epoch 必须与库中一致。
+        # 改密 / 管理员重置口令 / 停用账号 / 主动登出 都会 +1，旧 Cookie 立即失效。
+        if int(session.get("epoch", -1)) != int(row["session_epoch"] or 0):
+            session.clear()
             return None
         return row
 
@@ -219,7 +310,9 @@ def create_app(testing=False):
                 flash("该账号已被停用，请联系管理员", "error")
                 return render_template("login.html")
             session.clear()
+            session.permanent = True          # 绝对过期 12h（PERMANENT_SESSION_LIFETIME）
             session["uid"] = u["id"]
+            session["epoch"] = int(u["session_epoch"] or 0)
             session["csrf"] = authlib.new_csrf()
             get_db().user_touch_login(u["id"])
             flash("欢迎回来，%s！" % (u["display_name"] or u["username"]), "ok")
@@ -230,8 +323,16 @@ def create_app(testing=False):
         session["csrf"] = authlib.new_csrf()
         return render_template("login.html")
 
-    @app.route("/logout")
+    @app.route("/logout", methods=["GET", "POST"])
     def logout():
+        # 主动登出也吊销本账号**全部**已有 Cookie（不只是清掉当前浏览器这一份）：
+        # Flask 的 session 是无状态签名 Cookie，不 +epoch 的话被复制走的 Cookie 仍然可用。
+        uid = session.get("uid")
+        if uid:
+            try:
+                get_db().user_bump_session_epoch(uid)
+            except Exception:
+                pass
         session.clear()
         flash("已退出登录", "ok")
         return redirect(url_for("login"))
@@ -250,8 +351,17 @@ def create_app(testing=False):
         return db.key_count(u["id"]) >= 1 and db.port_count(u["id"]) >= 1
 
     def _os_ok(u):
-        """该门户账号是否有同名集群 OS 账号。
-        普通用户由 os_mode 判定；管理员（如 root）实时向集群确认（如纯平台 admin 则无）。"""
+        """该门户账号是否**可以由门户托管**（建号/密钥/作业）。
+
+        普通用户由 os_mode 判定；管理员（如 root）实时向集群确认（纯平台 admin 则无）。
+
+        安全约束：系统/保留账号（root、portal、lab…）一律返回 False。
+        原因是门户会把该账号的公钥写进它自己的 `~/.ssh/authorized_keys`，而 root 是
+        **能登录宿主机**的账号 —— 一旦门户替 root 托管密钥，"偷到门户 root 的口令"
+        就等于"拿到宿主机 root"。宿主机 root 的密钥请在节点上手工维护。
+        """
+        if is_reserved_os(u["username"]):
+            return False
         attr = "osok_" + u["username"]
         cached = getattr(g, attr, None)
         if cached is not None:
@@ -312,7 +422,11 @@ def create_app(testing=False):
             return inst
         if st.get("active"):
             new_state = st["state"] if st["state"] in STATE_CN else "UNKNOWN"
-            db.set_instance_state(inst["id"], new_state, slurm_state=st["state"])
+            # CAS：只在该实例**仍是活跃态**时才写状态。否则会把后台线程刚写好的终态
+            # （到期自动停机写的 CANCELLED）覆盖回 RUNNING，实例就永远显示运行中。
+            if not db.set_instance_state_if_active(inst["id"], new_state,
+                                                   slurm_state=st["state"]):
+                return db.instance_by_id(inst["id"])
             # 记录作业实际开始时刻（到期自动保存按“开始时刻+时长”触发）
             if st["state"] == "RUNNING" and not (inst["started_at"] or ""):
                 db.mark_started(inst["id"], _now())
@@ -516,11 +630,14 @@ def create_app(testing=False):
         if new != new2:
             return _json_err("两次输入的新密码不一致")
         get_db().user_set_password(u["id"], authlib.hash_password(new))
+        # 改密即吊销其它会话：其它浏览器/被偷走的 Cookie 立刻失效，当前会话重新取 epoch
+        get_db().user_bump_session_epoch(u["id"])
+        session["epoch"] = int(get_db().user_by_id(u["id"])["session_epoch"] or 0)
         try:
             pwfile.upsert(u["username"], new)   # 同步明文到 /etc/cluster-portal/users.passwd
         except Exception:
             pass
-        return _json_ok("密码已修改")
+        return _json_ok("密码已修改（其它设备上的登录已失效）")
 
     @app.route("/profile/keys/add", methods=["POST"])
     @login_required
@@ -708,8 +825,11 @@ def create_app(testing=False):
 
         if not task_name:
             return _json_err("请填写任务名称")
-        if not (1 <= len(task_name) <= 40):
+        if not (3 <= len(task_name) <= 10):
             return _json_err("任务名称须为 3-10 个字符")
+        dup = db.instance_name_taken(u["id"], task_name)
+        if dup:
+            return _json_err(dup_task_msg(dup, task_name))
         # 镜像白名单：公共镜像 或 该用户自己的个人镜像（个人目录 700，portal 不能直接 stat）
         if image not in allowed_image_paths(u["username"]):
             return _json_err("请从镜像列表中选择（公共镜像或你自己的个人镜像）")
@@ -754,9 +874,21 @@ def create_app(testing=False):
             return _json_err("提交失败：%s" % e)
         job_id = res["job_id"]
         cmd = res.get("command") or ""
-        iid = db.add_instance(u["id"], plan_id, task_name, node, gpus, cpus, mem_gb,
-                              port, walltime, image, job_id, "PENDING", cmd,
-                              res["log_path"], ip)
+        try:
+            iid = db.add_instance(u["id"], plan_id, task_name, node, gpus, cpus, mem_gb,
+                                  port, walltime, image, job_id, "PENDING", cmd,
+                                  res["log_path"], ip)
+        except sqlite3.IntegrityError as e:
+            # 兜底：并发提交同一任务名/端口时由唯一索引拦下，回滚作业避免孤儿作业
+            note = rollback_submit(u["username"], job_id)
+            if "task_name" in str(e):
+                return _json_err("任务名称「%s」刚被另一个请求占用，请换名后重试；%s"
+                                 % (task_name, note))
+            return _json_err("资源记录冲突（%s）；%s" % (e, note))
+        db.add_event(iid, "submit",
+                     "已提交资源：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s"
+                     % (job_id, plan["name"], os.path.basename(image), port,
+                        walltime, node or "自动调度"))
         where = "自动调度" if not node else node
         flash("资源已提交：作业 #%d（%s），端口 %d @ %s" % (job_id, task_name, port, where), "ok")
         return _json_ok("ok", {"instance_id": iid, "job_id": job_id})
@@ -810,9 +942,11 @@ def create_app(testing=False):
             sl = res.get("state", "UNKNOWN")
             mapped = sl if sl in STATE_CN else "UNKNOWN"
             db.set_instance_state(iid, mapped, slurm_state=sl, stopped_at=_now())
+            db.add_event(iid, "stop", "请求停机时作业此前已结束（%s）" % STATE_CN.get(mapped, mapped))
             return _json_ok("该作业此前已结束（%s）" % STATE_CN.get(mapped, mapped))
         db.set_instance_state(iid, "CANCELLED", slurm_state="CANCELLED",
                               stopped_at=_now())
+        db.add_event(iid, "stop", "已手动停机，作业 #%s 已取消" % inst["job_id"])
         return _json_ok("已发送停机指令，作业将被取消")
 
     @app.route("/instances/<int:iid>/log")
@@ -824,11 +958,16 @@ def create_app(testing=False):
         if not inst or inst["user_id"] != u["id"]:
             abort(404)
         lines = request.args.get("lines", 200, type=int)
+        events = _events_payload(db, iid)
         try:
             res = ctl.log(u["username"], inst["job_id"], lines)
+            text, log_error = (res.get("text") or ""), ""
         except ctl.CtlError as e:
-            return jsonify({"ok": False, "error": str(e)})
-        return jsonify({"ok": True, "text": res["text"], "job_id": inst["job_id"]})
+            # 容器日志文件可能已不存在（作业被清理/日志被删），但门户事件仍应看得到，
+            # 所以这里不再整体返回失败，而是把原因放到 log_error 里
+            text, log_error = "", str(e)[:300]
+        return jsonify({"ok": True, "text": text, "job_id": inst["job_id"],
+                        "log_error": log_error, "events": events})
 
     def _instance_terminal(inst):
         return inst["state"] not in ACTIVE_STATES
@@ -892,6 +1031,7 @@ def create_app(testing=False):
                 "started_at=NULL, auto_saved_at=NULL, auto_saved_path='', "
                 "last_error=NULL, updated_at=? WHERE id=?",
                 (job_id, node, ip, res.get("command") or "", res["log_path"], _now(), iid))
+        db.add_event(iid, "start", "已重新启动：新作业 #%d，沿用端口 %d" % (job_id, port))
         return _json_ok("已重新启动：作业 #%d（%s）" % (job_id, task_name),
                         {"instance_id": iid, "job_id": job_id})
 
@@ -929,6 +1069,7 @@ def create_app(testing=False):
         username = u["username"]
         db.set_saving(iid, 1)
         db.set_last_save(iid, "正在保存个人镜像 %s.sqsh…" % name)
+        db.add_event(iid, "save", "开始保存个人镜像 %s.sqsh（导出整个容器 rootfs，分钟级）" % name)
         if SAVE_SYNC:
             ok, msg, path = _perform_save(db, iid, username, inst["job_id"], name, force)
             db.set_saving(iid, 0)
@@ -988,9 +1129,7 @@ def create_app(testing=False):
     def admin_index():
         return redirect(url_for("admin_users"))
 
-    @app.route("/admin/users")
-    @admin_required
-    def admin_users():
+    def _admin_users_ctx():
         db = get_db()
         actor = get_user_row()
         # 批量读取 OS 实际配额（一次调用；失败则每行显示无）
@@ -1015,17 +1154,30 @@ def create_app(testing=False):
             d["quota_used"] = _fmt_bytes(q.get("used_kb", 0))
             d["quota_hard"] = _fmt_limit(q.get("hard_kb", 0))
             d["quota_os_present"] = "hard_kb" in q and u["username"] in qmap
+            # 门户库里记录的额度 vs OS 实际硬限：不一致就显式告警。
+            # 历史 bug 正是"额度只入库、没落到 OS" —— 有 OS 账号却显示"不限"，
+            # 页面只显示 OS 实读值，肉眼根本看不出库里还记着另一个数。
+            d["quota_portal"] = u["quota"] or ""
+            portal_kb = _quota_to_kb(u["quota"])
+            d["quota_mismatch"] = bool(
+                d["quota_os_present"] and portal_kb
+                and portal_kb != (q.get("hard_kb") or 0))
             # 是否允许“改配额”：目标须有同名 OS 账号且非系统保留账号；
             # 普通用户行任何管理员可改；管理员行仅 root 或本人可改
             d["quota_can_edit"] = False
             if u["role"] == "user":
                 d["quota_can_edit"] = u["os_mode"] in ("provision", "existing") \
-                    and u["username"] not in RESERVED_OS
+                    and not is_reserved_os(u["username"])
             elif actor["username"] == "root" or actor["id"] == u["id"]:
-                d["quota_can_edit"] = u["username"] not in RESERVED_OS
+                d["quota_can_edit"] = not is_reserved_os(u["username"])
             users.append(d)
-        return render_template("admin_users.html", users=users,
-                               quota_options=["100G", "300G", "500G", "1T"])
+        return {"users": users,
+                "quota_options": ["100G", "300G", "500G", "1T", QUOTA_UNLIMITED]}
+
+    @app.route("/admin/users")
+    @admin_required
+    def admin_users():
+        return render_template("admin_users.html", **_admin_users_ctx())
 
     @app.route("/admin/users/<int:uid>/quota", methods=["POST"])
     @admin_required
@@ -1038,16 +1190,28 @@ def create_app(testing=False):
         u = db.user_by_id(uid)
         if not u:
             return _json_err("用户不存在")
-        size = (request.form.get("quota") or request.form.get("size") or "").strip().upper()
-        if not QUOTA_SIZE_RE.match(size):
-            return _json_err("配额格式错误（例 100G / 500G / 1T）")
-        if u["username"] in RESERVED_OS:
-            return _json_err("系统保留账号不能设置配额")
+        size = (request.form.get("quota") or request.form.get("size") or "").strip()
+        size = quota_canonical(size)
+        if not quota_valid(size):
+            return _json_err("配额格式错误（例 100G / 500G / 1T，或「不限」）")
+        if is_reserved_os(u["username"]) and size != QUOTA_UNLIMITED:
+            # 系统/保留账号不允许设**具体额度**（可能威胁系统自身写入），
+            # 但允许设为「不限」：那是"清除限额"，也是把库里遗留的具体值
+            # （例如 root 建号脚本写的默认 500G）与 OS 现状对齐的唯一途径。
+            return _json_err("系统保留账号不能设置具体配额（可设为「不限」清除限额）")
         # 权限：普通用户行任何管理员可改；管理员行仅 root 或本人
         if u["role"] == "admin" and actor["username"] != "root" and actor["id"] != u["id"]:
             return _json_err("管理员账号的配额由 root 管理")
-        # 目标必须真实存在同名 OS 账号（OS 上没有则拒绝）
-        if not _os_ok(u):
+        # 目标必须真实存在同名 OS 账号（OS 上没有则拒绝）。
+        # 注意：`_os_ok()` 现在对保留账号恒为假（安全考虑：门户不托管 root 的宿主机密钥），
+        # 所以这里对保留账号改用一次"实时存在性探测"——它只允许设「不限」清限额。
+        if is_reserved_os(u["username"]):
+            try:
+                if not ctl.user_status(u["username"]).get("exists"):
+                    return _json_err("该账号在集群没有同名 OS 账号，无法设置配额")
+            except ctl.CtlError as e:
+                return _json_err("查询集群账号失败：%s" % e)
+        elif not _os_ok(u):
             return _json_err("该账号在集群没有同名 OS 账号，无法设置配额")
         try:
             res = ctl.set_quota(u["username"], size)
@@ -1065,36 +1229,58 @@ def create_app(testing=False):
         err = None
         if not USERNAME_RE.match(username):
             return None, "用户名不合法（小写字母/数字/_-，3-32 位）", 0
+        # 系统/保留账号（root、portal、slurm、sshd…）不能建门户账号。
+        # 否则可以造一个叫 portal 的管理员账号，再以它提交作业 —— 该账号的家目录就是
+        # /var/lib/cluster-portal，会被 --container-mounts 挂进容器（拿到 DB 与 Flask secret）。
+        if is_reserved_os(username):
+            return None, "%s 是系统/保留账号，门户不允许为它创建平台账号" % username, 0
         if db.user_by_name(username):
             return None, "门户中已存在同名用户", 0
         if role not in ("user", "admin"):
             return None, "角色非法", 0
+        quota = quota_canonical(quota)
+        if not quota_valid(quota):
+            return None, "配额格式错误（例 100G / 500G / 1T，或「不限」）", 0
         if password:
             okp, errp = pwfile.validate_password(password)
             if not okp:
                 return None, errp, 0
-        if role == "user":
-            if os_mode not in ("provision", "existing"):
-                return None, "普通用户必须选择账号开通方式", 0
-            if not password:
-                return None, "普通用户初始密码不能为空", 0
+        # ---- 集群侧账号 ----
+        #   provision：门户自动建号（建号 + 家目录 + 配额 + 会计关联）
+        #   existing ：OS 账号已存在 —— 初始化（家目录/.portal）+ **把配额真正落到 OS** + 会计关联
+        # 历史 bug（两处叠加，表现为"设了 1T 但平台显示不限"）：
+        #   1) 整段被 `if role == "user"` 挡住 —— 管理员选「OS 已存在」时 OS 侧什么都不做；
+        #   2) 即使普通用户走 existing，init-user 也从不落地配额。
+        #   而额度仍被写进门户库，页面显示的是 OS 实读值 → DB 说 1T、OS 说不限。
+        # 现在：existing 对任何角色都生效（管理员也可以带 OS 账号，本站 shujiuhe/root 就是），
+        # 且必须显式 set_quota。
+        if role == "user" and os_mode not in ("provision", "existing"):
+            return None, "普通用户必须选择账号开通方式", 0
+        if role == "user" and not password:
+            return None, "普通用户初始密码不能为空", 0
+        want_os = os_mode == "existing" or (os_mode == "provision" and role == "user")
+        if want_os:
             try:
                 if os_mode == "provision":
                     ctl.provision_user(username, quota)
                 else:
+                    if not ctl.user_status(username).get("exists"):
+                        return None, ("OS 账号 %s 不存在，不能按「OS 账号已存在」开通；"
+                                      "请先用 add-user.sh 建号，或改用「自动建号」" % username), 0
                     ctl.init_user(username)
+                    ctl.set_quota(username, quota)   # 关键：把额度真正落到 OS
             except ctl.CtlError as e:
                 return None, "集群建号失败：%s" % e, 0
-        # 管理员角色：仅门户账号（可选设密码）
+        # 管理员角色：未选「OS 已存在」时仅建门户账号（可选设密码）
         pwd = password or authlib.random_password()
         uid = db.add_user(username, display_name or username, role,
                           authlib.hash_password(pwd), quota,
-                          "provision" if role == "user" else "none")
+                          os_mode if want_os else "none")
         try:
             pwfile.upsert(username, pwd)   # 新账号密码明文写入密码文件
         except Exception:
             pass
-        if role == "user" and os_mode == "existing":
+        if want_os and os_mode == "existing":
             db.exec("UPDATE users SET os_mode='existing' WHERE id=?", (uid,))
             # 导入 OS 账号 authorized_keys 中已有的公钥（防止日后门户写回时覆盖丢失）
             try:
@@ -1118,9 +1304,15 @@ def create_app(testing=False):
         username = (request.form.get("username") or "").strip().lower()
         display_name = (request.form.get("display_name") or "").strip()[:64]
         role = request.form.get("role") or "user"
-        quota = (request.form.get("quota") or "500G").strip().upper()
-        if not re.match(r"^[1-9][0-9]{0,2}[GT]$", quota):
-            flash("配额格式错误（如 100G/500G/1T）", "error")
+        # 只有超级管理员 root 能创建管理员账号 —— 与「设为管理员/取消管理员」
+        # （admin_user_role，root-only）保持同一条规则。否则任何管理员都能自己造管理员，
+        # 而管理员又删不掉管理员，root 的授权边界会彻底失效。
+        if role == "admin" and (get_user_row()["username"] != "root"):
+            flash("只有超级管理员 root 可以创建管理员账号（其它管理员可开通普通用户）", "error")
+            return redirect(url_for("admin_users"))
+        quota = quota_canonical(request.form.get("quota") or "500G")
+        if not quota_valid(quota):
+            flash("配额格式错误（如 100G/500G/1T，或「不限」）", "error")
             return redirect(url_for("admin_users"))
         password = request.form.get("password") or ""
         os_mode = request.form.get("os_mode") or "provision"
@@ -1133,8 +1325,13 @@ def create_app(testing=False):
         if not password:
             note = "已随机生成初始密码（仅显示一次）："
         extra = "（已导入 OS 上现有 %d 把公钥）" % imported if imported else ""
-        flash("用户 %s 创建成功%s。%s %s" % (username, extra, note, pwd), "ok")
-        return redirect(url_for("admin_users"))
+        # 初始口令**不能**走 flash()：Flask 的 flash 存在客户端签名 Cookie 里，
+        # 口令会随 Set-Cookie 明文发出去并留在浏览器 Cookie 罐。改为直接渲染用户管理页，
+        # 在响应体里显示一次（刷新即消失）。
+        return render_template("admin_users.html",
+                               created={"username": username, "password": pwd,
+                                        "note": note, "extra": extra},
+                               **_admin_users_ctx())
 
     @app.route("/admin/users/<int:uid>/toggle", methods=["POST"])
     @admin_required
@@ -1149,6 +1346,8 @@ def create_app(testing=False):
             return _json_err("不能停用/启用其他管理员账号（管理员账号由集群 root 管理，"
                              "可在 admin 节点直接改库或删除 /root/.cluster-portal-admin 重置）")
         db.user_set_active(uid, not u["is_active"])
+        if u["is_active"]:
+            db.user_bump_session_epoch(uid)   # 停用即吊销该账号所有在线会话
         return _json_ok("已%s %s" % ("启用" if not u["is_active"] else "停用", u["username"]))
 
     @app.route("/admin/users/<int:uid>/resetpwd", methods=["POST"])
@@ -1166,6 +1365,7 @@ def create_app(testing=False):
                              "请在 admin 节点以 root 编辑 /etc/cluster-portal/users.passwd")
         pwd = authlib.random_password()
         db.user_set_password(uid, authlib.hash_password(pwd))
+        db.user_bump_session_epoch(uid)     # 重置口令即踢掉该账号所有在线会话
         try:
             from . import pwfile
             pwfile.upsert(u["username"], pwd)
@@ -1264,11 +1464,14 @@ def create_app(testing=False):
         task_name = (request.form.get("task_name") or "").strip()
         if not task_name:
             return _json_err("请填写任务名称")
-        if not (1 <= len(task_name) <= 40):
+        if not (3 <= len(task_name) <= 10):
             return _json_err("任务名称须为 3-10 个字符")
         target = db.user_by_id(user_id)
         if not target or target["role"] != "user" or target["os_mode"] not in ("provision", "existing"):
             return _json_err("请选择有效的普通用户（有集群 OS 账号）作为申请对象")
+        dup = db.instance_name_taken(target["id"], task_name)
+        if dup:
+            return _json_err(dup_task_msg(dup, task_name))
         if image not in allowed_image_paths(target["username"]):
             return _json_err("请从镜像列表中选择（公共镜像或该用户的个人镜像）")
         plan = db.plan_by_id(plan_id)
@@ -1303,9 +1506,20 @@ def create_app(testing=False):
         except ctl.CtlError as e:
             return _json_err("提交失败：%s" % e)
         job_id = res["job_id"]
-        iid = db.add_instance(target["id"], plan_id, task_name, node, plan["gpus"],
-                              plan["cpus"], plan["mem_gb"], port, walltime, image,
-                              job_id, "PENDING", res.get("command") or "", res["log_path"], ip)
+        try:
+            iid = db.add_instance(target["id"], plan_id, task_name, node, plan["gpus"],
+                                  plan["cpus"], plan["mem_gb"], port, walltime, image,
+                                  job_id, "PENDING", res.get("command") or "", res["log_path"], ip)
+        except sqlite3.IntegrityError as e:
+            note = rollback_submit(target["username"], job_id)
+            if "task_name" in str(e):
+                return _json_err("任务名称「%s」刚被另一个请求占用，请换名后重试；%s"
+                                 % (task_name, note))
+            return _json_err("资源记录冲突（%s）；%s" % (e, note))
+        db.add_event(iid, "submit",
+                     "由管理员代为提交：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s"
+                     % (job_id, plan["name"], os.path.basename(image), port,
+                        walltime, node or "自动调度"))
         return _json_ok("已代 %s 提交：作业 #%d（%s）" % (target["username"], job_id, task_name),
                         {"instance_id": iid, "job_id": job_id})
 
@@ -1326,6 +1540,7 @@ def create_app(testing=False):
             return _json_err("不能修改 root 自己的权限")
         new_role = "user" if u["role"] == "admin" else "admin"
         db.exec("UPDATE users SET role=? WHERE id=?", (new_role, u["id"]))
+        db.user_bump_session_epoch(u["id"])   # 权限变更后强制重新登录，避免旧会话沿用旧权限
         return _json_ok("已将 %s 的权限调整为：%s" % (u["username"],
                          "管理员" if new_role == "admin" else "普通用户"))
 
@@ -1485,14 +1700,22 @@ def _perform_save(db, iid, username, job_id, name, force):
         res = ctl.save_image(username, job_id, name, force)
         path = res.get("path") or ""
         size = res.get("size") or 0
+        dur = res.get("duration_s") or 0
         msg = "已保存个人镜像：%s/%s.sqsh%s" % (
             username, name,
             ("（%s）" % _fmt_bytes_kb(int(size) // 1024)) if size else "")
         db.set_last_save(iid, msg)
+        db.add_event(iid, "save", "%s；耗时 %s 秒%s"
+                     % (msg, dur, ("；路径 " + path) if path else ""))
+        # enroot 的输出：成功时通常为空，有内容说明有告警/警告，留档便于回溯
+        detail = (res.get("output") or "").strip()
+        if detail:
+            db.add_event(iid, "save-detail", detail[-800:])
         return True, msg, path
     except ctl.CtlError as e:
         msg = "镜像保存失败：%s" % str(e)[:300]
         db.set_last_save(iid, msg)
+        db.add_event(iid, "error", msg)
         return False, msg, ""
 
 
@@ -1532,6 +1755,7 @@ def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg):
     except ctl.CtlError as e:
         note = "；自动停机失败：%s" % str(e)[:120]
     db.set_instance_state(iid, state, slurm_state=sl, stopped_at=_now_iso())
+    db.add_event(iid, "stop", "到期自动停机：作业 #%s 已取消%s" % (job_id, note))
     tail = "资源已到期并自动停机%s" % note if saved_ok else \
         "资源已到期，自动保存失败、已停机%s" % note
     db.set_last_save(iid, (save_msg + "；" if save_msg else "") + tail)
@@ -1586,6 +1810,9 @@ def expiry_tick(now=None):
                 continue
             db.set_saving(inst["id"], 1)
             db.set_last_save(inst["id"], "资源已到期：开始自动保存镜像…")
+            db.add_event(inst["id"], "expire",
+                         "资源已到期（所选时长 %s 已用完），开始自动保存镜像后停机"
+                         % inst["walltime"])
             name = _auto_image_name(inst["task_name"], inst["image"])
             t = threading.Thread(target=_save_worker, daemon=True,
                                  args=(inst["id"], urow["username"], inst["job_id"],
@@ -1634,7 +1861,9 @@ def main_bootstrap(username, password=None, role=None, force=False):
             db.user_set_password(exist["id"], a.hash_password(pwd))
             print("已重置账号密码: %s" % username)
         else:
-            db.add_user(username, username, role, a.hash_password(pwd), "500G",
+            # 引导创建的是平台账号（root/admin），没有同名 OS 账号也没有 /share 配额，
+            # 额度写「不限」才与 OS 实读一致（写具体数值会让用户管理页挂出不一致告警）
+            db.add_user(username, username, role, a.hash_password(pwd), QUOTA_UNLIMITED,
                         "none" if role == "admin" else "provision")
             print("%s账号已创建: %s" % ("管理员" if role == "admin" else "门户", username))
         pwfile.upsert(username, pwd)  # 明文同步到密码文件

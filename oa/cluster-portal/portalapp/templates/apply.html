@@ -17,6 +17,8 @@
            placeholder="3-10 个字符">
   </label>
   <p class="field-hint" id="task-hint" hidden></p>
+  <p class="muted small">任务名在同一用户下不能重复（不区分大小写）；停机不会释放名称，
+    需先在「我的资源」里删除那条记录才能再次使用。</p>
 
   <h2>② 选择镜像 <span class="muted small">（公共镜像由管理员维护；「我的镜像」是你此前从运行中容器保存的 .sqsh）</span></h2>
   {% if image_groups.public or image_groups.mine %}

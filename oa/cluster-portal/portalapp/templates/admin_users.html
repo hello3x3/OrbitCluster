@@ -8,6 +8,16 @@
 
 <div id="toast" class="toast" hidden></div>
 
+{% if created %}
+<section class="card" style="border:2px solid var(--warn,#c60)">
+  <h2>账号已创建（此口令只显示这一次）</h2>
+  <p>用户 <b>{{ created.username }}</b> 创建成功{{ created.extra }}。{{ created.note }}</p>
+  <pre class="cmd-preview">{{ created.password }}</pre>
+  <p class="muted small">为了不把口令写进客户端 Cookie，这里直接渲染在本页；<b>刷新后不再出现</b>。
+    请立即转交用户，并提醒其登录后立刻改密。</p>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>开通新用户</h2>
   <form method="post" action="{{ url_for('admin_user_create') }}" id="create-user-form">
@@ -21,7 +31,10 @@
       <label>角色
         <select name="role" id="create-role">
           <option value="user">普通用户（可申请资源）</option>
+          {# 只有超级管理员 root 能创建管理员账号（与「设为/取消管理员」同一条规则） #}
+          {% if cur_user and cur_user.username == 'root' %}
           <option value="admin">管理员（门户管理）</option>
+          {% endif %}
         </select>
       </label>
     </div>
@@ -32,13 +45,13 @@
           <option value="existing">OS 账号已存在，仅开通门户</option>
         </select>
       </label>
-      <label>磁盘配额（/share 总量）
+      <label>磁盘配额（/share 总量，可选「不限」）
         <select name="quota">
           {% for q in quota_options %}<option value="{{ q }}" {% if q=='500G' %}selected{% endif %}>{{ q }}</option>{% endfor %}
         </select>
       </label>
       <label>初始门户密码（留空=随机生成，只显示一次）
-        <input type="text" name="password" maxlength="128" placeholder="留空自动生成">
+        <input type="password" name="password" maxlength="128" placeholder="留空自动生成">
       </label>
     </div>
     <button class="btn btn-primary" type="submit">开通账号</button>
@@ -65,7 +78,7 @@
         <td>{% if u.role == 'admin' %}<span class="badge-admin">管理员</span>{% else %}普通用户{% endif %}</td>
         <td>{% if u.is_active %}<span class="st st-running">正常</span>{% else %}<span class="st st-cancelled">已停用</span>{% endif %}</td>
         <td title="SSH 公钥数">{{ u.key_cnt }}</td><td title="端口池登记数">{{ u.port_cnt }}</td><td>{{ u.active_cnt }}</td>
-        <td class="mono small">{% if u.quota_os_present %}{{ u.quota_used }} / {{ u.quota_hard }}{% else %}—{% endif %}</td>
+        <td class="mono small">{% if u.quota_os_present %}{{ u.quota_used }} / {{ u.quota_hard }}{% else %}—{% endif %}{% if u.quota_mismatch %}<span class="badge-warn" title="门户库里记录的是 {{ u.quota_portal }}，但 OS 实际硬限是 {{ u.quota_hard }}（说明额度没有真正落到 OS）。用这行的「改配额」按钮重设一次即可对齐。">门户记 {{ u.quota_portal }} ≠ OS</span>{% endif %}</td>
         <td class="small">{{ u.last_login }}</td>
         <td class="small">{{ u.created }}</td>
         <td class="ops">
@@ -108,6 +121,9 @@
     （10000-65535，全门户唯一）；<b>活跃资源</b>＝当前排队/运行中的实例数；
     <b>配额（OS 实读）</b>＝<code>repquota</code> 读出的「已用 / 硬上限」，软=硬即时生效
     （— 表示该账号在 OS 无配额记录/无同名 OS 账号）；「改配额」对普通用户任何管理员可用，
-    管理员行仅 root 或本人可用，写入即改 OS 配额（非仅门户记录）。</p>
+    管理员行仅 root 或本人可用，写入即改 OS 配额（非仅门户记录）。
+    若该列出现橙色标记「门户记 X ≠ OS」，说明门户库里的额度与 OS 实际不一致
+    （额度没有落到 OS），用该行「改配额」重设一次即可对齐。
+    额度可选「不限」＝清除该用户在 /share 上的限额（OS 软/硬限置 0）。</p>
 </section>
 {% endblock %}

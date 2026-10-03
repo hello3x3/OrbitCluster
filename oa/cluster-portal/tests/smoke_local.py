@@ -28,11 +28,11 @@ import portalapp.pwfile as pwfile  # noqa: E402
 
 # ---------- fake ctl ----------
 ctlmod.sinfo = lambda: {"ok": True, "partition": "gpu", "nodes": [
-    {"name": "<GPU02>", "state": "idle", "avail": "up", "cpus_alloc": 0,
+    {"name": "<GPU01>", "state": "idle", "avail": "up", "cpus_alloc": 0,
      "cpus_idle": 16, "cpus_total": 16, "mem_mb": 31933,
-     "gres": "gpu:3060:1", "ip": "<GPU02_IP>"}]}
+     "gres": "gpu:3060:1", "ip": "<GPU01_IP>"}]}
 ctlmod.job_state = lambda u, j: {"ok": True, "active": True, "state": "RUNNING",
-                                 "node": "<GPU02>", "elapsed": "00:01:00", "name": "x"}
+                                 "node": "<GPU01>", "elapsed": "00:01:00", "name": "x"}
 ctlmod.kill = lambda u, j: {"ok": True, "job_id": j, "cancelled": True}
 ctlmod.log = lambda u, j, l=200: {"ok": True, "text": "[start_ssh] fake log line", "job_id": j}
 ctlmod.rm_log = lambda u, j: {"ok": True, "job_id": j, "removed": True}
@@ -70,7 +70,7 @@ def _fake_save_image(user, job_id, name, force):
     with open(p, "w") as fh:
         fh.write("fake-squashfs\n")
     return {"ok": True, "user": user, "job_id": int(job_id), "name": name,
-            "path": p, "size": os.path.getsize(p), "node": "<GPU02>"}
+            "path": p, "size": os.path.getsize(p), "node": "<GPU01>"}
 
 ctlmod.save_image = _fake_save_image
 
@@ -151,6 +151,64 @@ def main():
         "role": "user", "os_mode": "existing", "quota": "100G",
         "password": "EvePass1122"}, follow_redirects=True)
     assert "已导入".encode() in r.data, (r.data[:600], r.data[-400:])
+    # existing 路径必须把额度**真正落到 OS**
+    # （历史 bug：只写门户库不落盘 → 页面按 OS 实读显示，明明设了额度却显示"不限"）
+    assert FAKE_QUOTA.get("eve", {}).get("hard_kb") == 100 * 1024 * 1024, \
+        "existing 开通没有落地配额: %s" % FAKE_QUOTA.get("eve")
+    # ---- 安全：非 root 管理员**不能**创建管理员账号（否则 root 的授权边界失效）----
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "backdoor", "display_name": "越权管理员",
+        "role": "admin", "os_mode": "existing", "quota": "100G",
+        "password": "Backdoor123"}, follow_redirects=True)
+    assert "只有超级管理员 root".encode() in r.data, r.data[:600]
+    assert appmod.DB(appmod.DB_PATH).user_by_name("backdoor") is None, "越权管理员被创建了"
+    # ---- 安全：系统/保留账号不允许建门户账号（否则可借 portal 的家目录挂载门户数据目录）----
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "portal", "display_name": "保留账号",
+        "role": "user", "os_mode": "existing", "quota": "100G",
+        "password": "PortalTest99"}, follow_redirects=True)
+    assert "系统/保留账号".encode() in r.data, r.data[:600]
+    assert appmod.DB(appmod.DB_PATH).user_by_name("portal") is None, "保留账号被建成了门户账号"
+    # ---- 安全：新建用户的初始口令不能进客户端 Cookie（历史实现走 flash()，口令随 Set-Cookie 明文外发）----
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "carol", "display_name": "Carol",
+        "role": "user", "os_mode": "provision", "quota": "100G",
+        "password": "CarolInit99"}, follow_redirects=True)
+    _cookies = " ".join(r.headers.getlist("Set-Cookie"))
+    assert "CarolInit99" not in _cookies, "初始口令出现在 Set-Cookie 里: %s" % _cookies[:200]
+    assert "CarolInit99".encode() in r.data, "初始口令应在响应体里一次性显示"
+
+    # 管理员 + 「OS 已存在」同样要落地配额（线上事故：shujiuhe 设了 1T 却显示不限）
+    # —— 管理员账号只能由 root 创建，所以这里切换到 root 会话
+    c.get("/logout")
+    login(c, "root", "RootPass1234")
+    tok = csrf_of(c, "/admin/users")
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "adminexist", "display_name": "管理员既有账号",
+        "role": "admin", "os_mode": "existing", "quota": "1T",
+        "password": "AdminExist99"}, follow_redirects=True)
+    assert "adminexist".encode() in r.data, r.data[:600]
+    assert FAKE_QUOTA.get("adminexist", {}).get("hard_kb") == 1024 * 1024 * 1024, \
+        "管理员 existing 开通没有落地配额: %s" % FAKE_QUOTA.get("adminexist")
+    # 切回普通管理员会话继续后面的用例
+    c.get("/logout")
+    login(c, "admin", "AdminPass123")
+    tok = csrf_of(c, "/admin/users")
+    # 非 root 管理员的页面上不应出现「管理员」角色选项
+    r = c.get("/admin/users")
+    assert b'value="admin"' not in r.data, "非 root 管理员的建号表单不该提供管理员选项"
+    # 「门户记录 ≠ OS」告警不应误报（以上账号都是刚对齐的）
+    r = c.get("/admin/users")
+    assert b"badge-warn" not in r.data, "配额一致性告警误报"
+    # 反向用例：只改库里额度、不落 OS → 必须出现告警（这正是线上那次的形态）
+    dbx = appmod.DB(appmod.DB_PATH)
+    dbx.exec("UPDATE users SET quota='2T' WHERE username='eve'")
+    dbx.close()
+    r = c.get("/admin/users")
+    assert b"badge-warn" in r.data, "门户库额度与 OS 硬限不一致时应给出告警"
+    dbx = appmod.DB(appmod.DB_PATH)
+    dbx.exec("UPDATE users SET quota='100G' WHERE username='eve'")
+    dbx.close()
     # 建号即写入明文密码文件
     m = pwfile.load_map()
     assert m.get("alice") == "AliceInit99" and m.get("eve") == "EvePass1122", m
@@ -189,12 +247,20 @@ def main():
     c.get("/logout")
     r = login(c, "alice", "NewAlice77")
     assert "我的资源".encode() in r.data, "文件改密后应能用新密码登录"
+    # 另开一个 alice 会话，用于验证"改密即吊销其它会话"
+    c2 = app.test_client()
+    login(c2, "alice", "NewAlice77")
+    assert "我的资源".encode() in c2.get("/my").data
     # 用户自己改密 → 明文同步回写文件
     tok = csrf_of(c, "/profile")
     r = c.post("/profile/password", headers={"X-CSRF-Token": tok},
                data={"old": "NewAlice77", "new": "AliceNew88x", "new2": "AliceNew88x"})
     assert r.get_json()["ok"], r.get_json()
     assert pwfile.load_map().get("alice") == "AliceNew88x", "自改密码应回写明文文件"
+    # 会话吊销：Flask 的 session 是无状态签名 Cookie，不靠 users.session_epoch 的话
+    # 被偷走的 Cookie 会**永久有效**（登出/改密都吊销不掉）。
+    assert c2.get("/my").status_code == 302, "改密后旧会话仍然有效（会话吊销失效）"
+    assert c.get("/my").status_code == 200, "改密的当前会话不该被吊销"
 
     # 添加密钥与端口
     tok = csrf_of(c, "/profile")
@@ -235,8 +301,8 @@ def main():
     try:
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
-            "plan_id": "3", "task_name": "训练 resnet-50", "hours": "12",
-            "node": "<GPU02>", "port": "28766"})
+            "plan_id": "3", "task_name": "训练resnet", "hours": "12",
+            "node": "<GPU01>", "port": "28766"})
         j = r.get_json()
         assert j["ok"], j
         pl = c.get("/api/plans").get_json()
@@ -245,23 +311,50 @@ def main():
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
             "plan_id": "3", "task_name": "超长任务", "hours": "200",
-            "node": "<GPU02>", "port": "28767"})
+            "node": "<GPU01>", "port": "28767"})
         err = r.get_json()["error"]
         assert not r.get_json()["ok"] and ("maxtime" in err or "管理员协助" in err), err
         # 同一端口（用户级任意节点）再次申请被拒
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
             "plan_id": "4", "task_name": "另一个任务", "hours": "12",
-            "node": "<GPU03>", "port": "28766"})
+            "node": "<GPU02>", "port": "28766"})
         assert not r.get_json()["ok"], "同一端口在使用中应被拒"
         # 任务名为空被拒
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
             "plan_id": "3", "task_name": "  ", "hours": "12",
-            "node": "<GPU02>", "port": "28767"})
+            "node": "<GPU01>", "port": "28767"})
         assert not r.get_json()["ok"] and "任务名称" in r.get_json()["error"]
+        # 任务名长度 3-10（与前端 JS、模板、文档同一口径）
+        r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
+            "image": PUBIMG,
+            "plan_id": "3", "task_name": "ab", "hours": "12",
+            "node": "<GPU01>", "port": "28767"})
+        j = r.get_json()
+        assert not j["ok"] and "3-10" in j["error"], j
+        # 同用户重名被拒（不区分大小写；停机不释放名称，需删除记录）
+        r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
+            "image": PUBIMG,
+            "plan_id": "3", "task_name": "训练RESNET", "hours": "12",
+            "node": "<GPU01>", "port": "28767"})
+        j = r.get_json()
+        assert not j["ok"] and "已被占用" in j["error"], j
     finally:
         appmod.os.path.isfile = orig_isfile
+
+    # 任务名唯一性：DB 层查重语义（不区分大小写 / 排除自身 / 删除记录才释放名称）
+    from portalapp.db import DB as _DB2
+    dbx = _DB2(appmod.DB_PATH)
+    aid = dbx.user_by_name("alice")["id"]
+    assert dbx.instance_name_taken(aid, "训练resnet") is not None, "已有同名实例应命中"
+    pid = dbx.add_instance(aid, 3, "CaseProbe", "", 0, 1, 1, 29999, "12:00:00",
+                           PUBIMG, 999999, "COMPLETED", "", "", "")
+    assert dbx.instance_name_taken(aid, "caseprobe") is not None, "重名判定应不区分大小写"
+    assert dbx.instance_name_taken(aid, "caseprobe", exclude_iid=pid) is None, "排除自身后不冲突"
+    dbx.del_instance(pid)
+    assert dbx.instance_name_taken(aid, "CaseProbe") is None, "删除记录后名称应释放"
+    dbx.close()
 
     # 我的资源 + API
     r = c.get("/my")
@@ -275,13 +368,20 @@ def main():
     r = c.get("/api/my/instances")
     assert r.get_json()[0]["job_id"] == 424242
 
-    # 日志
+    # 日志：容器日志 + 门户操作日志（提交/停机/保存镜像等）
     iid = 1
     r = c.get("/instances/%d/log" % iid)
-    assert r.get_json()["ok"]
+    j = r.get_json()
+    assert j["ok"] and "text" in j, j
+    evs = j.get("events") or []
+    assert any(e["kind"] == "submit" for e in evs), "申请成功后应有『提交』门户事件: %s" % evs
+    assert all({"ts", "kind", "label", "message"} <= set(e) for e in evs), evs
+    assert j.get("log_error") == "", "日志文件存在时 log_error 应为空: %s" % j.get("log_error")
     # 停机
     r = c.post("/instances/%d/stop" % iid, headers={"X-CSRF-Token": tok2})
     assert r.get_json()["ok"]
+    evs = c.get("/instances/%d/log" % iid).get_json()["events"]
+    assert any(e["kind"] == "stop" for e in evs), "停机后应有『停机』门户事件: %s" % evs
     # 停机后的实例：显示“重新启动/删除”，重启后回到排队中(同一行)，可再次删除
     r = c.get("/my")
     assert "已停止".encode() in r.data and "重新启动".encode() in r.data \
@@ -314,7 +414,7 @@ def main():
     def apply_img(p_img, task, port):
         return c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": p_img, "plan_id": "3", "task_name": task, "hours": "12",
-            "node": "<GPU02>", "port": port})
+            "node": "<GPU01>", "port": port})
 
     r = apply_img(PUBIMG, "快照测试", 28766)
     j = r.get_json()
@@ -336,6 +436,13 @@ def main():
                data={"name": "myfirst"})
     jj = r.get_json()
     assert jj["ok"] and "已保存" in jj["msg"], jj
+    # 保存镜像必须留下门户事件（含耗时），供日志弹窗展示
+    evs = c.get("/instances/%d/log" % s1).get_json()["events"]
+    save_evs = [e for e in evs if e["kind"] == "save"]
+    assert any("myfirst" in e["message"] for e in save_evs), \
+        "保存镜像后应有『保存镜像』事件: %s" % evs
+    assert any("耗时" in e["message"] for e in save_evs), \
+        "保存完成的事件应包含耗时: %s" % save_evs
     # 同名不覆盖 → need_force；确认覆盖(force) → 成功
     r = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
                data={"name": "myfirst"})
@@ -387,6 +494,11 @@ def main():
     assert r.get_json()["ok"]
     r = c.post("/instances/%d/delete" % s1, headers={"X-CSRF-Token": tok2})
     assert r.get_json()["ok"]
+    # 删除实例应连带清掉它的门户事件（instance_events 是 ON DELETE CASCADE）
+    dbxe = _DB(appmod.DB_PATH)
+    assert not dbxe.events_for(s1), "删除实例后应无残留门户事件"
+    assert dbxe.q1("SELECT COUNT(*) n FROM instance_events WHERE instance_id=?", (s1,))["n"] == 0
+    dbxe.close()
     r = c.post("/instances/%d/delete" % s2, headers={"X-CSRF-Token": tok2})
     assert r.get_json()["ok"], r.get_json()
 
@@ -426,6 +538,33 @@ def main():
     j = r.get_json()
     assert j["ok"] and j.get("hard_kb") == 200 * 1024 * 1024, j
     assert FAKE_QUOTA["alice"]["hard_kb"] == 200 * 1024 * 1024, "改配额必须写 OS(fake) 实际值"
+    # 「不限」：改配额要把 OS 软/硬限清成 0，且门户库记录为「不限」（不得再挂不一致告警）
+    r = c.post("/admin/users/%s/quota" % uid_alice,
+               headers={"X-CSRF-Token": tokq}, data={"quota": "不限"})
+    j = r.get_json()
+    assert j["ok"] and j.get("hard_kb") == 0, j
+    assert FAKE_QUOTA["alice"]["hard_kb"] == 0, "「不限」必须把 OS 硬限清成 0"
+    dbxu = _DB(appmod.DB_PATH)
+    assert dbxu.q1("SELECT quota FROM users WHERE id=?", (uid_alice,))["quota"] == "不限", \
+        "门户库应把「不限」按规范写法存下来"
+    dbxu.close()
+    r = c.get("/admin/users")
+    alice_tr = next((mm.group(0) for mm in re.finditer(r"<tr>.*?</tr>", r.text, re.S)
+                     if ">alice<" in mm.group(0)), None)
+    assert alice_tr and "badge-warn" not in alice_tr, "「不限」不应触发配额不一致告警"
+    # 别名 0 / unlimited 也接受，并归一化成「不限」
+    r = c.post("/admin/users/%s/quota" % uid_alice,
+               headers={"X-CSRF-Token": tokq}, data={"quota": "unlimited"})
+    assert r.get_json()["ok"], r.get_json()
+    dbxu = _DB(appmod.DB_PATH)
+    assert dbxu.q1("SELECT quota FROM users WHERE id=?", (uid_alice,))["quota"] == "不限"
+    dbxu.close()
+    # 建号表单里要能选到「不限」
+    assert "不限" in c.get("/admin/users").text, "建号表单的配额下拉应包含「不限」"
+    # 恢复 200G 供后续断言使用
+    r = c.post("/admin/users/%s/quota" % uid_alice,
+               headers={"X-CSRF-Token": tokq}, data={"quota": "200G"})
+    assert r.get_json()["ok"], r.get_json()
     # root 行（保留账号）不能直接改配额
     dbxr = _DB(appmod.DB_PATH)
     uid_root = dbxr.q1("SELECT id FROM users WHERE username='root'")["id"]
@@ -449,7 +588,7 @@ def main():
                    data={"user_id": str(alice_t["id"]),
                          "image": PUBIMG,
                          "plan_id": "3", "task_name": "帮alice提交", "hours": "1",
-                         "node": "<GPU02>", "port": "28766"})
+                         "node": "<GPU01>", "port": "28766"})
         j = r.get_json()
         assert j["ok"], j
     finally:
@@ -474,6 +613,20 @@ def main():
     dbx3.close()
     r = c.post("/admin/users/%s/role" % uid_root, headers={"X-CSRF-Token": tokr})
     assert not r.get_json()["ok"]
+    # 保留账号 root：仍禁止设**具体额度**，但允许设「不限」（清除限额），
+    # 这是把库里遗留默认值（建号脚本曾写 500G）与 OS 现状对齐的途径
+    r = c.post("/admin/users/%s/quota" % uid_root,
+               headers={"X-CSRF-Token": tokr}, data={"quota": "500G"})
+    assert not r.get_json()["ok"] and "保留账号" in r.get_json()["error"], r.get_json()
+    r = c.post("/admin/users/%s/quota" % uid_root,
+               headers={"X-CSRF-Token": tokr}, data={"quota": "不限"})
+    assert r.get_json()["ok"], r.get_json()
+    dbxq2 = _DB(appmod.DB_PATH)
+    assert dbxq2.q1("SELECT quota FROM users WHERE id=?", (uid_root,))["quota"] == "不限"
+    dbxq2.close()
+    root_tr = next((mm.group(0) for mm in re.finditer(r"<tr>.*?</tr>", c.get("/admin/users").text, re.S)
+                    if ">root<" in mm.group(0)), None)
+    assert root_tr and "badge-warn" not in root_tr, "root 的「不限」不应触发一致性告警"
     c.get("/logout")
     login(c, "admin", "AdminPass123")
 
@@ -535,7 +688,40 @@ def main():
     assert "用户名或密码错误".encode() in r.data
     assert "alice" not in pwfile.load_map(), "删除用户后应同步移除密码文件中的行"
 
+    check_legacy_dup_db()
+
     print("SMOKE_OK (db at %s)" % TMP)
+
+
+def check_legacy_dup_db():
+    """老库已有重名任务时：唯一索引建不上，但门户必须照常启动（降级为应用层查重）。"""
+    import io
+    import contextlib
+    from portalapp.db import DB as _DB3, init_db as _init_db
+    legacy = os.path.join(TMP, "legacy")
+    os.makedirs(legacy, exist_ok=True)
+    dbp = os.path.join(legacy, "portal.db")
+    db = _DB3(dbp)
+    _init_db(db)
+    db.exec("DROP INDEX IF EXISTS ux_inst_user_task")   # 模拟升级前的老库
+    assert db.q1("SELECT 1 FROM sqlite_master WHERE name='ux_inst_user_task'") is None
+    db.add_user("dupuser", "dupuser", "user", "pbkdf2$1$00$00", "10G", "existing")
+    uid = db.user_by_name("dupuser")["id"]
+    for i in (1, 2):
+        db.add_instance(uid, None, "same", "", 0, 1, 1, 30000 + i, "12:00:00",
+                        PUBIMG, 900000 + i, "COMPLETED", "", "", "")
+    db.close()
+    # 再次初始化：不能抛异常，且应打印降级警告
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        db = _DB3(dbp)
+        _init_db(db)
+    assert db.q1("SELECT 1 FROM sqlite_master WHERE name='ux_inst_user_task'") is None, \
+        "有重名时不应建出唯一索引"
+    assert "任务名唯一索引创建失败" in err.getvalue(), err.getvalue() or "应打印降级警告"
+    # 降级后应用层查重仍然生效
+    assert db.instance_name_taken(uid, "same") is not None, "应用层查重应仍能拦住重名"
+    db.close()
 
 
 if __name__ == "__main__":

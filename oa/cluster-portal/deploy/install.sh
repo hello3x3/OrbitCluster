@@ -42,7 +42,12 @@ rsync -a --delete \
   "$SRC"/ "$APP_DIR"/
 chown -R root:root "$APP_DIR"
 chmod -R a+rX "$APP_DIR"          # 门户进程(portal)需能读取代码
-chown -R portal:portal "$APP_DIR/portalapp" 2>/dev/null || true
+# 运行期可写目录：数据目录与 var/。
+# ⚠️ 应用代码**必须**归 root —— 历史实现把 portalapp/ 改成 portal:portal，
+# 而 root 运行 verify-install.sh / bootstrap.py 时会 import 这些模块：
+# 门户一旦被攻破，攻击者只要往 portalapp/db.py 里写代码，等管理员跑一次自检就拿到 root。
+# portal 只读、不可写。
+chown -R root:root "$APP_DIR/portalapp"
 chown portal:portal "$APP_DIR/var" 2>/dev/null || true
 
 echo "==> [3/8] Python venv 与依赖"
@@ -113,11 +118,25 @@ WorkingDirectory=$APP_DIR
 Environment=PORTAL_DATA=$DATA_DIR
 Environment=PORTAL_CTL=$CTL
 Environment=PORTAL_PORT=$PORT
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=$APP_DIR/venv/bin/python $APP_DIR/run.py
 Restart=always
 RestartSec=3
 # 注意：不要开 NoNewPrivileges —— web 需经 sudoers 白名单调 root 助手 portal-ctl
 PrivateTmp=true
+# ---- 沙箱加固（纵深防御）------------------------------------------------
+# 门户只应写数据目录与 /etc/cluster-portal（密码文件回写）；应用代码只读。
+# 这样即使门户被攻破，也无法篡改自己的代码（与 install.sh 里的属主设置互为双保险）。
+# /run、/dev、/proc、/sys 以及 PrivateTmp 提供的 /tmp 仍可写，sudo 不受影响。
+ProtectSystem=strict
+ReadWritePaths=$DATA_DIR /etc/cluster-portal
+ProtectHome=read-only
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -143,6 +162,8 @@ fi
 
 echo "==> [7/8] 启动服务"
 chown -R portal:portal "$DATA_DIR"        # secret/db 归 portal 可读写
+chmod 600 "$DATA_DIR"/secret 2>/dev/null || true
+chmod 600 "$DATA_DIR"/portal.db 2>/dev/null || true   # 库里有口令哈希与用户信息，不必给他人可读
 systemctl daemon-reload
 systemctl reset-failed $SERVICE || true
 systemctl enable --now $SERVICE || true

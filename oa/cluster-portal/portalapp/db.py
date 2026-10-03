@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import sys
 import threading
 
 from . import siteconf
@@ -25,6 +26,8 @@ PORT_MIN = 10000
 PORT_MAX = 65535
 
 ACTIVE_STATES = ("PENDING", "RUNNING", "SUSPENDED", "COMPLETING", "STOPPING")
+# 每个实例保留的门户事件条数上限（见 add_event）
+EVENT_KEEP = 200
 
 STATE_CN = {
     "PENDING": "排队中", "RUNNING": "运行中", "SUSPENDED": "已挂起",
@@ -116,6 +119,10 @@ class DB:
 
     def user_set_password(self, uid, passwd_hash):
         self.exec("UPDATE users SET passwd=? WHERE id=?", (passwd_hash, uid))
+
+    def user_bump_session_epoch(self, uid):
+        """会话吊销：+1 之后，所有带旧 epoch 的 Cookie 立即失效。"""
+        self.exec("UPDATE users SET session_epoch=COALESCE(session_epoch,0)+1 WHERE id=?", (uid,))
 
     def user_touch_login(self, uid):
         import datetime
@@ -240,6 +247,20 @@ class DB:
             self.exec("UPDATE instances SET state=?, updated_at=? WHERE id=?",
                       (state, _now(), iid))
 
+    def set_instance_state_if_active(self, iid, state, slurm_state=None):
+        """仅当实例**当前仍是活跃态**时才改状态，返回是否改到（CAS）。
+
+        为什么要 CAS：与 Slurm 对账的路径是"先读状态、再写状态"，
+        而后台线程（到期自动保存 → 自动停机）会并发把状态写成终态。
+        不加条件就可能出现"读到的还是 RUNNING，写入却发生在终态之后"，
+        把刚写好的 CANCELLED 覆盖回 RUNNING（实例永远显示运行中）。
+        """
+        cur = self.exec("UPDATE instances SET state=?, slurm_state=?, updated_at=? "
+                        "WHERE id=? AND state IN (%s)"
+                        % ",".join("?" * len(ACTIVE_STATES)),
+                        (state, slurm_state or state, _now(), iid) + ACTIVE_STATES)
+        return cur.rowcount > 0
+
     def set_instance_meta(self, iid, **kw):
         cols = {"job_id", "node", "ssh_ip", "log_path", "cmd", "slurm_state", "last_error"}
         sets = []
@@ -269,6 +290,22 @@ class DB:
                        % ",".join("?" * len(ACTIVE_STATES)),
                        (uid, port) + ACTIVE_STATES) is not None
 
+    def instance_name_taken(self, uid, task_name, exclude_iid=None):
+        """同一用户下是否已有同名资源（含已停机/已取消记录）。
+
+        名称不随停机释放：必须删除那条记录才能复用（与 app.py 的查重提示口径一致）。
+        比较用 COLLATE NOCASE，因此 "Test" 与 "test" 视为重名。
+        """
+        name = (task_name or "").strip()
+        if not name:
+            return None
+        if exclude_iid is None:
+            return self.q1("SELECT * FROM instances WHERE user_id=? "
+                           "AND task_name=? COLLATE NOCASE", (uid, name))
+        return self.q1("SELECT * FROM instances WHERE user_id=? "
+                       "AND task_name=? COLLATE NOCASE AND id<>?",
+                       (uid, name, exclude_iid))
+
     def mark_started(self, iid, ts):
         """作业首次进入 RUNNING 时记录开始时刻（用于到期自动保存的截止计算）。"""
         self.exec("UPDATE instances SET started_at=?, updated_at=? "
@@ -292,6 +329,25 @@ class DB:
     def set_auto_save_path(self, iid, path):
         self.exec("UPDATE instances SET auto_saved_path=?, updated_at=? WHERE id=?",
                   (path, _now(), iid))
+
+    # ---- 实例事件（门户侧操作的可追溯日志：保存镜像 / 停机 / 重启用等）----
+    # 为什么不写进作业的 <jobid>.out：那个文件由 slurmd 持有 fd 持续写入，
+    # 从外部 append 会与它的文件偏移打架，可能把容器输出写花或把我们的行覆盖掉。
+    # 存 DB 还有两个好处：不需要任何特权写路径（portal 用户写自己的库即可），
+    # 且 rm-log 删掉日志文件后事件仍在。
+    def add_event(self, iid, kind, message):
+        self.exec("INSERT INTO instance_events(instance_id,ts,kind,message) VALUES(?,?,?,?)",
+                  (iid, _now(), str(kind)[:24], str(message)[:1000]))
+        # 每实例只保留最近 EVENT_KEEP 条，避免长期运行无限增长
+        self.exec("DELETE FROM instance_events WHERE instance_id=? AND id NOT IN "
+                  "(SELECT id FROM instance_events WHERE instance_id=? "
+                  " ORDER BY id DESC LIMIT ?)", (iid, iid, EVENT_KEEP))
+
+    def events_for(self, iid, limit=200):
+        """按时间正序返回最近 limit 条事件（便于直接追加展示）。"""
+        rows = self.q("SELECT ts,kind,message FROM instance_events WHERE instance_id=? "
+                      "ORDER BY id DESC LIMIT ?", (iid, limit))
+        return list(reversed(rows))
 
     def running_unauto_saved(self):
         """RUNNING、已记录开始时刻、尚未做过到期自动保存、且当前无保存动作的实例。"""
@@ -330,7 +386,8 @@ CREATE TABLE IF NOT EXISTS users(
   os_mode TEXT NOT NULL DEFAULT 'provision',
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
-  last_login TEXT
+  last_login TEXT,
+  session_epoch INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS ssh_keys(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -392,6 +449,14 @@ CREATE TABLE IF NOT EXISTS plans(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_inst_node_port
   ON instances(node, port) WHERE state IN ('PENDING','RUNNING','SUSPENDED','COMPLETING','STOPPING');
+CREATE TABLE IF NOT EXISTS instance_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id INTEGER NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+  ts TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_inst_events ON instance_events(instance_id, id);
 """
 
 
@@ -409,6 +474,10 @@ def init_db(db):
 
 def _migrate(db):
     """为已存在的库补加新列（sqlite ALTER TABLE ADD COLUMN）。"""
+    # 会话吊销用：Cookie 里带上该值，改密/重置/停用/登出时 +1，旧 Cookie 立即失效。
+    ucols = {r[1] for r in db.q("PRAGMA table_info(users)")}
+    if "session_epoch" not in ucols:
+        db.exec("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0")
     icols = {r[1] for r in db.q("PRAGMA table_info(instances)")}
     if "plan_id" not in icols:
         db.exec("ALTER TABLE instances ADD COLUMN plan_id INTEGER")
@@ -434,6 +503,16 @@ def _migrate(db):
     # 已有 GPU 套餐补默认型号（站点默认型号，见 portalapp/siteconf.py）
     db.exec("UPDATE plans SET gpu_model=? WHERE gpus=1 AND gpu_model=?",
             (siteconf.DEFAULT_GPU_MODEL, ""))
+    # 同一用户下任务名唯一（不区分大小写；空/NULL 名字不入索引）。
+    # 语义：停机也不释放名字，只有删除记录才能复用（应用层查重在 app.py，这里是兜底）。
+    # 此处而非 SCHEMA：老库若已存在重名，建索引会失败，但只降级为应用层查重，不影响门户启动。
+    try:
+        db.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_inst_user_task "
+                "ON instances(user_id, task_name COLLATE NOCASE) "
+                "WHERE COALESCE(task_name,'')<>''")
+    except sqlite3.DatabaseError as e:
+        print("[cluster-portal] 警告：任务名唯一索引创建失败（老库可能存在重名），"
+              "已降级为应用层查重：%s" % e, file=sys.stderr)
 
 
 def _load_seed_plans():

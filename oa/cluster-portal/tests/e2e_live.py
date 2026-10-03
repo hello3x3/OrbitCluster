@@ -27,7 +27,7 @@ ADMIN_USER = os.environ.get("E2E_ADMIN_USER", "root")     # 默认管理员账�
 ADMIN_PWD = os.environ.get("E2E_ADMIN_PWD", "")
 SSH_PORT_HOST = 2180
 ADMIN_HOST = os.environ.get("E2E_ADMIN_HOST", "<ADMIN_IP>")
-NODE_IP = {"admin": "<ADMIN_IP>", "<GPU02>": "<GPU02_IP>", "<GPU03>": "<GPU03_IP>"}
+NODE_IP = {"admin": "<ADMIN_IP>", "<GPU01>": "<GPU01_IP>", "<GPU02>": "<GPU02_IP>"}
 
 OK = []
 
@@ -154,29 +154,71 @@ def make_key(tag):
 E2E_USERS = []
 
 
+def _admin(cmd, timeout=240, stdin=None):
+    """在管理节点以 root 执行一条命令。"""
+    return subprocess.run(["ssh", "-o", "BatchMode=yes", "-p", str(SSH_PORT_HOST),
+                           "root@" + ADMIN_HOST, cmd],
+                          input=stdin, capture_output=True, text=True, timeout=timeout)
+
+
+def _residue_of(u):
+    """清理后仍存在的东西（空列表 = 干净）。
+
+    教训：2026-09-13 的事故就是一个**没清理干净**的测试账号（sshtest2, uid 1002）残留，
+    次日撞上真实用户 lnq 刚被分配到的同一个 UID —— enroot 的 passwd hook 只按 UID
+    取一条记录写进容器，容器里没有 lnq，用户 ssh 报 Permission denied (publickey)。
+    所以清理必须**校验**，不能只看 unprovision 的退出码。
+    """
+    res = []
+    if _admin("id -u %s 2>/dev/null" % u, timeout=60).stdout.strip():
+        res.append("%s: 管理节点仍有 OS 账号" % u)
+    if _admin("test -e /share/home/%s && echo yes" % u, timeout=60).stdout.strip() == "yes":
+        res.append("%s: 家目录仍存在" % u)
+    if _admin("repquota -u /share 2>/dev/null | awk '$1==\"%s\"'" % u,
+              timeout=60).stdout.strip():
+        res.append("%s: 仍有 /share 配额记录" % u)
+    if _admin("sacctmgr -n -P show assoc user=%s format=User 2>/dev/null" % u,
+              timeout=60).stdout.strip():
+        res.append("%s: 仍有 Slurm 会计关联" % u)
+    if _admin("test -e /share/images/%s && echo yes" % u, timeout=60).stdout.strip() == "yes":
+        res.append("%s: 个人镜像目录仍存在" % u)
+    return res
+
+
 def cleanup_users():
+    """注销测试用户 → 兜底补删 → **断言真的清理干净**（有残留就抛错，让 e2e 非 0 退出）。"""
     if not E2E_USERS:
         return
     log("清理测试用户: %s" % ",".join(E2E_USERS))
     for u in E2E_USERS:
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-p", str(SSH_PORT_HOST),
-                            "root@" + ADMIN_HOST,
-                            "/usr/local/sbin/portal-ctl unprovision-user %s" % u],
-                           capture_output=True, text=True, timeout=240)
+        r = _admin("/usr/local/sbin/portal-ctl unprovision-user %s </dev/null" % u)
         if r.returncode != 0:
             log("  unprovision %s 失败: %s" % (u, (r.stdout + r.stderr)[-300:]))
+        # 兜底（幂等）：门户路径没删净时补删，并清掉 userdel 不会清的配额记录与主组
+        _admin("id %s >/dev/null 2>&1 && userdel -r %s 2>/dev/null; "
+               "uid=$(id -u %s 2>/dev/null); "
+               "[ -n \"$uid\" ] && setquota -u \"$uid\" 0 0 0 0 /share 2>/dev/null; "
+               "getent group %s >/dev/null 2>&1 && groupdel %s 2>/dev/null; "
+               "rm -rf /share/home/%s /share/images/%s; "
+               "sacctmgr -i delete user name=%s 2>/dev/null; true"
+               % (u, u, u, u, u, u, u, u), timeout=180)
         time.sleep(1)
     py = ("import sys; sys.path.insert(0,'.');\n"
           "from portalapp.db import DB;\n"
           "d=DB('/var/lib/cluster-portal/portal.db');\n"
           "d.exec(\"DELETE FROM users WHERE username LIKE 'pt%'\");\n"
           "print('portal users left:', [x[0] for x in d.q('SELECT username FROM users')])")
-    r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-p", str(SSH_PORT_HOST),
-                        "root@" + ADMIN_HOST,
-                        "cd /opt/cluster-portal && PORTAL_DATA=/var/lib/cluster-portal "
-                        "./venv/bin/python - "],
-                       input=py, capture_output=True, text=True, timeout=120)
+    r = _admin("cd /opt/cluster-portal && PORTAL_DATA=/var/lib/cluster-portal "
+               "./venv/bin/python -", timeout=120, stdin=py)
     log("  " + (r.stdout.strip() or r.stderr.strip()))
+
+    residues = []
+    for u in E2E_USERS:
+        residues += _residue_of(u)
+    if residues:
+        raise RuntimeError(
+            "测试账号清理不彻底，请手工处理后再跑 e2e：\n  - " + "\n  - ".join(residues))
+    log("  清理已校验干净 ✓")
 
 
 def _run():
@@ -291,12 +333,12 @@ def _run():
     check("改回后 OS 实读 100 GiB", q3["disk"]["hard_kb"] == 100 * 1024 * 1024, str(q3)[:200])
 
     # ---------- Alice：GPU 容器申请（同时两个节点两个资源）----------
-    _, j = ap(a, gpu_plan_id, "alice-g1", 28771, "<GPU02>")
+    _, j = ap(a, gpu_plan_id, "alice-g1", 28771, "<GPU01>")
     check("alice 提交 GPU#1", j["ok"], str(j))
-    _, j = ap(a, gpu_plan_id, "alice-g2", 28772, "<GPU03>")
+    _, j = ap(a, gpu_plan_id, "alice-g2", 28772, "<GPU02>")
     check("alice 提交 GPU#2(并发多资源)", j["ok"], str(j))
     # 同一端口（使用中，任意节点）重复申请被拒
-    _, j = ap(a, gpu_plan_id, "alice-dup", 28771, "<GPU03>")
+    _, j = ap(a, gpu_plan_id, "alice-dup", 28771, "<GPU02>")
     check("端口使用中重复申请被拒", not j["ok"], str(j))
 
     log("等待 alice 两个实例运行 ...")
@@ -306,7 +348,7 @@ def _run():
     byport = {i["port"]: i for i in insts}
 
     # ---------- SSH 进容器验证（真实登录，经节点 IP）----------
-    for port, node in ((28771, "<GPU02>"), (28772, "<GPU03>")):
+    for port, node in ((28771, "<GPU01>"), (28772, "<GPU02>")):
         rr = ssh_run_retry(akey, alice, NODE_IP[node], port,
                            'echo OK-$(hostname)-uid$(id -u); nvidia-smi -L 2>/dev/null | head -1; '
                            'test -d /share/home && echo HOME_OK')
@@ -371,7 +413,7 @@ def _run():
             break
         time.sleep(3)
     assert running, "自动调度后未回填真实节点/IP"
-    check("自动调度后回填真实节点", running["node"] in ("admin", "<GPU02>", "<GPU03>"),
+    check("自动调度后回填真实节点", running["node"] in ("admin", "<GPU01>", "<GPU02>"),
           str(running))
     # 停机收尾该实例
     r = a.post_json("/instances/%d/stop" % iid)
@@ -397,7 +439,7 @@ def _run():
             break
         time.sleep(3)
     assert ok_n, "重启后未回填节点/IP"
-    check("重启后节点/IP 回填", ok_n["node"] in ("admin", "<GPU02>", "<GPU03>"), str(ok_n)[:200])
+    check("重启后节点/IP 回填", ok_n["node"] in ("admin", "<GPU01>", "<GPU02>"), str(ok_n)[:200])
     # 再停机 → 删除（记录 + 日志）
     r = a.post_json("/instances/%d/stop" % iid)
     check("重启后停机", a.json(r)["ok"], str(a.json(r)))
@@ -437,13 +479,13 @@ def _run():
     rr = b.get("/my", allow_redirects=False)
     check("删除后 bob 门户访问被拒", rr.status_code in (301, 302))
     sh = ("id %s >/dev/null 2>&1; echo ADMIN_RC=$?; "
-          "for n in '<GPU02>' '<GPU03>'; do ssh -o BatchMode=yes -p 2180 root@$n "
+          "for n in '<GPU01>' '<GPU02>'; do ssh -o BatchMode=yes -p 2180 root@$n "
           "'id %s >/dev/null 2>&1'; echo ${n}_RC=$?; done" % (bob, bob))
     r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-p", str(SSH_PORT_HOST),
                         "root@" + ADMIN_HOST, sh],
                        capture_output=True, text=True, timeout=120)
     check("bob OS 账号三节点均已删除",
-          "ADMIN_RC=1" in r.stdout and "<GPU02>_RC=1" in r.stdout and "<GPU03>_RC=1" in r.stdout,
+          "ADMIN_RC=1" in r.stdout and "<GPU01>_RC=1" in r.stdout and "<GPU02>_RC=1" in r.stdout,
           r.stdout[:300] + r.stderr[:200])
 
     # ---------- 保存镜像：真实 enroot export（个人镜像 + 到期自动保存）----------
@@ -471,11 +513,11 @@ def _run():
     r = a.get("/apply")
     check("申请页含公共/我的镜像分组",
           "公共镜像".encode("utf-8") in r.content and "我的镜像".encode("utf-8") in r.content)
-    # 用个人镜像 tiny 申请（CPU 套餐，节点 <GPU02>）→ RUNNING
+    # 用个人镜像 tiny 申请（CPU 套餐，节点 <GPU01>）→ RUNNING
     tiny_path = next(x["path"] for x in d2["mine"] if x["name"] == "tiny.sqsh")
     r2 = a.post_json("/apply", data={"image": tiny_path, "plan_id": str(cpu_plan_id),
                                      "task_name": "snaptiny", "hours": "1",
-                                     "node": "<GPU02>", "port": "28771"})
+                                     "node": "<GPU01>", "port": "28771"})
     j2 = a.json(r2)
     check("用个人镜像申请资源", j2["ok"], str(j2)[:200])
     siid = j2["instance_id"]
@@ -540,7 +582,7 @@ def _run():
 
     # ---------- 集群状态页 ----------
     r = admin.get("/status")
-    check("集群状态页", r.status_code == 200 and "<GPU02>" in r.text)
+    check("集群状态页", r.status_code == 200 and "<GPU01>" in r.text)
     r = admin.get("/api/nodes")
     nodes = admin.json(r)
     check("节点 API 正常", nodes.get("ok") and len(nodes.get("nodes", [])) >= 3)
@@ -549,10 +591,19 @@ def _run():
 
 
 def main():
+    err = None
     try:
         _run()
+    except BaseException as e:
+        err = e
+        raise
     finally:
-        cleanup_users()
+        try:
+            cleanup_users()
+        except Exception as ce:
+            log("!! 测试账号清理未通过校验: %s" % ce)
+            if err is None:
+                raise          # 没有别的异常时，把"清理不干净"本身作为本次失败
 
 
 if __name__ == "__main__":
