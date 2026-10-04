@@ -95,7 +95,7 @@ SHARE_HOME = "/share/home"
 # ----------------------------------------------------------------------------
 # 站点配置（与 portalapp/siteconf.py 读同一个文件，保持两端行为一致）
 #   /etc/cluster-portal/site.conf  每行 KEY=VALUE，# 起注释
-#   本站点认的键：SSH_PORT <其它键由门户进程使用>
+#   本站点认的键：SSH_PORT、IMAGES_MOUNT（镜像目录）<其它键由门户进程使用>
 # 节点名不在这里配置：一律经 sinfo 运行时探测，节点 IP 从 /etc/hosts 解析。
 # ----------------------------------------------------------------------------
 SITE_CONF = os.environ.get("PORTAL_SITE_CONF", "/etc/cluster-portal/site.conf")
@@ -221,7 +221,9 @@ def user_home(username):
         return parts[5]
     return os.path.join(SHARE_HOME, username)
 CTL = "portal-ctl"
-IMAGES_ROOT = "/share/images"
+# 镜像目录，与门户 app 的 PORTAL_IMAGES_DIR 同一套取值：环境变量 > site.conf > 默认
+IMAGES_ROOT = (os.environ.get("PORTAL_IMAGES_DIR")
+               or SITE.get("IMAGES_MOUNT") or "/share/images")
 
 
 def out(obj, code=0):
@@ -424,10 +426,9 @@ def node_hostname():
 def is_management_node():
     """/share 是本地文件系统 => 本机就是管理节点。
 
-    与 cluster-admin/add-user.sh 的角色判定同一套口径（findmnt，不写死主机名）。
-    注意：这里以前写的是 `node_hostname() != "admin"` —— "admin" 是老集群的主机名，
-    换到新站点后该条件恒为真，导致「改配额」（portal-ctl set-quota）**全线失效**，
-    门户上的「改配额」按钮也一直报"配额只能在 admin 节点设置"。
+    与 cluster-admin/add-user.sh 的角色判定同一套口径（findmnt，不写死主机名）：
+    换成主机名比较会在别的站点恒为真，导致 set-quota 全线失效
+    （门户「改配额」按钮报"配额只能在 admin 节点设置"）。
     """
     fstype = sh_out(["findmnt", "-no", "FSTYPE", "/share"], timeout=15)
     return bool(fstype) and fstype not in ("nfs", "nfs4")
@@ -1113,12 +1114,8 @@ def cmd_submit():
         argv.insert(argv.index("-J"), node)
     if gpus >= 1:
         argv.insert(argv.index("-J"), "--gres=gpu:%d" % gpus)
-    # 安全约束：绝不加 --container-remap-root。
-    # 镜像内 /opt/start_ssh.sh 只在**非 root 分支**才关掉口令认证（UsePAM=no /
-    # PasswordAuthentication=no）；容器一旦以 root 运行，sshd 就沿用镜像内置配置
-    # （PermitRootLogin yes + PermitEmptyPasswords yes + 内置口令 root:5233），
-    # 而 enroot 共享宿主机网络命名空间 → 等于把一个固定口令的 sshd 暴露给整个内网。
-    # 当前安全完全依赖 ENROOT_REMAP_ROOT=n 且这里不传该参数，因此显式拦住。
+    # 安全约束：绝不加 --container-remap-root（默认也不 remap，所以无需 --no-...）。
+    # 容器一旦以 root 起来，sshd 就是 root 身份 + enroot 共享宿主机网络，风险太大。
     if any(str(a).startswith("--container-remap-root") for a in argv):
         die("内部错误：门户作业禁止使用 --container-remap-root（会让容器变 root 模式）")
     # 显式设置提交环境 HOME/USER，避免 runuser/服务目录把 HOME 带进作业（--export=ALL 会透传）
@@ -1229,7 +1226,38 @@ def cmd_log(user, job_id, lines):
 # 所以"日志里有它" = 容器的 sshd 真的起来了。作业日志在用户家目录（750）下，
 # 门户进程读不到，只能由 root 助手读（这里是本地文件读，不 ssh、不联网）。
 SSH_READY_MARK = "[start_ssh] sshd 实际监听端口:"
+# 就绪横幅必须带**非空 PID** 才算数：sshd 抢不到端口时会 daemonize 并以 0 退出，
+# start_ssh.sh 拿不到 pidfile，于是 PID 为空 —— 而它那句"是否在监听"读的是
+# /proc/net/tcp，那是**整个网络命名空间**（= 宿主机）的表，别人占着同一个端口
+# 也会显示"有人在听"。所以 `(PID=)` 恰恰是"端口被别的进程占用"的指纹。
+SSH_BANNER_RE = re.compile(r"\[start_ssh\] sshd 实际监听端口:\s*(\d+)\s*\(PID=(\d*)\)")
+# 启动失败的指纹（脚本自己打"启动失败:"；绑定失败时 sshd 会打 Bind/Address already in use）
+SSH_FAIL_RE = re.compile(
+    r"\[start_ssh\] 启动失败"                       # 启动失败横幅
+    r"|\[start_ssh\] sshd 启动失败"                 # 启动失败横幅的另一种写法
+    r"|Bind to port .* failed"                       # sshd 自己打的
+    r"|Address already in use"                       # 内核 EADDRINUSE
+    r"|sshd: no hostkeys available")
 SSH_READY_HEAD_BYTES = 65536      # 就绪横幅在文件开头；只读头部，别把几十 MB 的日志全读进来
+
+
+def _ssh_ready_verdict(text):
+    """从作业日志头部判断容器里的 sshd 到底起没起来。
+
+    返回 (ready, failed, reason)：
+      ready   —— 我们自己的 sshd 真的在监听（横幅带非空 PID）
+      failed  —— 已经能确定起不来了（端口被占 / sshd 报错 / 横幅 PID 为空）
+    只认 PID 非空的横幅：见 SSH_BANNER_RE 上面的说明。
+    """
+    if SSH_FAIL_RE.search(text or ""):
+        return False, True, "port-conflict"
+    m = SSH_BANNER_RE.search(text or "")
+    if not m:
+        return False, False, "starting"          # 还没到时候 / 日志里还没有横幅
+    if not m.group(2):
+        # 横幅在但 PID 空：端口被别的进程占着，那不是在监听我们的 sshd
+        return False, True, "port-conflict"
+    return True, False, "ok"
 
 
 def cmd_ssh_ready(user, job_id):
@@ -1260,8 +1288,8 @@ def cmd_ssh_ready(user, job_id):
         die("读取日志失败: %s" % e)
     finally:
         os.close(fd)
-    ready = SSH_READY_MARK in data.decode("utf-8", "replace")
-    out({"ok": True, "ready": ready, "job_id": job_id})
+    ready, failed, reason = _ssh_ready_verdict(data.decode("utf-8", "replace"))
+    out({"ok": True, "ready": ready, "failed": failed, "reason": reason, "job_id": job_id})
 
 
 # ----------------------------------------------------------------------------

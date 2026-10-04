@@ -6,8 +6,8 @@
 #
 # 【站点目录】可选，内含 site.conf（及可选的 plans.json）。给了就装到
 #   /etc/cluster-portal/ 下，用于适配不同集群的 ssh 端口 / GPU 型号 / 套餐种子；
-#   不给则用代码内置默认值（ssh 端口 2180、RTX 3060），即旧集群行为。
-#   站点目录样例见仓库 oa/sites/3090-2node/。
+#   不给则用代码内置默认值（ssh 端口 2180、RTX 3060）。
+#   站点目录可用 `make out` 生成的 provision/out/etc/cluster-portal/（含 site.conf 与 plans.json）。
 #
 # 功能:
 #   * 创建运行账号 portal 与数据目录 /var/lib/cluster-portal
@@ -134,7 +134,6 @@ PrivateTmp=true
 #   userdel -r 删家目录、写 /share/images 个人镜像、quotactl 落地配额。少写这一项，
 #   门户就变成"只能看不能动"：提交作业报
 #   OSError: [Errno 30] Read-only file system: '/share/home/<u>/.portal/logs'
-#   （本项目线上真实事故，2026-10-01 加沙箱时漏掉，10-03 才被发现）。
 #   注意 sudo→portal-ctl 的 root 子进程**继承同一挂载命名空间**，所以这里放宽是必须的，
 #   不是"反正 root 能写"。SHARE_HOME/IMAGES_ROOT 在 portal-ctl 里固定为 /share/*，
 #   若将来改到别处，这里要跟着加。
@@ -144,9 +143,8 @@ ProtectHome=read-only
 PrivateDevices=yes
 # ⚠ PrivateDevices=yes 会把 /dev/sda 从沙箱的 /dev 里摘掉，而 `repquota /share` 必须先
 #   stat() 这个块设备节点，否则直接空手而归（rc 还是 0，所以是**静默**失败）：
-#   用户管理页的「配额（OS 实读）」整列变成「—」，库里的额度与 OS 实际值漂移
-#   （某用户库里 500G / OS 实际 5G）就完全看不出来 —— 直到他存 ~10G 镜像报
-#   "Write failed because Disk quota exceeded" 才暴露（2026-10-03 线上真实事故）。
+#   用户管理页的「配额（OS 实读）」整列变成「—」，库里的额度与 OS 实际值漂移就完全
+#   看不出来 —— 直到写入超过配额、报 "Write failed because Disk quota exceeded" 才暴露。
 #   只把这一个设备节点**只读**bind 进沙箱：repquota 只要 stat()，不需要打开设备，
 #   所以不必放宽 DevicePolicy；非特权 portal 进程依旧打不开它（brw-rw---- root:disk）。
 BindReadOnlyPaths=/dev/sda

@@ -243,7 +243,7 @@ def main():
     finally:
         _db.close()
 
-    # 管理员 + 「OS 已存在」同样要落地配额（线上事故：某运维账号设了 1T 却显示不限）
+    # 管理员 + 「OS 已存在」同样要落地配额（只改库不落 OS 会显示"不限"）
     # —— 管理员账号只能由 root 创建，所以这里切换到 root 会话
     c.get("/logout")
     login(c, "root", "RootPass1234")
@@ -265,7 +265,7 @@ def main():
     # 「门户记录 ≠ OS」告警不应误报（以上账号都是刚对齐的）
     r = c.get("/admin/users")
     assert b"badge-warn" not in r.data, "配额一致性告警误报"
-    # 反向用例：只改库里额度、不落 OS → 必须出现告警（这正是线上那次的形态）
+    # 反向用例：只改库里额度、不落 OS → 必须出现告警
     dbx = appmod.DB(appmod.DB_PATH)
     dbx.exec("UPDATE users SET quota='2T' WHERE username='eve'")
     dbx.close()
@@ -427,13 +427,29 @@ def main():
     assert dbx.instance_name_taken(aid, "CaseProbe") is None, "删除记录后名称应释放"
     dbx.close()
 
+    # 样例 site.conf 必须列全所有可配键（注释掉的也算）—— 防止以后加了键忘了写进示例
+    _tpl = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))), "provision", "templates",
+        "cluster-portal-site.conf.in")
+    assert os.path.isfile(_tpl), _tpl
+    _tpl_txt = open(_tpl, encoding="utf-8").read()
+    _need = set(appmod.siteconf.DEFAULTS) | {"EXTRA_MOUNTS"}
+    _miss = [k for k in sorted(_need)
+             if not re.search(r"^[ \t]*#?[ \t]*%s[ \t]*=" % k, _tpl_txt, re.M)]
+    assert not _miss, "样例 site.conf 缺少可配键: %s" % _miss
+
+    # 镜像目录不该写死：这里由 PORTAL_IMAGES_DIR 指定（site.conf 的 IMAGES_MOUNT 同理）
+    assert appmod.IMAGES_DIR == IMGDIR, appmod.IMAGES_DIR
+    assert appmod.siteconf.get("IMAGES_MOUNT") == "/share/images", \
+        appmod.siteconf.get("IMAGES_MOUNT")
+
     # 我的资源 + API
-    # 「运行中 vs 启动中」由日志里的就绪横幅决定（root 助手 ssh-ready → app._ssh_ready）。
+    # 「运行中 vs 启动中」由日志里的就绪横幅决定（root 助手 ssh-ready → app._ssh_start_state）。
     # 先固定成"已就绪"，
     # 让下面的常规断言按「运行中」跑；「启动中」的专门用例紧跟着单独测。
     _real_ssh_ready = appmod.ctl.ssh_ready
     appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': True}
-    appmod._ssh_ready_cache.clear()
+    appmod._start_state_cache.clear()
     r = c.get("/my")
     assert r.status_code == 200 and "运行中".encode() in r.data
     assert "我的配额".encode() in r.data and "Slurm".encode() in r.data, "我的资源应展示配额/Slurm 额度"
@@ -448,7 +464,7 @@ def main():
     # ---- 「启动中」：Slurm 报 RUNNING，但容器里的 sshd 还没在监听 ----
     # 光有 RUNNING 不等于用户能 ssh 进去（镜像导入 + sshd 起来还要几秒到几十秒）。
     appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': False}
-    appmod._ssh_ready_cache.clear()
+    appmod._start_state_cache.clear()
     r = c.get("/my")
     _row = re.search(r"<tr data-id=\"\d+\">.*?</tr>", r.text, re.S)
     assert _row, "我的资源里应有实例行"
@@ -460,15 +476,45 @@ def main():
     assert j["state_cn"] == "启动中" and j["state_key"] == "starting" and j["starting"] is True, j
     # 就绪之后必须变回「运行中」，不能卡在启动中
     appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': True}
-    appmod._ssh_ready_cache.clear()
+    appmod._start_state_cache.clear()
     r = c.get("/my")
     _row = re.search(r"<tr data-id=\"\d+\">.*?</tr>", r.text, re.S)
     assert _row and "运行中" in _row.group(0) and "启动中" not in _row.group(0), \
         "sshd 起来后那行应变回「运行中」"
     j = c.get("/api/my/instances").get_json()[0]
     assert j["state_cn"] == "运行中" and j["state_key"] == "running" and j["starting"] is False, j
+    # ---- 「启动失败」：端口被别的进程占用（sshd 抢不到端口，就绪横幅里 PID 是空的）----
+    # 端口冲突的作业会以 COMPLETED(exit 0) 正常结束，所以原因必须落库 + 显示出来。
+    appmod.ctl.ssh_ready = lambda user, jobid: {
+        'ok': True, 'ready': False, 'failed': True, 'reason': 'port-conflict'}
+    appmod._start_state_cache.clear()
+    appmod._startup_checked.clear()
+    r = c.get("/my")
+    _row = re.search(r'<tr data-id="\d+">.*?</tr>', r.text, re.S)
+    _badge = re.search(r'<span class="st (st-[a-z_]+)">([^<]*)</span>', _row.group(0))
+    assert _badge and _badge.group(1) == "st-failed" and _badge.group(2) == "启动失败", _badge
+    assert "端口被别的进程占用" in _row.group(0), "启动失败的原因必须显示在行里"
+    j = c.get("/api/my/instances").get_json()[0]
+    assert j["startup_error"].startswith("启动失败：端口"), j
+    assert j["state_key"] == "failed" and j["starting"] is False, j
+    _db2 = appmod.DB(appmod.DB_PATH)
+    _le = _db2.q1("SELECT last_error FROM instances WHERE state='RUNNING'")["last_error"]
+    assert _le and _le.startswith("启动失败"), _le
+    assert _db2.q1("SELECT COUNT(*) n FROM instance_events WHERE kind='error'")["n"] >= 1, \
+        "启动失败应记一条 error 事件（作业结束后用户仍能看到原因）"
+
+    # ---- 停机后的端口冷却期（旧容器还没退干净时不许用同一端口立刻重提）----
+    import datetime as _dt
+    _db3 = appmod.DB(appmod.DB_PATH)
+    _db3.exec("UPDATE instances SET state='CANCELLED', stopped_at=? WHERE job_id=424242",
+              (_dt.datetime.now().isoformat(timespec="seconds"),))
+    _iu = _db3.q1("SELECT user_id uid, port FROM instances WHERE job_id=424242")
+    assert _db3.port_stopped_within(_iu["uid"], _iu["port"], 60) is True, "刚停机应命中冷却期"
+    assert _db3.port_stopped_within(_iu["uid"], _iu["port"], -1) is False, "时间窗过期不该命中"
+    _db3.exec("UPDATE instances SET state='RUNNING', stopped_at=NULL WHERE job_id=424242")
+
     appmod.ctl.ssh_ready = _real_ssh_ready
-    appmod._ssh_ready_cache.clear()
+    appmod._start_state_cache.clear()
 
     # 日志：容器日志 + 门户操作日志（提交/停机/保存镜像等）
     iid = 1
@@ -488,6 +534,13 @@ def main():
     r = c.get("/my")
     assert "已停止".encode() in r.data and "重新启动".encode() in r.data \
         and "删除".encode() in r.data, "停机后的资源应出现重新启动/删除操作"
+    # 刚停机不足冷却期：立刻重启必须被拒（旧容器可能还在监听那个端口）
+    r = c.post("/instances/%d/restart" % iid, headers={"X-CSRF-Token": tok2})
+    _j = r.get_json()
+    assert not _j.get("ok") and "刚停机不足" in (_j.get("error") or ""), _j
+    _cd_old = appmod.PORT_COOLDOWN_S
+    appmod.PORT_COOLDOWN_S = 0            # 关掉冷却期，继续测正常重启
+
     orig_isfile_rs = appmod.os.path.isfile
     appmod.os.path.isfile = lambda p: p.startswith("/share/images/") or orig_isfile_rs(p)
     try:
@@ -496,6 +549,7 @@ def main():
         assert j["ok"] and j["job_id"] == 424242, j
     finally:
         appmod.os.path.isfile = orig_isfile_rs
+        appmod.PORT_COOLDOWN_S = _cd_old
     r = c.get("/api/my/instances")
     row = r.get_json()[0]
     assert row["id"] == iid and row["state"] in ("PENDING", "RUNNING"), \
@@ -893,7 +947,7 @@ def check_hot_path_is_light():
     ctlmod.user_status = lambda u: (calls.append(u), orig_status(u))[1]
     try:
         c = app.test_client()
-        # admin 角色 → _os_ok 会走"实时向集群确认"的分支（正是出事的那条）
+        # admin 角色 → _os_ok 走"实时向集群确认"的分支
         login(c, "hotpathadm", "HotPath1234")
         for path in ("/my", "/profile", "/apply"):
             r = c.get(path, follow_redirects=True)

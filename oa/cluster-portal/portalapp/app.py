@@ -65,7 +65,9 @@ def quota_valid(size):
 # 个人镜像名：仅英文/数字/下划线（保存路径 /share/images/<user>/<name>.sqsh）
 IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
-IMAGES_DIR = os.environ.get("PORTAL_IMAGES_DIR", "/share/images")
+# 镜像目录：PORTAL_IMAGES_DIR 环境变量 > site.conf 的 IMAGES_MOUNT > 默认
+IMAGES_DIR = (os.environ.get("PORTAL_IMAGES_DIR")
+              or siteconf.get("IMAGES_MOUNT") or "/share/images")
 # 到期自动保存：提交给 Slurm 的时长 = 用户所选时长 + 该缓冲（分钟），
 # 确保“先自动保存镜像、再停机”期间容器不被 Slurm 到点强杀。
 EXPIRE_SAVE_BUFFER_MIN = int(os.environ.get("PORTAL_EXPIRE_BUFFER_MIN", "15"))
@@ -145,45 +147,97 @@ def _image_total(groups):
 
 SSH_READY_TTL = 2.0          # 未就绪时的重查间隔（秒）
 SSH_READY_MAX_WAIT = 300     # 兜底：RUNNING 超过这么久还没读到就绪横幅，就别再说「启动中」
-_ssh_ready_cache = {}        # (实例id, job_id) -> (ready: bool, ts: float)
+_start_state_cache = {}      # (实例id, job_id) -> (状态: str, ts: float)
+_startup_checked = set()     # 已定性过的 (实例id, job_id)：别对同一个作业反复查日志
+
+# 「启动失败」的两种文案。存进 instances.last_error，让作业结束后用户仍能看到原因。
+STARTUP_ERR_CONFLICT = ("启动失败：端口被别的进程占用（本容器与宿主机共享网络），"
+                        "请换端口或换节点重试")
+STARTUP_ERR_FAILED = "启动失败：容器里的 sshd 没能监听端口，详见日志"
+STARTUP_ERR_TEXTS = (STARTUP_ERR_CONFLICT, STARTUP_ERR_FAILED)
+
+try:
+    PORT_COOLDOWN_S = int(os.environ.get("PORTAL_PORT_COOLDOWN_S") or 15)
+except ValueError:
+    PORT_COOLDOWN_S = 15
 
 
-def _ssh_ready(inst, username):
-    """容器里的 sshd 是否**真的**起来了（Slurm 说 RUNNING ≠ 用户能 ssh 进去）。
+def _ssh_start_state(inst, username):
+    """容器里的 sshd 起来了没：返回 "ready" / "starting" / "conflict" / "failed"。
 
-    判据是作业日志里的就绪横幅 —— 镜像里的 /opt/start_ssh.sh 是在**确认 /proc/net/tcp
-    里端口处于 LISTEN 之后**才 echo 那一行的，所以它是 sshd 可用的权威信号。
-    日志在用户家目录（750）下，门户进程读不到，由 root 助手读（本地读文件，不联网、
-    不 ssh；比"门户自己对节点端口做 TCP 探测"更可靠，也不受防火墙影响）。
-
-    为速度：就绪是单调的 —— 读到过一次就长期记住，之后每次页面加载零成本；
-    未就绪时最多每 SSH_READY_TTL 秒重查一次（只有启动那几十秒会真的去读日志）。
+    判据是作业日志里的就绪横幅（由 root 助手 ssh-ready 读，带非空 PID 才算数）。
+    结论单调缓存：非 starting 只判一次；starting 时每 SSH_READY_TTL 秒重查。
     """
     key = (inst["id"], inst["job_id"])
     now = time.time()
-    hit = _ssh_ready_cache.get(key)
+    hit = _start_state_cache.get(key)
     if hit:
-        ready, ts = hit
-        if ready or (now - ts) < SSH_READY_TTL:
-            return ready
+        st, ts = hit
+        if st != "starting" or (now - ts) < SSH_READY_TTL:
+            return st
     try:
-        ready = bool(ctl.ssh_ready(username, inst["job_id"]).get("ready"))
+        res = ctl.ssh_ready(username, inst["job_id"])
     except ctl.CtlError:
-        ready = True          # 助手读不了（日志被清/权限异常）→ 退回旧行为，别卡在「启动中」
+        return "ready"        # 助手读不了（日志被清/权限异常）→ 退回旧行为，别卡住状态
+    if res.get("ready"):
+        st = "ready"
+    elif res.get("failed"):
+        st = "conflict" if res.get("reason") == "port-conflict" else "failed"
+    else:
+        st = "starting"
     # 兜底：RUNNING 很久仍读不到就绪横幅（镜像里没这个脚本、日志被删…）就按「运行中」显示 ——
     # 一个状态永远卡在「启动中」比偶尔不准更糟。
-    if not ready and (inst["started_at"] or ""):
+    if st == "starting" and (inst["started_at"] or ""):
         try:
             t0 = datetime.datetime.fromisoformat(inst["started_at"])
             if (datetime.datetime.now() - t0).total_seconds() > SSH_READY_MAX_WAIT:
-                ready = True
+                st = "ready"
         except ValueError:
             pass
-    _ssh_ready_cache[key] = (ready, now)
-    if len(_ssh_ready_cache) > 512:          # 容量保护：门户是长驻进程
-        for k in list(_ssh_ready_cache)[:256]:
-            _ssh_ready_cache.pop(k, None)
-    return ready
+    _start_state_cache[key] = (st, now)
+    if len(_start_state_cache) > 512:          # 容量保护：门户是长驻进程
+        for k in list(_start_state_cache)[:256]:
+            _start_state_cache.pop(k, None)
+    return st
+
+
+STARTUP_POSTMORTEM_S = 300   # 作业结束后多久内还去查一次日志，定性"启动失败"
+
+
+def _record_startup_failure(db, inst, urow):
+    """把「启动失败」写进 last_error + 事件（每个作业只判一次），作业结束后仍能看到原因。"""
+    if not inst or not inst["job_id"]:
+        return
+    key = (inst["id"], inst["job_id"])
+    if key in _startup_checked:
+        return
+    if (inst["last_error"] or "").strip() in STARTUP_ERR_TEXTS:
+        _startup_checked.add(key)
+        return
+    if inst["state"] == "RUNNING":
+        st = _ssh_start_state(inst, urow["username"])
+        if st == "starting":
+            return                      # 还没定性，下次对账再看
+        txt = STARTUP_ERR_CONFLICT if st == "conflict" else (
+            STARTUP_ERR_FAILED if st == "failed" else "")
+    else:
+        # 已结束的只查刚结束的，避免每次翻页都去读旧作业日志
+        if not (inst["stopped_at"] or ""):
+            return
+        try:
+            t1 = datetime.datetime.fromisoformat(inst["stopped_at"])
+        except ValueError:
+            return
+        if (datetime.datetime.now() - t1).total_seconds() > STARTUP_POSTMORTEM_S:
+            _startup_checked.add(key)
+            return
+        st = _ssh_start_state(inst, urow["username"])
+        txt = STARTUP_ERR_CONFLICT if st == "conflict" else (
+            STARTUP_ERR_FAILED if st == "failed" else "")
+    _startup_checked.add(key)
+    if txt:
+        db.set_instance_meta(inst["id"], last_error=txt)
+        db.add_event(inst["id"], "error", txt)
 
 
 def _fmt_bytes(kb):
@@ -518,7 +572,9 @@ def create_app(testing=False):
             mapped = sl if sl in STATE_CN else "UNKNOWN"
             db.set_instance_state(inst["id"], mapped, slurm_state=sl,
                                   stopped_at=_now())
-        return db.instance_by_id(inst["id"])
+        row = db.instance_by_id(inst["id"])
+        _record_startup_failure(db, row, urow)
+        return row
 
     def _now():
         import datetime
@@ -541,10 +597,24 @@ def create_app(testing=False):
         # 这段时间用户 ssh 不进去。所以再确认一次 sshd 真的在监听，没监听就显示「启动中」。
         # 注意只改**展示**：DB 里的 state 仍是 RUNNING，停机/保存/活跃计数都不受影响。
         d["starting"] = False
-        if inst["state"] == "RUNNING" and not _ssh_ready(inst, d["username"]):
-            d["state_cn"] = STATE_CN["STARTING"]
-            d["state_key"] = "starting"
-            d["starting"] = True
+        d["startup_error"] = ""
+        if inst["state"] == "RUNNING":
+            _st = _ssh_start_state(inst, d["username"])
+            if _st == "starting":
+                d["state_cn"] = STATE_CN["STARTING"]
+                d["state_key"] = "starting"
+                d["starting"] = True
+            elif _st in ("conflict", "failed"):
+                # 端口被占 / sshd 起不来：直接说清楚，别让用户以为是在跑
+                d["state_cn"] = "启动失败"
+                d["state_key"] = "failed"
+                d["startup_error"] = (STARTUP_ERR_CONFLICT if _st == "conflict"
+                                      else STARTUP_ERR_FAILED)
+        if not d["startup_error"]:
+            # 作业已经结束了，但之前定性过"启动失败"：把原因继续显示出来
+            _le = (inst["last_error"] or "").strip()
+            if _le in STARTUP_ERR_TEXTS:
+                d["startup_error"] = _le
         d["can_stop"] = inst["state"] in ACTIVE_STATES
         d["is_running"] = inst["state"] == "RUNNING"
         d["created"] = inst["created_at"].replace("T", " ")[:19] if inst["created_at"] else ""
@@ -566,6 +636,15 @@ def create_app(testing=False):
             inst = _reconcile_instance(db, inst, u)
             out.append(enrich_instance(inst))
         return out
+
+    def _port_cooldown_msg(uid, port):
+        """端口刚停机不足 PORT_COOLDOWN_S 秒时返回提示，否则空串（见 db.port_stopped_within）。"""
+        if PORT_COOLDOWN_S <= 0:
+            return ""
+        if get_db().port_stopped_within(uid, port, PORT_COOLDOWN_S):
+            return ("端口 %d 刚停机不足 %d 秒：旧容器还在退出、端口尚未真正释放。"
+                    "请稍后重试，或换一个端口" % (port, PORT_COOLDOWN_S))
+        return ""
 
     def _quota_ctx(u):
         """当前用户配额/额度上下文（带短缓存）。
@@ -886,7 +965,7 @@ def create_app(testing=False):
         nodes = ncache.get("nodes", []) if ncache.get("ok") else []
         groups = image_groups(u["username"])
         if _image_total(groups) == 0:
-            flash("未发现可申请镜像：/share/images 下没有 .sqsh 文件，请联系管理员", "error")
+            flash("未发现可申请镜像：%s 下没有 .sqsh 文件，请联系管理员" % IMAGES_DIR, "error")
         busy = {p["port"] for p in db.ports_for(u["id"])
                 if db.user_active_by_port(u["id"], p["port"])}
         return render_template("apply.html",
@@ -910,7 +989,7 @@ def create_app(testing=False):
         if not profile_complete(u):
             return _json_err("个人资料未完善：需至少 1 个 SSH 密钥和 1 个端口")
         if _image_total(image_groups(u["username"])) == 0:
-            return _json_err("/share/images 下没有可用 .sqsh 镜像")
+            return _json_err("%s 下没有可用 .sqsh 镜像" % IMAGES_DIR)
         try:
             plan_id = int(request.form.get("plan_id") or 0)
             port = int(request.form.get("port") or 0)
@@ -942,6 +1021,10 @@ def create_app(testing=False):
         if db.user_active_by_port(u["id"], port):
             return _json_err("端口 %d 正在被你的某个资源占用（排队/运行中），"
                              "请先停机或改用其它端口" % port)
+
+        _cd = _port_cooldown_msg(u["id"], port)
+        if _cd:
+            return _json_err(_cd)
         if not (1 <= hours <= maxtime_h):
             return _json_err("时长最多 %d 小时（套餐「%s」上限 maxtime=%d）。"
                              "如需更长，请找平台管理员协助申请" % (maxtime_h, plan["name"], maxtime_h))
@@ -1100,6 +1183,10 @@ def create_app(testing=False):
                              "请先删除本条记录或在个人资料重新登记该端口" % port)
         if db.user_active_by_port(u["id"], port):
             return _json_err("端口 %d 已被其它资源占用（排队/运行中），请先处理后再重启" % port)
+
+        _cd = _port_cooldown_msg(u["id"], port)
+        if _cd:
+            return _json_err(_cd)
         # 用申请时选定的节点（req_node，自动调度=''），忽略运行后被回填的实际节点
         node = inst["req_node"] or ""
         ncache = app.node_cache.get()
@@ -1354,12 +1441,8 @@ def create_app(testing=False):
         # ---- 集群侧账号 ----
         #   provision：门户自动建号（建号 + 家目录 + 配额 + 会计关联）
         #   existing ：OS 账号已存在 —— 初始化（家目录/.portal）+ **把配额真正落到 OS** + 会计关联
-        # 历史 bug（两处叠加，表现为"设了 1T 但平台显示不限"）：
-        #   1) 整段被 `if role == "user"` 挡住 —— 管理员选「OS 已存在」时 OS 侧什么都不做；
-        #   2) 即使普通用户走 existing，init-user 也从不落地配额。
-        #   而额度仍被写进门户库，页面显示的是 OS 实读值 → DB 说 1T、OS 说不限。
-        # 现在：existing 对任何角色都生效（管理员也可以带 OS 账号，本站的运维账号/root 就是），
-        # 且必须显式 set_quota。
+        # 配额必须落到 OS：只写门户库的话，页面（显示 OS 实读值）会与库里的额度漂移。
+        # existing 对任何角色都生效（管理员也可以同时有 OS 账号），且必须显式 set_quota。
         if role == "user" and os_mode not in ("provision", "existing"):
             return None, "普通用户必须选择账号开通方式", 0
         # 普通用户**可以**留空密码 = 随机生成。
@@ -1593,6 +1676,10 @@ def create_app(testing=False):
             return _json_err("端口必须是该用户端口池里的（请选帮谁申请后再选其端口）")
         if db.user_active_by_port(target["id"], port):
             return _json_err("该用户的端口 %d 正在使用中，请换端口" % port)
+
+        _cd = _port_cooldown_msg(target["id"], port)
+        if _cd:
+            return _json_err("（代 %s 申请）%s" % (target["username"], _cd))
         if not (1 <= hours <= 720):
             return _json_err("时长须在 1-720 小时之间")
         nodeinfo = app.node_cache.get().get("nodes", [])

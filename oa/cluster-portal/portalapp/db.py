@@ -15,7 +15,7 @@ DEFAULT_COMMON_PORTS = [
     8443, 8888, 9000, 9090, 9100, 9200, 9835, 10000, 10050, 11211, 15672,
     27017, 30000, 50000,
 ]
-# 本站点的集群 sshd 端口也必须保留，否则用户可能申请到别人登不进来的端口
+# 站点的 sshd 端口也必须保留，否则用户可能申请到别人登不进来的端口
 try:
     _ssh_port = int(siteconf.SSH_PORT)
     if _ssh_port not in DEFAULT_COMMON_PORTS:
@@ -169,6 +169,18 @@ class DB:
     def port_count(self, uid):
         return self.q1("SELECT COUNT(*) n FROM user_ports WHERE user_id=?", (uid,))["n"]
 
+    def port_stopped_within(self, uid, port, seconds):
+        """该端口是不是"刚停机不到 N 秒"：停机后门户立刻标空闲，但容器还要几秒才真正退出。
+
+        用于提交前的端口冷却期，避免旧容器未退干净时重提同一端口。
+        """
+        import datetime
+        cutoff = (datetime.datetime.now()
+                  - datetime.timedelta(seconds=int(seconds))).isoformat(timespec="seconds")
+        return bool(self.q1(
+            "SELECT 1 FROM instances WHERE user_id=? AND port=? AND stopped_at IS NOT NULL "
+            "AND stopped_at >= ? LIMIT 1", (uid, port, cutoff)))
+
     def is_port_in_use(self, port, exclude_uid=None):
         if exclude_uid is None:
             return self.q1("SELECT 1 FROM user_ports WHERE port=?", (port,)) is not None
@@ -239,16 +251,17 @@ class DB:
         return self.q("SELECT * FROM instances ORDER BY id DESC LIMIT ?", (limit,))
 
     def set_instance_state(self, iid, state, slurm_state=None, stopped_at=None):
+        """改实例状态。slurm_state / stopped_at 各自独立写入：给谁写谁。"""
+        cols = ["state=?", "updated_at=?"]
+        vals = [state, _now()]
         if slurm_state is not None:
-            self.exec("UPDATE instances SET state=?, slurm_state=?, updated_at=? WHERE id=?",
-                      (state, slurm_state, _now(), iid))
-        elif stopped_at is not None:
-            self.exec("UPDATE instances SET state=?, slurm_state=?, updated_at=?, "
-                      "stopped_at=? WHERE id=?",
-                      (state, slurm_state or state, _now(), stopped_at, iid))
-        else:
-            self.exec("UPDATE instances SET state=?, updated_at=? WHERE id=?",
-                      (state, _now(), iid))
+            cols.append("slurm_state=?")
+            vals.append(slurm_state)
+        if stopped_at is not None:
+            cols.append("stopped_at=?")
+            vals.append(stopped_at)
+        vals.append(iid)
+        self.exec("UPDATE instances SET %s WHERE id=?" % ", ".join(cols), tuple(vals))
 
     def set_instance_state_if_active(self, iid, state, slurm_state=None):
         """仅当实例**当前仍是活跃态**时才改状态，返回是否改到（CAS）。

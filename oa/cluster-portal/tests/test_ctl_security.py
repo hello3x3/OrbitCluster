@@ -162,7 +162,7 @@ def main():
     check("按 inode 校验替换结果（防掉包）", "st_now.st_ino != st_created.st_ino" in src)
     check("ssh_node 对每个参数做单引号转义", "_shq" in src)
     # 没有 -n 的话，ssh 会把调用者的 stdin 整个读走：`bash -s < 脚本` 这种用法会在
-    # 第一次 ssh 之后静默截断（后半段不执行、退出码还是 0）。真实踩过一次。
+    # 第一次 ssh 之后静默截断（后半段不执行、退出码还是 0）。
     check("ssh_node 带 -n（不吞调用者的 stdin）", '"ssh", "-n"' in src)
 
     print("== 6) EXTRA_MOUNTS（NAS/数据集透传）白名单 ==")
@@ -220,6 +220,52 @@ def main():
           == "/home/u:/home/u,/data:/data:ro,/mnt/n1:/d1:rw,/mnt/n2:/mnt/n2:ro",
           mod._container_mounts_arg("/home/u"))
     mod.EXTRA_MOUNTS_RAW = _old_raw
+
+        # ---- 镜像目录来自站点配置（不要写死 /share/images）----
+    _tmp = tempfile.mkdtemp(prefix="ctlsec-site-")
+    _sc = os.path.join(_tmp, "site.conf")
+    with open(_sc, "w", encoding="utf-8") as fh:
+        fh.write("SSH_PORT=2180\nIMAGES_MOUNT=%s\n" % os.path.join(_tmp, "imgs"))
+    _old_sc = os.environ.get("PORTAL_SITE_CONF")
+    _old_id = os.environ.pop("PORTAL_IMAGES_DIR", None)
+    os.environ["PORTAL_SITE_CONF"] = _sc
+    try:
+        _m2 = load_mod()
+        check("IMAGES_ROOT 取自 site.conf 的 IMAGES_MOUNT",
+              _m2.IMAGES_ROOT == os.path.join(_tmp, "imgs"), _m2.IMAGES_ROOT)
+        os.environ["PORTAL_IMAGES_DIR"] = os.path.join(_tmp, "envdir")
+        _m3 = load_mod()
+        check("PORTAL_IMAGES_DIR 环境变量优先于 site.conf",
+              _m3.IMAGES_ROOT == os.path.join(_tmp, "envdir"), _m3.IMAGES_ROOT)
+    finally:
+        os.environ.pop("PORTAL_IMAGES_DIR", None)
+        if _old_id is not None:
+            os.environ["PORTAL_IMAGES_DIR"] = _old_id
+        if _old_sc is None:
+            os.environ.pop("PORTAL_SITE_CONF", None)
+        else:
+            os.environ["PORTAL_SITE_CONF"] = _old_sc
+    check("默认值仍是 /share/images", mod.__dict__["IMAGES_ROOT"] != "", mod.IMAGES_ROOT)
+
+    # ---- 就绪判定：只认带非空 PID 的横幅（PID 空 = 端口被别的进程占着）----
+    print("  -- ssh-ready 判定 --")
+    _v = mod._ssh_ready_verdict
+    check("正常就绪：横幅带非空 PID",
+          _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=2368559)") == (True, False, "ok"))
+    check("端口冲突：横幅在但 PID 为空（线上签名）",
+          _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=)") == (False, True, "port-conflict"))
+    check("还没到时间：日志里没有横幅",
+          _v("[start_ssh] 非 root 模式: 仅公钥认证\n") == (False, False, "starting"))
+    check("新脚本的失败标记",
+          _v("[start_ssh] 启动失败: sshd 没能监听端口 52301（多半已被别的进程占用）")
+          == (False, True, "port-conflict"))
+    check("sshd 自己打的绑定失败",
+          _v("Bind to port 52301 on 0.0.0.0 failed: Address already in use")
+          == (False, True, "port-conflict"))
+    check("空日志算未就绪", _v("") == (False, False, "starting"))
+    check("PID 不是数字时不误判成就绪",
+          _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=x1)") == (False, False, "starting"),
+          _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=x1)"))
 
     if FAIL:
         print("\n有 %d 项失败: %s" % (len(FAIL), ", ".join(FAIL)))

@@ -180,9 +180,13 @@
     const saveLine = i.last_save
       ? `<div class="small ${i.saving_now ? "" : (i.last_save.indexOf("失败") >= 0 || i.last_save.indexOf("异常") >= 0 ? "txt-err" : "muted")}">💾 ${esc(i.last_save)}</div>`
       : "";
+    // 启动失败（例如端口被占用）的原因：日志里定性后就一直显示，别让它一闪而过
+    const errLine = i.startup_error
+      ? `<div class="small txt-err">⚠ ${esc(i.startup_error)}</div>`
+      : "";
     return `<tr data-id="${i.id}">
       <td class="mono">${esc(i.job_id)}</td>
-      <td><b>${esc(i.res_name)}</b>${sub ? `<div class="small muted">${esc(sub)}</div>` : ""}${saveLine}</td>
+      <td><b>${esc(i.res_name)}</b>${sub ? `<div class="small muted">${esc(sub)}</div>` : ""}${saveLine}${errLine}</td>
       <td><span class="st st-${esc(i.state_key || String(i.state).toLowerCase())}">${esc(i.state_cn)}</span></td>
       <td class="mono">${esc(i.node_cn)}</td>
       <td class="mono">${esc(i.port)}</td>
@@ -196,9 +200,7 @@
     if (!$("#inst-body")) return;
     let last = {};
     let pollMs = 0;
-    // 轮询节奏按"现在最需要多快看到变化"分档。历史上这里是固定 15 秒 + 一旦没有活跃实例就
-    // clearInterval —— 两个后果：①「启动中 → 运行中」最多要等 15 秒才翻，用户会以为坏了；
-    // ② 轮询被停掉之后是**单向**的，那之后状态再变也不会自动刷新，只能手动刷新页面。
+    // 轮询间隔按需要多快看到变化分档（见 load() 里的 armPoll 调用）。
     function armPoll(ms) {
       if (pollMs === ms) return;
       if (window._poll) clearInterval(window._poll);

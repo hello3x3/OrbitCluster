@@ -5,7 +5,8 @@
 <tr data-id="{{ i.id }}">
   <td class="mono">{{ i.job_id }}</td>
   <td><b>{{ i.res_name }}</b><div class="small muted">{{ i.plan_name }} · {{ i.image_name }}</div>
-    {% if i.last_save %}<div class="small {% if i.saving_now %}muted{% elif '失败' in i.last_save or '异常' in i.last_save %}txt-err{% else %}muted{% endif %}">💾 {{ i.last_save }}</div>{% endif %}</td>
+    {% if i.last_save %}<div class="small {% if i.saving_now %}muted{% elif '失败' in i.last_save or '异常' in i.last_save %}txt-err{% else %}muted{% endif %}">💾 {{ i.last_save }}</div>{% endif %}
+      {% if i.startup_error %}<div class="small txt-err">⚠ {{ i.startup_error }}</div>{% endif %}</td>
   <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
   <td class="mono">{{ i.node_cn }}</td>
   <td class="mono">{{ i.port }}</td>

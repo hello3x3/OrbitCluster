@@ -164,9 +164,8 @@ def _admin(cmd, timeout=240, stdin=None):
 def _residue_of(u):
     """清理后仍存在的东西（空列表 = 干净）。
 
-    教训：2026-09-13 的事故就是一个**没清理干净**的测试账号（sshtest2, uid 1002）残留，
-    次日撞上真实用户 lnq 刚被分配到的同一个 UID —— enroot 的 passwd hook 只按 UID
-    取一条记录写进容器，容器里没有 lnq，用户 ssh 报 Permission denied (publickey)。
+    没清理干净的测试账号会残留，日后撞上分到同一 UID 的真实用户 —— enroot 的 passwd hook
+    只按 UID 取一条记录写进容器，容器里就没有真实用户，ssh 报 Permission denied (publickey)。
     所以清理必须**校验**，不能只看 unprovision 的退出码。
     """
     res = []
@@ -224,7 +223,7 @@ def cleanup_users():
 def _run():
     global ADMIN_PWD
     if not ADMIN_PWD:
-        # 读取默认管理员(root)在当前 admin 节点上的门户密码（vault 为准）
+        # 读取默认管理员(root)的门户密码（以密码文件为准）
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-p", str(SSH_PORT_HOST),
                             "root@" + ADMIN_HOST,
                             "grep '^%s:' /etc/cluster-portal/users.passwd | cut -d: -f2-" % ADMIN_USER],
@@ -363,7 +362,7 @@ def _run():
     j = a.json(r)
     check("查看日志", j["ok"] and "实际监听端口" in j["text"], str(j)[:200])
 
-    # ---------- Bob GPU 资源 + CPU 同节点并存（用空闲的 admin 节点）----------
+    # ---------- Bob GPU 资源 + CPU 同节点并存（用空闲的管理节点）----------
     _, j = ap(b, gpu_plan_id, "bob-g1", 28781, "admin")
     check("bob 提交 GPU", j["ok"], str(j))
     r = b.post_json("/profile/ports/add", data={"port": "28782"})

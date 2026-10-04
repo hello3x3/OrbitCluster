@@ -11,6 +11,7 @@
   DEFAULT_GPU_MODEL   节点信息不可用时的兜底 GPU 型号              默认 RTX 3060
   ACCOUNT             Slurm 会计账户名（sacctmgr account）          默认 lab
   SEED_PLANS          首次建库时使用的套餐定义 JSON 路径（可选；缺省用内置 5 条）
+  IMAGES_MOUNT        镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描）   默认 /share/images
   PARTITION           预留：覆盖分区名（默认按 sinfo 自动探测）
 
 环境变量覆盖形式为 `PORTAL_<KEY>`，例如 `PORTAL_SSH_PORT=2022`。
@@ -30,6 +31,7 @@ DEFAULTS = {
     "DEFAULT_GPU_MODEL": "RTX 3060",
     "ACCOUNT": "lab",
     "SEED_PLANS": "",
+    "IMAGES_MOUNT": "/share/images",
     "PARTITION": "",
 }
 

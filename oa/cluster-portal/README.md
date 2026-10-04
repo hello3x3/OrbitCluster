@@ -14,8 +14,8 @@ SSH 进容器、看日志、停机。
 |---|---|
 | 登录系统；用户须注册才能使用；**仅管理员可注册新用户** | 无公开注册页；管理员在「用户管理」开通账号（普通用户自动在 `<ADMIN>/<GPU01>/<GPU02>` 建号 + 配额 + sacctmgr 关联，也可对已存在的 OS 账号只开通门户） |
 | 申请前必须维护个人信息：**SSH 登录密钥**、**想要的端口**（≥10000、避开常用/他人已申请端口） | 「个人资料」页管理多把 SSH 公钥（写入该用户 `~/.ssh/authorized_keys`，门户统一维护）与端口池；未满足“≥1 密钥 且 ≥1 端口”前禁止申请。端口校验：10000–65535、不在保留常用端口表、全门户唯一 |
-| 资源申请界面：镜像分组下拉(公共 `/share/images/*.sqsh` + **个人镜像** `/share/images/<用户名>/`) + **管理员可配置套餐**(名称/CPU/GPU型号/内存/最长时长 maxtime) + 任务名(必填) + 时长(默认12h，**≤套餐maxtime**，超出提示找管理员) + 节点(默认留空=Slurm自动调度) + SSH端口；可**同时申请多个**；申请后可**停机**/看日志；界面**不展示提交命令** | 「申请资源」单页提交真实 `sbatch` 作业；时长超过套餐 maxtime 时提示"需平台管理员协助申请"，管理员用「代申请资源」可代任何人提交（用该用户端口，底层 OS root `runuser`=等价 `sudo -u`，配额归属被代用户）；运行中资源「连接/详情」直接给出 **`ssh -p <端口> 用户名@真实节点IP`** |
-| **镜像保存**：容器启动后，用户在运行中的资源上「保存镜像」把当前容器状态导出为个人镜像（`/share/images/<用户>/<名称>.sqsh`，名称仅英文/数字/下划线，计入该用户 /share 配额）；资源**到期自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）后自动停机 | 作业以 `--container-name=portal --container-writable` 提交（rootfs 落在计算节点 `ENROOT_DATA_PATH` 下 `pyxis_<jobid>_portal`，作业结束自动清理）；保存 = 以该用户身份 `enroot export` 该运行中容器（分钟级，异步执行并回写该资源行的保存结果）；到期扫描线程按「开始时刻+时长」触发「先自动保存再停机」，Slurm 时长内已含 15 分钟保存余量 |
+| 资源申请界面：镜像分组下拉(公共 `<IMAGES_MOUNT>/*.sqsh` + **个人镜像** `<IMAGES_MOUNT>/<用户名>/`) + **管理员可配置套餐**(名称/CPU/GPU型号/内存/最长时长 maxtime) + 任务名(必填) + 时长(默认12h，**≤套餐maxtime**，超出提示找管理员) + 节点(默认留空=Slurm自动调度) + SSH端口；可**同时申请多个**；申请后可**停机**/看日志；界面**不展示提交命令** | 「申请资源」单页提交真实 `sbatch` 作业；时长超过套餐 maxtime 时提示"需平台管理员协助申请"，管理员用「代申请资源」可代任何人提交（用该用户端口，底层 OS root `runuser`=等价 `sudo -u`，配额归属被代用户）；运行中资源「连接/详情」直接给出 **`ssh -p <端口> 用户名@真实节点IP`** |
+| **镜像保存**：容器启动后，用户在运行中的资源上「保存镜像」把当前容器状态导出为个人镜像（`<IMAGES_MOUNT>/<用户>/<名称>.sqsh`，名称仅英文/数字/下划线，计入该用户 /share 配额）；资源**到期自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）后自动停机 | 作业以 `--container-name=portal --container-writable` 提交（rootfs 落在计算节点 `ENROOT_DATA_PATH` 下 `pyxis_<jobid>_portal`，作业结束自动清理）；保存 = 以该用户身份 `enroot export` 该运行中容器（分钟级，异步执行并回写该资源行的保存结果）；到期扫描线程按「开始时刻+时长」触发「先自动保存再停机」，Slurm 时长内已含 15 分钟保存余量 |
 | **配额/额度透明**：普通用户在「我的资源」读自己磁盘配额（OS repquota 实读）与 Slurm 关联/QoS/优先级/总额度（sacctmgr 实读）；管理员在「用户管理」**改配额**（软=硬，直写 OS setquota 并回读确认，非门户 DB 记录） | 配额不是门户库存量：展示与修改都以集群 OS/Slurm 为权威；系统保留账号（root/portal…）与无同名 OS 账号的纯平台管理员不可设配额 |
 
 ## 目录结构
@@ -65,7 +65,7 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
    配额、初始门户密码（留空自动生成，**只显示一次**）。
    - 方式「自动建号」：三节点同步建号（UID 一致）+ `/share` 配额 + sacctmgr 关联。
    - 方式「OS 账号已存在」：跳过建号，仅初始化门户目录。
-2. 「资源套餐」维护预设的 CPU/内存/GPU 组合（启用/停用/增删；镜像由 `/share/images` 自动发现，无需登记）。
+2. 「资源套餐」维护预设的 CPU/内存/GPU 组合（启用/停用/增删；镜像由 `<IMAGES_MOUNT>` 自动发现，无需登记）。
    **仅 `root`**：套餐决定所有人能选什么资源，与同样是 root-only 的「授予/撤销管理员」同级 ——
    普通管理员看不到导航入口，直接访问 6 条套餐路由（页面/增/改/启停/删除/数据）一律 403。
    普通管理员在「代申请资源」里照样能选套餐，只是不能改。
@@ -136,7 +136,7 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 - **（前提）宿主机 sshd 必须做白名单**：门户把用户公钥写进 `~/.ssh/authorized_keys`，
   那是给**容器内** sshd 用的；而宿主机 sshd 读的是同一个文件（家目录在 NFS 上）。
   所以宿主机必须配 `AllowUsers root`（见 `base-cluster` 手册 **1.7 节** 与
-  `oa/sites/*/host-config/etc-ssh-sshd_config.d-10-portal-only.conf`）。不做的话，
+  `deploy/etc/ssh/sshd_config.d/10-portal-only.conf`，由 `make` 生成）。不做的话，
   用户拿容器那把私钥就能 `ssh -p 2180 <自己>@<节点>` 登上宿主机，
   并用 PATH 里的 `sbatch/srun` 绕过全部门户策略。`oa/scripts/verify-install.sh` 会检查该项。
   ⚠️ **不要**用把用户 shell 改成 `nologin` 的办法：enroot 的 passwd hook 会把宿主机
@@ -147,14 +147,15 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 - **助手不信任「用户可写目录」**：家目录被 rw 挂进用户自己的容器，用户可以在里面建软链。
   因此 `log`/`get-keys` 读文件走 `O_NOFOLLOW` + `lstat`（拒绝软链/非普通文件/他人所有）；
   写 `authorized_keys` 时临时文件建在 root 私有目录 `/run/cluster-portal`(0700) 再 `os.replace`；
-  并且不再对用户路径用 `install -d`（它会跟随软链，把真实目录的属主/权限改掉）。
+  对用户路径也不用 `install -d`（它会跟随软链，把真实目录的属主/权限改掉），
+  一律显式 `mkdir`、校验非软链后再 `chown`/`chmod`。
   回归测试：`tests/test_ctl_security.py`。
 - **保留账号（root/portal/slurm/sshd…）在一切"以它身份执行/写它的文件/注销它"的命令上都被拒绝**；
   `root`/`lab` 的宿主机密钥**不由门户托管**（`_os_ok` 对这些账号返回假），
   保留账号也不能建门户账号。
 - **应用代码归 root**（`portalapp/` 不允许 `portal` 可写）：`verify-install.sh` / `bootstrap.py`
   以 root 运行并导入这些模块，若 `portal` 可写，门户被攻破就能换来 root RCE。
-  自检脚本自身也不再以 root 导入应用代码（改用标准库 sqlite3 读库）。
+  自检脚本自身不以 root 导入应用代码，用标准库 `sqlite3` 直接读库。
 - systemd 单元启用 `ProtectSystem=strict` + `ReadWritePaths=/var/lib/cluster-portal /etc/cluster-portal /share`：
   门户只能写数据目录、密码文件与 `/share` 集群数据区，改不了自己的代码。
   **`/share` 不能漏**：`strict` 会把整个层级（含挂载点）挂成只读，而 portal-ctl 的活全在
@@ -173,7 +174,8 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 - **容器不以 root 运行**：`ENROOT_REMAP_ROOT=n`，且提交参数绝不含 `--container-remap-root`
   （助手内有显式拦截）。镜像内置 sshd 是 `PermitRootLogin yes` + `PermitEmptyPasswords yes`
   + 固定口令；容器一旦变 root 模式又共享宿主机网络，就等于把固定口令的 sshd 暴露给内网。
-  加固版入口脚本见 `base-cluster/images/start_ssh.sh`（重建镜像时使用）。
+  加固版入口脚本在每个镜像目录下（`base-cluster/images/<镜像>/start_ssh.sh`），重建镜像时使用
+    （约定见 `base-cluster/images/README.md`）。
 - 门户用户列表是「门户+集群账号」双写；`portal` 用户只开放给 sudoers 白名单命令，
   请不要为它放开其它 sudo 权限，也不要给服务单元加 `NoNewPrivileges`（会阻断 sudo）。
 - **SSH 公钥的两处存储**（这是最容易困惑的地方）：
@@ -189,22 +191,22 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 - **作业能登录门户但一提交就报 `Invalid account or account/partition combination specified`**：
   该用户在 Slurm 会计里没有账户关联，而集群开着 `AccountingStorageEnforce=associations`。
   一条命令补：`portal-ctl ensure-assoc <用户>`。根因是**「OS 账号已存在」这条开通路径不经过
-  `add-user.sh`**（只有 `add-user.sh` 会建关联），历史上漏了这一步；现在 `portal-ctl` 在
+  `add-user.sh`**（只有 `add-user.sh` 会建关联），所以 `portal-ctl` 在
   **开通 / 初始化 / 提交前**都会幂等补齐（见 `_ensure_assoc`），账户名取站点配置的 `ACCOUNT`（默认 `lab`）。
 - **作业日志里出现 `couldn't chdir to '/opt/cluster-portal': No such file or directory`**：
   门户服务的工作目录是 `/opt/cluster-portal`（systemd `WorkingDirectory`），而 `sbatch` 默认让
   作业在**提交者进程的 cwd** 下启动 —— 该目录只存在于管理节点，作业落到计算节点就会 chdir 失败
-  并回退到 `/tmp`（作业仍能跑，但工作目录不对）。已修：提交时显式带 `--chdir=<用户家目录>`
+  并回退到 `/tmp`（作业仍能跑，但工作目录不对）。提交时会显式带 `--chdir=<用户家目录>`
   （家目录在 NFS 上、各节点都有），同时把被透传进来的 `PWD` 环境变量一并纠正。
 - 可用交互镜像目前只有内置 sshd/`start_ssh.sh` 的两个：`cuda12.8.0-devel-ubuntu24.04` 与
-  `cuda13.3.1-devel-ubuntu24.04`（镜像下拉由 `/share/images/*.sqsh` 自动扫描，无需登记）。
+  `cuda13.3.1-devel-ubuntu24.04`（镜像下拉由 `<IMAGES_MOUNT>/*.sqsh` 自动扫描，无需登记）。
 - 端口在**同一节点**上同一时刻只能有一个实例（门户 DB 唯一约束 + 提交前节点端口预检）；
   不同节点可复用同一端口。节点可留空由 Slurm 自动调度（运行后回填真实节点/IP），指定节点则 `-w` 固定。
 - 所有作业以命名容器（`--container-name=portal`）提交：容器 rootfs 成为计算节点
   `/scratch/enroot-data/user-<uid>/pyxis_<jobid>_portal` 的可写目录（保存镜像的前置），
-  作业结束由 pyxis 自动清理；因此每次新作业会先在节点本地展开一次镜像（不再走 squashfuse 直挂），
+  作业结束由 pyxis 自动清理；因此每次新作业会先在节点本地展开一次镜像（不走 squashfuse 直挂），
   「运行中」之后容器内 sshd 通常还需 1-2 分钟才就绪。
-- 个人镜像目录 `/share/images/<用户名>`（700）由 root 助手维护，web 经 `portal-ctl images` 读取；
+- 个人镜像目录 `<IMAGES_MOUNT>/<用户名>`（700）由 root 助手维护，web 经 `portal-ctl images` 读取；
   保存的 .sqsh 属主为用户（计入其 /share 配额）；删除由门户代建号的用户会连同该目录一起清理。
 - 到期自动保存依赖门户后台线程按「开始运行时刻 + 所选时长」触发（提交时长含 15 分钟余量）：
   若服务当时不可用或导出失败（如配额写满），该次自动保存会跳过并记录原因。
