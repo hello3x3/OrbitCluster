@@ -95,6 +95,24 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
 
 ## 运维
 
+### 把 NAS / 数据集透传给用户容器（`EXTRA_MOUNTS`）
+
+`/etc/cluster-portal/site.conf` 里配一项，格式 `<宿主路径>[:<容器内路径>][:ro|rw]`（默认 `ro`），多项用 `;`：
+
+```conf
+EXTRA_MOUNTS=/data:/data:ro;/mnt/nas219:/mnt/nas219:ro
+```
+
+- **只从服务端配置读，绝不走请求参数**：门户 web 是不可信组件，若它能指定挂载，
+  攻破门户即可把 `/var/lib/cluster-portal`（DB + Flask secret）挂进用户容器读走。
+  `portal-ctl` 解析时拒掉 `/var/lib/cluster-portal`、`/etc`、`/root`、`/proc`、`/sys`、
+  `/dev`、`/boot`、`/run` 前缀，格式不合法整项拒绝（fail closed）。
+- **每台节点都要先挂上**（写进 `/etc/fstab`，建议 `_netdev`）。`submit` 会逐节点预检并拒绝，
+  `portal-ctl extra-mounts` 可随时查解析结果与各节点缺什么；`verify-install.sh` 也会核对。
+- 默认 `ro`：写共享盘会绕过 `/share` 的 usrquota（门户的额度显示与统计都不覆盖它）。
+- NAS 侧建议用 `soft`（或 `intr`）挂载：`hard` 是无限重试，NAS 抖动会让容器 I/O 卡在
+  D 状态，`scancel` 无效，严重时只能重启节点。
+
 ```bash
 systemctl status cluster-portal            # 服务状态
 journalctl -u cluster-portal -n 100        # 服务日志

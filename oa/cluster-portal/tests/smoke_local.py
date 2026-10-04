@@ -61,9 +61,20 @@ ctlmod.provision_user = lambda u, q, skip_os=False: (
 ctlmod.unprovision_user = lambda u: (FAKE_QUOTA.pop(u, None),
                                      {"ok": True, "username": u, "uid": 2000})[1]
 ctlmod.init_user = lambda u: {"ok": True, "username": u, "uid": 2000}
-ctlmod.submit = lambda spec: {"ok": True, "job_id": 424242,
-                              "log_path": "/share/home/%s/.portal/logs/424242.out" % spec["user"],
-                              "command": "sbatch --fake " + spec["user"]}
+LAST_SUBMIT_SPEC = {}
+
+
+def _fake_submit(spec):
+    """记下最近一次提交的 spec：额外挂载只能由 root 助手从站点配置读，
+    请求里绝不允许出现挂载字段（否则攻破门户就能把 DB/secret 挂进用户容器）。"""
+    LAST_SUBMIT_SPEC.clear()
+    LAST_SUBMIT_SPEC.update(spec)
+    return {"ok": True, "job_id": 424242,
+            "log_path": "/share/home/%s/.portal/logs/424242.out" % spec["user"],
+            "command": "sbatch --fake " + spec["user"]}
+
+
+ctlmod.submit = _fake_submit
 
 # ---------- fake 镜像保存 / 个人镜像列表（写真实临时目录模拟 root 助手） ----------
 def _fake_user_img_dir(user):
@@ -359,6 +370,12 @@ def main():
             "node": "<GPU01>", "port": "28766"})
         j = r.get_json()
         assert j["ok"], j
+        # 提交 spec 的字段是**固定白名单**：额外挂载（NAS/数据集）只能由 root 助手从
+        # site.conf 的 EXTRA_MOUNTS 读，请求里出现任何挂载字段就意味着"门户能自己指定
+        # 挂载什么"——攻破门户即可挂走 /var/lib/cluster-portal 拿到 DB 与 Flask secret。
+        assert set(LAST_SUBMIT_SPEC) == {"user", "node", "image", "gpus", "cpus",
+                                         "mem_gb", "walltime", "port", "job_name"}, LAST_SUBMIT_SPEC
+        assert not [k for k in LAST_SUBMIT_SPEC if "mount" in k.lower()], LAST_SUBMIT_SPEC
         pl = c.get("/api/plans").get_json()
         assert all("maxtime_h" in x and "gpu_model" in x for x in pl), "套餐应含 gpu_model/maxtime_h"
         # 超过套餐 maxtime 被拒并提示需管理员协助
@@ -411,6 +428,12 @@ def main():
     dbx.close()
 
     # 我的资源 + API
+    # 「运行中 vs 启动中」由日志里的就绪横幅决定（root 助手 ssh-ready → app._ssh_ready）。
+    # 先固定成"已就绪"，
+    # 让下面的常规断言按「运行中」跑；「启动中」的专门用例紧跟着单独测。
+    _real_ssh_ready = appmod.ctl.ssh_ready
+    appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': True}
+    appmod._ssh_ready_cache.clear()
     r = c.get("/my")
     assert r.status_code == 200 and "运行中".encode() in r.data
     assert "我的配额".encode() in r.data and "Slurm".encode() in r.data, "我的资源应展示配额/Slurm 额度"
@@ -421,6 +444,31 @@ def main():
     assert qj["slurm"]["accounts"] == "lab" and qj["slurm"]["total"] == "不限", qj
     r = c.get("/api/my/instances")
     assert r.get_json()[0]["job_id"] == 424242
+
+    # ---- 「启动中」：Slurm 报 RUNNING，但容器里的 sshd 还没在监听 ----
+    # 光有 RUNNING 不等于用户能 ssh 进去（镜像导入 + sshd 起来还要几秒到几十秒）。
+    appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': False}
+    appmod._ssh_ready_cache.clear()
+    r = c.get("/my")
+    _row = re.search(r"<tr data-id=\"\d+\">.*?</tr>", r.text, re.S)
+    assert _row, "我的资源里应有实例行"
+    assert "启动中" in _row.group(0), "sshd 还没监听时应显示「启动中」"
+    assert "运行中" not in _row.group(0), "sshd 还没监听时那行不该显示「运行中」"
+    assert b"st-starting" in r.data, "「启动中」应有独立的徽章样式类"
+    assert "act-stop".encode() in r.data, "「启动中」仍是活跃实例，停机按钮不能消失"
+    j = c.get("/api/my/instances").get_json()[0]
+    assert j["state_cn"] == "启动中" and j["state_key"] == "starting" and j["starting"] is True, j
+    # 就绪之后必须变回「运行中」，不能卡在启动中
+    appmod.ctl.ssh_ready = lambda user, jobid: {'ok': True, 'ready': True}
+    appmod._ssh_ready_cache.clear()
+    r = c.get("/my")
+    _row = re.search(r"<tr data-id=\"\d+\">.*?</tr>", r.text, re.S)
+    assert _row and "运行中" in _row.group(0) and "启动中" not in _row.group(0), \
+        "sshd 起来后那行应变回「运行中」"
+    j = c.get("/api/my/instances").get_json()[0]
+    assert j["state_cn"] == "运行中" and j["state_key"] == "running" and j["starting"] is False, j
+    appmod.ctl.ssh_ready = _real_ssh_ready
+    appmod._ssh_ready_cache.clear()
 
     # 日志：容器日志 + 门户操作日志（提交/停机/保存镜像等）
     iid = 1

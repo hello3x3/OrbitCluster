@@ -10,6 +10,8 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
 命令一览（见 main()）:
   ping                健康自检
   sinfo               节点状态(含 IP / 内存 / gres / 分区)
+  extra-mounts        EXTRA_MOUNTS 的解析结果 + 各节点源目录是否存在
+                      (只读；NAS/数据集透传的排障与验收用)
   provision-user <u> <quota> [--skip-os] [--uid N]
                                            开通集群账号(admin+计算节点)或仅初始化；
                                            --uid 可把账号钉在指定 UID（测试/CI 用
@@ -26,6 +28,8 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   kill <u> <jobid>                         停机(校验属主后 scancel)
   job-state <u> <jobid>                    查单个作业状态(squeue→sacct 回退)
   log <u> <jobid> [lines]                  读取作业输出日志尾部
+  ssh-ready <u> <jobid>                    容器里的 sshd 是否已监听(读日志头部的就绪横幅；
+                                           门户「启动中 → 运行中」用它判断)
   rm-log <u> <jobid>                      删除某作业日志文件(清理已删除实例残留)
   save-image <u> <jobid> <name> [force]   把运行中容器的当前状态保存为个人镜像
                                           (/share/images/<u>/<name>.sqsh)
@@ -107,7 +111,14 @@ def _load_site_conf(path):
                     continue
                 k, v = ln.split("=", 1)
                 k = k.strip().upper()
-                if k:
+                if not k:
+                    continue
+                # EXTRA_MOUNTS 允许**分多行写**，每行一项，读的时候用 ";" 拼起来：
+                # 十几个 NAS 路径挤成一行根本没法增删/注释，维护时必然写错。
+                # 其它键保持"后写覆盖前写"的原语义。
+                if k == "EXTRA_MOUNTS" and k in cfg:
+                    cfg[k] = cfg[k] + ";" + v.strip()
+                else:
                     cfg[k] = v.strip()
     except OSError:
         pass
@@ -117,6 +128,89 @@ def _load_site_conf(path):
 SITE = _load_site_conf(SITE_CONF)
 # 节点间 ssh 端口：环境变量 > 站点配置 > 默认 2180
 SSH_PORT = str(os.environ.get("PORTAL_SSH_PORT") or SITE.get("SSH_PORT") or "2180")
+
+# ----------------------------------------------------------------------------
+# 额外透传给容器的宿主机路径（NAS / 数据集共享盘）
+#
+# 只从**站点配置或环境**读，**绝不接受请求参数**：门户 web 在威胁模型里是不可信组件，
+# 一旦让它传路径，攻破门户就能传 --container-mounts=/var/lib/cluster-portal:/x，
+# 把门户 DB 与 Flask secret 挂进用户容器读走。
+#
+# 站点配置写法（每项 <宿主路径>[:<容器内路径>][:ro|rw]，默认 ro；多项用 ";" 分隔）：
+#   EXTRA_MOUNTS=/data:/data:ro;/mnt/nas219:/mnt/nas219:ro
+# 环境变量 PORTAL_EXTRA_MOUNTS 优先（便于测试/临时启用）。
+# ----------------------------------------------------------------------------
+EXTRA_MOUNTS_RAW = os.environ.get("PORTAL_EXTRA_MOUNTS") or SITE.get("EXTRA_MOUNTS") or ""
+
+# 绝不允许透传的前缀：门户自己的数据/配置、以及宿主机系统目录。
+# 站点配置是 root 维护的，这里再拦一道是防"手滑写错一行就把门户 DB 挂给用户"。
+EXTRA_MOUNT_DENY = ("/var/lib/cluster-portal", "/etc/cluster-portal", "/root",
+                    "/etc", "/proc", "/sys", "/dev", "/boot", "/run")
+
+
+def _parse_extra_mounts(raw):
+    """解析 EXTRA_MOUNTS。任何一项不合法就 die（fail closed，而不是悄悄少挂一个）。"""
+    items = []
+    for chunk in re.split(r"[;\n]", raw or ""):
+        spec = chunk.strip()
+        if not spec:
+            continue
+        parts = [x.strip() for x in spec.split(":")]
+        if len(parts) > 3:
+            die("EXTRA_MOUNTS 项格式错误（最多 3 段 src:dst:flags）: %s" % spec)
+        src = parts[0]
+        dst = parts[1] if len(parts) > 1 and parts[1] else src
+        flags = (parts[2].lower() if len(parts) > 2 and parts[2] else "ro")
+        if ".." in src.split("/") or ".." in dst.split("/"):
+            die("EXTRA_MOUNTS 不允许包含 ..: %s" % spec)
+        if not os.path.isabs(src) or not os.path.isabs(dst):
+            die("EXTRA_MOUNTS 必须是绝对路径: %s" % spec)
+        if flags not in ("ro", "rw"):
+            die("EXTRA_MOUNTS 的 flags 只允许 ro / rw: %s" % spec)
+        for bad in EXTRA_MOUNT_DENY:
+            if src == bad or src.startswith(bad.rstrip("/") + "/"):
+                die("EXTRA_MOUNTS 拒绝透传 %s（命中禁止前缀 %s）—— 门户数据/系统目录"
+                    "绝不能挂进用户容器" % (src, bad))
+        items.append({"src": src, "dst": dst, "flags": flags})
+    return items
+
+
+def extra_mounts():
+    """当前生效的额外挂载（惰性解析：配置写错只影响提交作业，不会让门户整站不可用）。"""
+    return _parse_extra_mounts(EXTRA_MOUNTS_RAW)
+
+
+def _container_mounts_arg(home):
+    """拼 sbatch 的 --container-mounts 值：家目录 + 站点配置里的额外挂载（顺序稳定）。"""
+    items = ["%s:%s" % (home, home)]
+    items += ["%s:%s:%s" % (m["src"], m["dst"], m["flags"]) for m in extra_mounts()]
+    return ",".join(items)
+
+
+def _check_extra_mount_sources():
+    """提交前确认**每台计算节点**上都有这些源目录。
+
+    不做这步的话，作业落到缺挂载的那台节点时会在容器启动阶段 bind 失败，
+    用户只看到"提交成功、几秒后失败"，日志里一句 No such file or directory。
+    """
+    ms = extra_mounts()
+    if not ms:
+        return
+    srcs = [m["src"] for m in ms]
+    script = "; ".join("test -d %s || echo %s" % (_shq(p), _shq(p)) for p in srcs)
+    host = node_hostname()
+    bad = []
+    for n in compute_nodes():
+        r = (run(["bash", "-c", script], timeout=30) if n == host
+             else ssh_node(n, ["bash", "-c", script], timeout=30))
+        miss = [x for x in (r.stdout or "").split() if x]
+        if miss:
+            bad.append("%s: %s" % (n, "、".join(miss)))
+    if bad:
+        die("以下节点上没有 EXTRA_MOUNTS 里配的挂载点，容器会因 bind 失败起不来 —— "
+            "请先在该节点挂载（并写进 fstab），或从 site.conf 的 EXTRA_MOUNTS 里去掉：%s"
+            % "；".join(bad))
+
 
 
 def user_home(username):
@@ -404,7 +498,11 @@ def ssh_node(node, argv, timeout=60):
     if node == node_hostname():
         return run(argv, timeout=timeout)
     remote = " ".join(_shq(a) for a in argv)
-    return run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+    # 必须带 -n（stdin 接 /dev/null）：本助手的子进程默认继承调用者的 stdin，
+    # 而 ssh 会把 stdin 整个读走 —— 于是 `bash -s < 脚本` 这种"把脚本喂给 bash"的用法
+    # 会在第一次 ssh 之后**静默中断**（脚本后半段根本不执行，退出码还是 0）。
+    # 真实踩到：verify-install.sh 里加了一条会 ssh 各节点的检查，脚本就停在那行了。
+    return run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                 "-o", "StrictHostKeyChecking=accept-new", "-p", SSH_PORT,
                 "root@" + node, remote], timeout=timeout)
 
@@ -461,6 +559,30 @@ def _nodes_gres_used():
         if len(f) == 2 and f[0]:
             used[f[0].strip()] = _gres_count(f[1].strip())
     return used
+
+
+def cmd_extra_mounts():
+    """额外透传挂载的诊断：解析结果 + 每台节点上源目录是否存在（排障/验收用）。
+
+    纯读取，不 ssh 执行任何有副作用的命令。
+    """
+    ms = extra_mounts()
+    host = node_hostname()
+    nodes_missing = {}
+    if ms:
+        srcs = [m["src"] for m in ms]
+        script = "; ".join("test -d %s || echo %s" % (_shq(p), _shq(p)) for p in srcs)
+        for n in compute_nodes():
+            r = (run(["bash", "-c", script], timeout=30) if n == host
+                 else ssh_node(n, ["bash", "-c", script], timeout=30))
+            miss = [x for x in (r.stdout or "").split() if x]
+            nodes_missing[n] = miss
+    out({"ok": True, "raw": EXTRA_MOUNTS_RAW,
+         "source": "PORTAL_EXTRA_MOUNTS" if os.environ.get("PORTAL_EXTRA_MOUNTS")
+                   else ("site.conf" if SITE.get("EXTRA_MOUNTS") else "未配置"),
+         "mounts": ms,
+         "container_mounts": ",".join("%s:%s:%s" % (m["src"], m["dst"], m["flags"]) for m in ms),
+         "missing": nodes_missing})
 
 
 def cmd_sinfo():
@@ -957,6 +1079,10 @@ def cmd_submit():
     # 这里失败也不中止，交给 sbatch 报出更准确的错误。
     _ensure_assoc(user)
 
+    # 额外挂载（NAS/数据集）的源目录必须在**每台节点**上都在，否则作业落到缺挂载的那台
+    # 会在容器启动阶段 bind 失败。这里提前拦，给出可执行的提示。
+    _check_extra_mount_sources()
+
     # 命名容器（--container-name=portal → pyxis_<jobid>_portal）：使容器 rootfs 成为
     # 计算节点 ENROOT_DATA_PATH 下普通可读写的目录（而非临时 overlay），门户才能随时把
     # “当前容器状态”导出成 .sqsh 个人镜像（save-image）。--container-writable 保证容器内
@@ -976,7 +1102,9 @@ def cmd_submit():
             % (home, user, user, home, port),
             "--container-image=" + image,
             "--container-env=SSH_PORT",
-            "--container-mounts=%s:%s" % (home, home),
+            # 家目录 + site.conf 里配的额外挂载（NAS/数据集）。额外挂载**只来自服务端配置**，
+            # 见文件头部 EXTRA_MOUNTS 的说明；默认 ro，避免用户把共享盘写坏。
+            "--container-mounts=" + _container_mounts_arg(home),
             "--container-name=portal",
             "--container-writable",
             "--wrap", "/opt/start_ssh.sh"]
@@ -1092,6 +1220,48 @@ def cmd_log(user, job_id, lines):
     tail = text.splitlines()[-lines:]
     out({"ok": True, "job_id": job_id, "path": path,
          "text": "\n".join(tail), "total_lines": text.count("\n")})
+
+
+# ----------------------------------------------------------------------------
+# 容器 sshd 是否就绪（门户「启动中 → 运行中」的判据）
+# ----------------------------------------------------------------------------
+# start_ssh.sh 在**确认 /proc/net/tcp 里端口处于 LISTEN 之后**才打印这一行；
+# 所以"日志里有它" = 容器的 sshd 真的起来了。作业日志在用户家目录（750）下，
+# 门户进程读不到，只能由 root 助手读（这里是本地文件读，不 ssh、不联网）。
+SSH_READY_MARK = "[start_ssh] sshd 实际监听端口:"
+SSH_READY_HEAD_BYTES = 65536      # 就绪横幅在文件开头；只读头部，别把几十 MB 的日志全读进来
+
+
+def cmd_ssh_ready(user, job_id):
+    """读作业日志头部，判断容器里的 sshd 是否已监听。"""
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
+    try:
+        job_id = int(job_id)
+    except ValueError:
+        die("非法 jobid")
+    home, herr = checked_home(user)
+    if herr:
+        die(herr)
+    path = os.path.join(home, ".portal", "logs", "%d.out" % job_id)
+    if not os.path.lexists(path):
+        # 日志还没落地：Slurm 刚起容器、文件尚未创建，算"未就绪"（页面显示启动中）
+        out({"ok": True, "ready": False, "job_id": job_id, "reason": "no-log"})
+        return
+    # 安全：与 cmd_log 同一条规矩 —— 用户可以在自己家目录里把 <jobid>.out 换成软链
+    # （例如指向 /etc/cluster-portal/users.passwd），root 一旦跟随就是"任意 root 文件读"。
+    # _open_user_file 拒绝软链/非普通文件/属主异常。
+    fd, oerr = _open_user_file(user, path, os.O_RDONLY)
+    if oerr:
+        die("读取日志失败：%s" % oerr)
+    try:
+        data = os.read(fd, SSH_READY_HEAD_BYTES)
+    except OSError as e:
+        die("读取日志失败: %s" % e)
+    finally:
+        os.close(fd)
+    ready = SSH_READY_MARK in data.decode("utf-8", "replace")
+    out({"ok": True, "ready": ready, "job_id": job_id})
 
 
 # ----------------------------------------------------------------------------
@@ -1524,6 +1694,8 @@ def main():
             cmd_ping()
         elif cmd == "sinfo":
             cmd_sinfo()
+        elif cmd == "extra-mounts":
+            cmd_extra_mounts()
         elif cmd == "provision-user":
             if len(sys.argv) < 4:
                 die("用法: provision-user <用户名> <配额> [--skip-os] [--uid N]")
@@ -1552,6 +1724,10 @@ def main():
             if not ok:
                 die(err)
             out({"ok": True, "user": sys.argv[2], "assoc": "ok"})
+        elif cmd == "ssh-ready":
+            if len(sys.argv) < 4:
+                die("用法: ssh-ready <用户名> <jobid>")
+            cmd_ssh_ready(sys.argv[2], sys.argv[3])
         elif cmd == "user-exists":
             if len(sys.argv) < 3:
                 die("用法: user-exists <用户名>")

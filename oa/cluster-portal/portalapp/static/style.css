@@ -272,6 +272,11 @@ textarea{resize:vertical;line-height:1.55}
   flex:none;opacity:.9}
 .st-running,.st-pending{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-line)}
 .st-pending{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
+/* 「启动中」：Slurm 已 RUNNING，但容器里的 sshd 还没在监听（门户派生的状态，见 app.py _ssh_ready）。
+   用品牌蓝 + 呼吸的小圆点，和「排队中(琥珀)」「运行中(绿)」都区分得开。 */
+.st-starting{background:var(--brand-soft);color:var(--brand-d);border-color:var(--brand-line)}
+.st-starting::before{animation:st-pulse 1.2s ease-in-out infinite}
+@keyframes st-pulse{0%,100%{opacity:.3}50%{opacity:1}}
 .st-suspended,.st-completing,.st-stopping,.st-requeued{background:#fdeef0;color:#a0233a;
   border-color:#f6cdd5}
 .st-cancelled,.st-completed{background:#eef1f6;color:#5b6678;border-color:#e0e5ee}

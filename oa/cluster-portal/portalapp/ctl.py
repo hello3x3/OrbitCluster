@@ -83,6 +83,15 @@ def user_status(username):
     return run(["user-status", username], timeout=90)
 
 
+def ssh_ready(username, jobid):
+    """容器里的 sshd 是否已监听（读作业日志头部的就绪横幅）。
+
+    日志在用户家目录（750）下，门户进程读不到，由 root 助手本地读文件返回——
+    不联网、不 ssh，比"门户自己对节点端口做 TCP 探测"更可靠（不受网络/防火墙影响）。
+    """
+    return run(["ssh-ready", username, str(jobid)], timeout=30)
+
+
 def submit(spec):
     return run(["submit"], stdin_json=spec, timeout=90)
 

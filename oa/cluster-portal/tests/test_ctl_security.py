@@ -161,6 +161,65 @@ def main():
     check("O_NOFOLLOW 已使用", "O_NOFOLLOW" in src)
     check("按 inode 校验替换结果（防掉包）", "st_now.st_ino != st_created.st_ino" in src)
     check("ssh_node 对每个参数做单引号转义", "_shq" in src)
+    # 没有 -n 的话，ssh 会把调用者的 stdin 整个读走：`bash -s < 脚本` 这种用法会在
+    # 第一次 ssh 之后静默截断（后半段不执行、退出码还是 0）。真实踩过一次。
+    check("ssh_node 带 -n（不吞调用者的 stdin）", '"ssh", "-n"' in src)
+
+    print("== 6) EXTRA_MOUNTS（NAS/数据集透传）白名单 ==")
+    # 这一项一旦松掉，就是"把门户 DB 挂进用户容器"级别的漏洞：额外挂载只能来自
+    # 服务端站点配置，解析必须 fail closed，且必须挡住门户自己的数据/系统目录。
+    check("额外挂载只从站点配置/环境读，不从请求读",
+          "PORTAL_EXTRA_MOUNTS" in src and "SITE.get(\"EXTRA_MOUNTS\")" in src
+          and 'spec.get("mounts"' not in src and 'spec["mounts"]' not in src)
+    _pm = mod._parse_extra_mounts
+    check("空配置 → 无挂载", _pm("") == [] and _pm("   ") == [])
+    # EXTRA_MOUNTS 要能分多行写（每行一项），否则十几个 NAS 路径挤一行没法维护
+    _d = tempfile.mkdtemp(prefix="ctlsec-site-")
+    _sp = os.path.join(_d, "site.conf")
+    with open(_sp, "w", encoding="utf-8") as _fh:
+        _fh.write("# c\nEXTRA_MOUNTS=/a:/a:ro\nEXTRA_MOUNTS=/b:/b:rw\nSSH_PORT=2222\n")
+    _cfg = mod._load_site_conf(_sp)
+    check("site.conf 多行 EXTRA_MOUNTS 累加成一项",
+          _cfg.get("EXTRA_MOUNTS") == "/a:/a:ro;/b:/b:rw", _cfg)
+    check("其它键仍然后写覆盖前写", _cfg.get("SSH_PORT") == "2222", _cfg)
+    check("默认 ro、缺省 dst=src",
+          _pm("/data") == [{"src": "/data", "dst": "/data", "flags": "ro"}])
+    check("支持多项 / rw / 自定义 dst",
+          _pm("/data:ro;/mnt/n1:/mnt/n1:ro;/mnt/n2/x:/data/x:rw".replace("/data:ro", "/data:/data:ro"))
+          == [{"src": "/data", "dst": "/data", "flags": "ro"},
+              {"src": "/mnt/n1", "dst": "/mnt/n1", "flags": "ro"},
+              {"src": "/mnt/n2/x", "dst": "/data/x", "flags": "rw"}])
+    for _bad, _why in (("/var/lib/cluster-portal", "门户数据目录"),                       ("/etc/cluster-portal:/x:ro", "门户配置目录"),
+                       ("/etc:/etc:ro", "系统 /etc"),
+                       ("/root:/root:ro", "root 家目录"),
+                       ("/proc:/p:ro", "proc"),
+                       ("relative:/x:ro", "相对路径"),
+                       ("/data:../x:ro", "含 .."),
+                       ("/data:d:e:f", "段数过多"),
+                       ("/data:/data:rwx", "非法 flag"),
+                       ("/data:/data:ro", None)):
+        try:
+            _pm(_bad)
+            got = "passed"
+        except SystemExit:
+            got = "rejected"
+        if _why is None:
+            check("合法项被接受: %s" % _bad, got == "passed", got)
+        else:
+            check("拒绝 %s（%s）" % (_bad, _why), got == "rejected", got)
+
+    # 最终交给 sbatch 的那个字符串：家目录 + 站点配置里的额外挂载
+    _old_raw = mod.EXTRA_MOUNTS_RAW
+    mod.EXTRA_MOUNTS_RAW = ""
+    check("未配置时 --container-mounts 只有家目录",
+          mod._container_mounts_arg("/home/u") == "/home/u:/home/u",
+          mod._container_mounts_arg("/home/u"))
+    mod.EXTRA_MOUNTS_RAW = "/data:/data:ro;/mnt/n1:/d1:rw;/mnt/n2"
+    check("配置后 --container-mounts = 家目录 + 各额外挂载（含默认 ro）",
+          mod._container_mounts_arg("/home/u")
+          == "/home/u:/home/u,/data:/data:ro,/mnt/n1:/d1:rw,/mnt/n2:/mnt/n2:ro",
+          mod._container_mounts_arg("/home/u"))
+    mod.EXTRA_MOUNTS_RAW = _old_raw
 
     if FAIL:
         print("\n有 %d 项失败: %s" % (len(FAIL), ", ".join(FAIL)))

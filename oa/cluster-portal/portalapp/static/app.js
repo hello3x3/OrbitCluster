@@ -183,7 +183,7 @@
     return `<tr data-id="${i.id}">
       <td class="mono">${esc(i.job_id)}</td>
       <td><b>${esc(i.res_name)}</b>${sub ? `<div class="small muted">${esc(sub)}</div>` : ""}${saveLine}</td>
-      <td><span class="st st-${esc(String(i.state).toLowerCase())}">${esc(i.state_cn)}</span></td>
+      <td><span class="st st-${esc(i.state_key || String(i.state).toLowerCase())}">${esc(i.state_cn)}</span></td>
       <td class="mono">${esc(i.node_cn)}</td>
       <td class="mono">${esc(i.port)}</td>
       <td class="small">${i.gpus}×GPU · ${i.cpus}核 · ${i.mem_gb}G</td>
@@ -195,21 +195,40 @@
   function wireMyPage() {
     if (!$("#inst-body")) return;
     let last = {};
+    let pollMs = 0;
+    // 轮询节奏按"现在最需要多快看到变化"分档。历史上这里是固定 15 秒 + 一旦没有活跃实例就
+    // clearInterval —— 两个后果：①「启动中 → 运行中」最多要等 15 秒才翻，用户会以为坏了；
+    // ② 轮询被停掉之后是**单向**的，那之后状态再变也不会自动刷新，只能手动刷新页面。
+    function armPoll(ms) {
+      if (pollMs === ms) return;
+      if (window._poll) clearInterval(window._poll);
+      pollMs = ms;
+      window._poll = ms ? setInterval(load, ms) : null;
+    }
     async function load() {
       try {
         const list = await get("/api/my/instances");
         const body = $("#inst-body");
         const empty = $("#inst-empty");
-        if (!list.length) { body.innerHTML = ""; if (empty) empty.hidden = false; return; }
+        if (!list.length) {
+          body.innerHTML = "";
+          if (empty) empty.hidden = false;
+          armPoll(60000);          // 没有实例：慢速轮询即可，但**不要停**
+          return;
+        }
         if (empty) empty.hidden = true;
         last = {};
         body.innerHTML = list.map(i => { last[i.id] = i; return rowHtml(i); }).join("");
         const hasActive = list.some(i => i.can_stop);
-        if (!hasActive) clearInterval(window._poll);
-      } catch (e) { /* 忽略瞬时错误 */ }
+        // 分档：正在启动（几十秒的高关注窗口）→ 2.5s；排队/收尾 → 6s；
+        // 稳态有实例在跑 → 15s；全都不活跃 → 60s（仍然轮询，不再停掉）。
+        const starting = list.some(i => i.starting);
+        const queued = list.some(i => i.state === "PENDING" || i.state === "COMPLETING");
+        armPoll(!hasActive ? 60000 : (starting ? 2500 : (queued ? 6000 : 15000)));
+      } catch (e) { /* 忽略瞬时错误，下一个周期再试 */ }
     }
     load();
-    window._poll = setInterval(load, 15000);
+    armPoll(15000);   // 先按稳态起步；load() 回来后会按实际情况（启动中/排队中）重新分档
     $("#inst-body").addEventListener("click", async ev => {
       const b = ev.target.closest("button");
       if (!b) return;

@@ -42,7 +42,7 @@
         <td>{{ i.res_name }} <span class="small muted">({{ i.plan_name }} · {{ i.image_name }})</span></td>
         <td class="mono">{{ i.node_cn }}</td>
         <td class="mono">{{ i.port }}</td>
-        <td><span class="st st-{{ i.state|lower }}">{{ i.state_cn }}</span></td>
+        <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
       </tr>
     {% else %}
       <tr><td colspan="6" class="empty">暂无活跃资源</td></tr>
@@ -64,7 +64,7 @@
       <tr>
         <td class="mono">{{ i.job_id }}</td>
         <td>{{ i.res_name }}</td>
-        <td><span class="st st-{{ i.state|lower }}">{{ i.state_cn }}</span></td>
+        <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
         <td class="mono">{{ i.node_cn }}</td>
         <td class="mono">{{ i.port }}</td>
       </tr>

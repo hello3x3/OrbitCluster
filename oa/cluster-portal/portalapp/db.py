@@ -35,6 +35,9 @@ STATE_CN = {
     "COMPLETED": "已结束", "CANCELLED": "已停止", "FAILED": "失败",
     "TIMEOUT": "超时结束", "OUT_OF_MEMORY": "内存溢出", "NODE_FAIL": "节点故障",
     "PREEMPTED": "被抢占", "REQUEUED": "重新排队", "UNKNOWN": "未知",
+    # 门户自己派生、Slurm 不会报的状态：容器已启动但容器里的 sshd 还没在监听，
+    # 这段时间用户还 ssh 不进去（见 app.py 的 _ssh_ready）。
+    "STARTING": "启动中",
 }
 
 

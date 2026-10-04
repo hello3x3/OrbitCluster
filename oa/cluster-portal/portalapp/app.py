@@ -7,6 +7,7 @@ OrbitCluster 集群门户 —— Flask 主应用。
 
 数据目录由环境变量 PORTAL_DATA 指定（默认 ./var），内含 portal.db 与 secret。
 """
+import copy
 import datetime
 import json
 import os
@@ -142,6 +143,49 @@ def _image_total(groups):
     return len(groups.get("public", [])) + len(groups.get("mine", []))
 
 
+SSH_READY_TTL = 2.0          # 未就绪时的重查间隔（秒）
+SSH_READY_MAX_WAIT = 300     # 兜底：RUNNING 超过这么久还没读到就绪横幅，就别再说「启动中」
+_ssh_ready_cache = {}        # (实例id, job_id) -> (ready: bool, ts: float)
+
+
+def _ssh_ready(inst, username):
+    """容器里的 sshd 是否**真的**起来了（Slurm 说 RUNNING ≠ 用户能 ssh 进去）。
+
+    判据是作业日志里的就绪横幅 —— 镜像里的 /opt/start_ssh.sh 是在**确认 /proc/net/tcp
+    里端口处于 LISTEN 之后**才 echo 那一行的，所以它是 sshd 可用的权威信号。
+    日志在用户家目录（750）下，门户进程读不到，由 root 助手读（本地读文件，不联网、
+    不 ssh；比"门户自己对节点端口做 TCP 探测"更可靠，也不受防火墙影响）。
+
+    为速度：就绪是单调的 —— 读到过一次就长期记住，之后每次页面加载零成本；
+    未就绪时最多每 SSH_READY_TTL 秒重查一次（只有启动那几十秒会真的去读日志）。
+    """
+    key = (inst["id"], inst["job_id"])
+    now = time.time()
+    hit = _ssh_ready_cache.get(key)
+    if hit:
+        ready, ts = hit
+        if ready or (now - ts) < SSH_READY_TTL:
+            return ready
+    try:
+        ready = bool(ctl.ssh_ready(username, inst["job_id"]).get("ready"))
+    except ctl.CtlError:
+        ready = True          # 助手读不了（日志被清/权限异常）→ 退回旧行为，别卡在「启动中」
+    # 兜底：RUNNING 很久仍读不到就绪横幅（镜像里没这个脚本、日志被删…）就按「运行中」显示 ——
+    # 一个状态永远卡在「启动中」比偶尔不准更糟。
+    if not ready and (inst["started_at"] or ""):
+        try:
+            t0 = datetime.datetime.fromisoformat(inst["started_at"])
+            if (datetime.datetime.now() - t0).total_seconds() > SSH_READY_MAX_WAIT:
+                ready = True
+        except ValueError:
+            pass
+    _ssh_ready_cache[key] = (ready, now)
+    if len(_ssh_ready_cache) > 512:          # 容量保护：门户是长驻进程
+        for k in list(_ssh_ready_cache)[:256]:
+            _ssh_ready_cache.pop(k, None)
+    return ready
+
+
 def _fmt_bytes(kb):
     """1K-block -> 人类可读（KiB/MiB/GiB）。"""
     try:
@@ -233,6 +277,8 @@ def create_app(testing=False):
         app.config["SESSION_COOKIE_SECURE"] = True
     app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
     app.node_cache = ctl.NodeCache(ttl=5)
+    app.quota_cache = {}          # username -> (ts, ctx)，见 _quota_ctx
+    app.quota_ttl = 8             # 秒：配额/QoS 变化很慢，页面别每次都重新问 OS
 
     def get_db() -> DB:
         if "db" not in g:
@@ -490,6 +536,15 @@ def create_app(testing=False):
         img = inst["image"] or ""
         d["image_name"] = img.rsplit("/", 1)[-1]
         d["state_cn"] = STATE_CN.get(inst["state"], inst["state"])
+        d["state_key"] = (inst["state"] or "").lower()
+        # Slurm 报 RUNNING 只代表"容器被拉起来了"；镜像导入 + sshd 启动还要几秒到几十秒，
+        # 这段时间用户 ssh 不进去。所以再确认一次 sshd 真的在监听，没监听就显示「启动中」。
+        # 注意只改**展示**：DB 里的 state 仍是 RUNNING，停机/保存/活跃计数都不受影响。
+        d["starting"] = False
+        if inst["state"] == "RUNNING" and not _ssh_ready(inst, d["username"]):
+            d["state_cn"] = STATE_CN["STARTING"]
+            d["state_key"] = "starting"
+            d["starting"] = True
         d["can_stop"] = inst["state"] in ACTIVE_STATES
         d["is_running"] = inst["state"] == "RUNNING"
         d["created"] = inst["created_at"].replace("T", " ")[:19] if inst["created_at"] else ""
@@ -513,7 +568,22 @@ def create_app(testing=False):
         return out
 
     def _quota_ctx(u):
-        """当前用户配额/额度上下文：磁盘配额(OS 实读) + Slurm 关联/QoS/优先级/总额度。"""
+        """当前用户配额/额度上下文（带短缓存）。
+
+        一次 /my 要跑 user-exists + quota + slurm-info **三个** root 助手调用（实测
+        ~0.17s），连着刷新两次就明显发卡，而这几个值（磁盘已用、QoS/优先级）变化很慢。
+        所以缓存几秒；返回深拷贝，避免调用方改到缓存里的对象。
+        """
+        now = time.time()
+        hit = app.quota_cache.get(u["username"])
+        if hit and now - hit[0] < app.quota_ttl:
+            return copy.deepcopy(hit[1])
+        ctx = _quota_ctx_uncached(u)
+        app.quota_cache[u["username"]] = (now, ctx)
+        return copy.deepcopy(ctx)
+
+    def _quota_ctx_uncached(u):
+        """真正去问 OS/Slurm 的实现（别直接调它，走带缓存的 _quota_ctx）。"""
         ctx = {"ok": False, "os_ok": _os_ok(u), "disk": None, "slurm": None,
                "disk_err": "", "slurm_err": ""}
         if not ctx["os_ok"]:

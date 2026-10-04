@@ -30,6 +30,31 @@ chk "etc 目录 770(portal可写)" "stat -c '%a' /etc/cluster-portal | grep -q '
 echo "== 集群联动 =="
 chk "sinfo 可用(节点>=1)"    "bash -c 'n=\$(sinfo -h -N | wc -l); test \"\$n\" -ge 1'"
 chk "镜像目录可读"           "bash -c 'ls /share/images/*.sqsh >/dev/null'"
+# NAS / 数据集透传：site.conf 里配了 EXTRA_MOUNTS 的话，**每台节点**都必须真挂上了。
+# 少一台的后果是作业落到那台时在容器启动阶段 bind 失败（用户只看到"提交成功然后失败"，
+# 日志里一句 No such file or directory），所以这里必须逐节点核对。
+_EM="$(/usr/local/sbin/portal-ctl extra-mounts </dev/null 2>&1 || true)"
+if printf '%s' "$_EM" | grep -q '"ok": *false'; then
+  echo "  [FAIL] EXTRA_MOUNTS 配置有问题：$(printf '%s' "$_EM" | head -c 240)"
+  echo "         修法：site.conf 里每项写成 <宿主路径>[:<容器内路径>][:ro|rw]，多项用 ; 分隔"
+  fail=1
+else
+  _EM_MISS="$(printf '%s' "$_EM" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for n, v in (d.get("missing") or {}).items():
+    if v:
+        print("%s: %s" % (n, ", ".join(v)))' 2>/dev/null || true)"
+  if [ -z "$_EM_MISS" ]; then
+    echo "  [OK] 额外挂载（NAS/数据集）各节点齐备或未配置"
+  else
+    echo "  [FAIL] 这些节点缺少 EXTRA_MOUNTS 里的挂载点：$_EM_MISS"
+    echo "         修法：在该节点挂载并写进 /etc/fstab（建议 _netdev），或从 site.conf 去掉该项"
+    fail=1
+  fi
+fi
 # 注意：这里**不能**用 root 去 import 应用代码（portalapp/*.py）。历史上 verify-install.sh
 # 以 root 导入 portalapp.db，而该目录当时归 portal 所有 —— 门户被攻破即可借此拿 root。
 # 现在改为直接用标准库 sqlite3 读库，不加载应用代码。
