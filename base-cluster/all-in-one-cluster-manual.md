@@ -2,9 +2,6 @@
 
 > **范围**：本手册把三份文档合并为一份，按顺序可在**新机器**上从零手动部署并验收通过：
 > NFS 共享盘 → Slurm 26.05.1（源码编译，**一步到位带会计插件**）→ enroot + pyxis 容器 → Prometheus+Grafana 监控 → 多用户（磁盘配额 + slurmdbd 会计 + 建号/扩容脚本 + fairshare）。
-> 内容经过 2026-09-05 在本集群（`<ADMIN>/<GPU01>/<GPU02>`，Ubuntu 24.04）**实际部署并逐条验收**，所有踩过的坑都已固化为正文章节的操作步骤或醒目标注，照做即可一次成功。
->
-> 源文档（本手册是它们的合并升级版）：`cluster-deploy-manual.md`（集群本体）、`slurm-monitoring-runbook.md`（监控）、`slurm-multiuser-runbook.md`（多用户化）。
 
 ---
 
@@ -74,7 +71,7 @@
 | 文件 | 用途 | 存放 |
 |---|---|---|
 | 本手册附录 B 的仪表盘 JSON（或同目录 `grafana-slurm-dashboard.json`） | Grafana 导入 | <ADMIN> |
-| `.sqsh` 镜像（第 5.6 节下载/导入） | 容器作业 | `/share/images/` |
+| `.sqsh` 镜像（第 5.6 节下载/导入） | 容器作业 | `<IMAGES_MOUNT>/` |
 | 第 7 章脚本（add-user.sh / set-quota.sh / show-quota.sh） | 建号与配额 | `/opt/cluster-admin/` |
 
 ---
@@ -212,7 +209,7 @@ sshd -T | grep -i '^allowusers'                        # 门户模式：应输�
 
 ## 2. NFS 共享盘（/share）
 
-> 布局：只在 <ADMIN> 上导出 `/share` 一个目录；用户家目录 `/share/home/<user>`，数据集 `/share/datasets`，镜像缓存 `/share/enroot-cache`，镜像仓库 `/share/images`。GPU 节点挂载同一路径。
+> 布局：只在 <ADMIN> 上导出 `/share` 一个目录；用户家目录 `/share/home/<user>`，数据集 `/share/datasets`，镜像缓存 `/share/enroot-cache`，镜像仓库 `<IMAGES_MOUNT>`。GPU 节点挂载同一路径。
 
 ### 2.1 数据盘准备 [<ADMIN>]
 ```bash
@@ -233,7 +230,7 @@ df -h /share
 mkdir -p /share/home && chmod 755 /share/home
 mkdir -p /share/enroot-cache && chmod 1777 /share/enroot-cache
 mkdir -p /share/datasets && chmod 1777 /share/datasets
-mkdir -p /share/images && chmod 755 /share/images
+mkdir -p <IMAGES_MOUNT> && chmod 755 <IMAGES_MOUNT>
 ```
 
 | 目录 | 权限 | 说明 |
@@ -241,7 +238,7 @@ mkdir -p /share/images && chmod 755 /share/images
 | `/share/home` | 755 root | 家目录根；用户各自建子目录（root 属主，普通用户不能写根） |
 | `/share/datasets` | **1777**（sticky） | 共享数据集：人人可读可写、sticky 只许删自己的文件，防误删 |
 | `/share/enroot-cache` | 1777 | enroot 镜像缓存根；**组共享子目录由管理员预建 1777**（见 5.3） |
-| `/share/images` | 755 root | 预置 .sqsh 镜像：**644 root 属主 = 全员可读、只有 root 可写**。不要改成 1777（任何人覆盖共享镜像=投毒风险）；想让授权用户放镜像用专用组+setgid（见 5.6） |
+| `<IMAGES_MOUNT>` | 755 root | 预置 .sqsh 镜像：**644 root 属主 = 全员可读、只有 root 可写**。不要改成 1777（任何人覆盖共享镜像=投毒风险）；想让授权用户放镜像用专用组+setgid（见 5.6） |
 
 datasets 的另一种组织方式（小组要互改同一批文件时）——表格备选：
 
@@ -271,7 +268,7 @@ showmount -e localhost        # 应列出 /share
 | `root_squash`（默认，**不要写 no_root_squash**） | 把客户端 root(uid0) 压成 nobody(65534) | 保持默认 | 安全：计算节点被攻破也不能篡改共享盘 |
 | `all_squash` | 把**所有**客户端用户压成 nobody | 不用 | 会破坏多用户属主 |
 
-> ⚠️ **root_squash 是本集群踩过的最深的坑（部署日志 §5.4），先记住结论**：
+> ⚠️ **exports 里保持 root_squash 默认，不要写 `no_root_squash`**：
 > 当 **① 作业以 root 提交 ② `-o`/输出落 `/share` ③ 跑在 NFS 客户端节点（`<GPU01>/<GPU02>`）** 三条件同时成立时，
 > 批处理作业会在启动 ~1 秒内死掉（输出 0 字节且属主 nobody，slurmctld 日志 `WTERMSIG 53`），与容器/pyxis 无关。
 > 对策：root 提交的作业 `-o` 一律用节点本地路径（如 `/tmp/test-%j.out`）；**多用户（第 7 章）后作业都由普通用户提交，天然不受影响**。不要在 exports 里加 `no_root_squash`。
@@ -329,9 +326,9 @@ ls -l /share/home/lab/
 ## 3. 编译安装 Slurm 26.05.1（[全部节点]，每台各编一次）
 
 > 编译产物在 `/usr/local/{sbin,bin,lib/slurm,include/slurm}`，配置在 `/etc/slurm`。
-> ⚠️ **一步到位带 MySQL 会计插件（本次踩坑后固化的关键改进）**：源码构建只有在 configure 时能探测到
-> `mysql_config` 才会编译会计存储插件。首次部署若漏了，之后想开会计（第 7 章）必须**整包重编**。
-> 下面依赖里加了 `libmariadb-dev` 并预置软链，configure 会自动带上，**以后不用重建**。
+> ⚠️ **必须在 configure 阶段就带上 MySQL 会计插件**：源码构建只有在 configure 时能探测到
+> `mysql_config` 才会编译会计存储插件；漏了它，之后要开会计（第 7 章）就得**整包重编**。
+> 下面依赖里已含 `libmariadb-dev` 并预置软链，configure 会自动带上。
 
 ### 3.1 依赖
 ```bash
@@ -439,7 +436,7 @@ chmod 400 /etc/munge/munge.key
 systemctl enable --now munge
 munge -n | unmunge          # 本机自检：能解出自己即 OK
 ```
-> ⚠️ munge 三条铁律（本集群全踩过）：
+> ⚠️ munge 三条铁律：
 > 1. **同步密钥到任何节点后必须重启该节点的 munged**——munged 只在启动时读密钥，光换文件内存里还是旧的（报 Invalid credential）；
 > 2. <ADMIN> **自己**重新生成/覆盖密钥后也要重启自己的 munged（否则全网对 <ADMIN> 认证失败，srun 报 Protocol authentication error）；
 > 3. 跨机验证一条命令同时查 key+时钟：`munge -n | ssh <节点> unmunge`——报 `Response too old or too new` 是时钟漂移（查 chrony），报密钥错误是 key 不一致（md5sum 对比）。
@@ -651,27 +648,32 @@ EOF
 |---|---|---|---|
 | `ENROOT_RUNTIME_PATH` | 运行时临时目录（挂载点等） | `/run/enroot/user-$(id -u)` | 父目录 /run/enroot 需 1777 + 开机重建（5.3） |
 | `ENROOT_CACHE_PATH` | 镜像缓存（docker:// 拉取落这里） | `/share/enroot-cache/group-$(id -g)` | NFS 全网一份；组目录预建 1777 才能共享（5.3） |
-| `ENROOT_DATA_PATH` | 容器 rootfs/数据层（本地盘） | `/scratch/enroot-data/user-$(id -u)` | 中间目录 /scratch/enroot-data **必须预建 1777**（5.3，踩过坑） |
+| `ENROOT_DATA_PATH` | 容器 rootfs/数据层（本地盘） | `/scratch/enroot-data/user-$(id -u)` | 中间目录 /scratch/enroot-data **必须预建 1777**（见 5.3） |
 | `ENROOT_MOUNT_HOME` | 是否自动挂载 $HOME | n（不挂） | 容器内家目录自己用 --container-mounts 挂 |
 | `ENROOT_RESTRICT_DEV` | 限制 /dev 设备 | y | 安全 |
 | `ENROOT_ROOTFS_WRITABLE` | rootfs 可写层 | y | |
-| `ENROOT_REMAP_ROOT` | 是否把提交者 remap 成容器内 root | **n** | 默认以**提交者身份**进容器（不做 uid→0 映射）：容器内是本人 uid，写 /share 属主即本人、不触发 root_squash；确需以 root 操作时单次加 srun `--container-remap-root` |
+| `ENROOT_REMAP_ROOT` | 是否把提交者 remap 成容器内 root | **n** | 默认以**提交者身份**进容器（不做 uid→0 映射）：容器内是本人 uid，写 /share 属主即本人、不触发 root_squash；**不要**加 srun `--container-remap-root`（见下方安全警告）|
 
 > ⚠️ **安全：不要把它改成 `y`，也不要随意用 `--container-remap-root`。**
 > 镜像内置的 `sshd_config` 是 `PermitRootLogin yes` + `PermitEmptyPasswords yes`
 > （镜像 root 还有固定口令），而 enroot **共享宿主机网络命名空间** —— 容器一旦以 root
 > 运行，就等于把一个"口令公开的 sshd"暴露给整个内网。
-> 仓库里的 `base-cluster/images/start_ssh.sh`（镜像内 `/opt/start_ssh.sh` 的加固版）
-> 已在**任何身份**下强制 `PermitRootLogin=prohibit-password` + `PasswordAuthentication=no`
-> + `PermitEmptyPasswords=no`；**重建镜像时请用这一版**。
+>
+> 仓库里的 `base-cluster/images/<镜像>/start_ssh.sh`
+> 已在**任何身份**下强制 `PermitRootLogin=no`（禁止 root 登录 ssh）+ 全部密码认证关闭
+> （`PasswordAuthentication` / `PermitEmptyPasswords` / `KbdInteractiveAuthentication` /
+> `ChallengeResponseAuthentication` 全 no + `AuthenticationMethods=publickey`）；
+> Dockerfile 里也写了一份同样的 `sshd_config.d/00-portal-hardening.conf`（双保险）。
+> root 口令按站点要求**保留**，但只服务容器内本地场景（控制台/su），网络侧无入口。
+> **重建镜像时请用这一版**。
 > 门户侧另有硬约束：提交参数里绝不会出现 `--container-remap-root`（portal-ctl 内有显式拦截），
 > `oa/scripts/verify-install.sh` 也会逐台检查 `ENROOT_REMAP_ROOT=n`。
 
 ### 5.3 运行时目录（三处 1777 + 开机重建）
 ```bash
 mkdir -p /scratch && chmod 1777 /scratch
-# ⚠️ 踩坑修复：/scratch/enroot-data 若由 root 先跑 enroot 生成会是 0700 root（enroot 建目录 umask 077），
-#    普通用户容器 mkdir 报 Permission denied。必须管理员预建 1777（幂等，已存在也执行一次无害）：
+# ⚠️ /scratch/enroot-data 必须由管理员预建为 1777：若让 root 先跑 enroot，enroot 会按 umask 077
+#    把它建成 0700 root，普通用户的容器 mkdir 就报 Permission denied（幂等，已存在也执行无害）：
 mkdir -p /scratch/enroot-data && chmod 1777 /scratch/enroot-data
 mkdir -p /run/enroot && chmod 1777 /run/enroot      # /run 是 tmpfs，重启即清
 echo 'd /run/enroot 1777 root root -' > /etc/tmpfiles.d/enroot.conf
@@ -690,23 +692,22 @@ nvidia-container-cli --version     # 有输出即成功
 # 方式 B（nvidia 官方 apt 源可达时）：apt install -y libnvidia-container-tools
 ```
 
-### 5.5 GPU 可见性钩子（每个节点都要；**用下面的修复版全文**）
+### 5.5 GPU 可见性钩子（每个节点都要；**用下面的全文**）
 > 原理：enroot 4.x 挂 GPU 靠 `/etc/enroot/hooks.d/98-nvidia.sh`，它需要 ① nvidia-container-cli（5.4）
 > ② 环境变量 `NVIDIA_VISIBLE_DEVICES`（未设置时直接 exit 0 = 不挂卡，容器能跑但里面看不到 GPU）。
 > Slurm 只给 GPU 作业注入 `CUDA_VISIBLE_DEVICES`（实测），不注入 `NVIDIA_VISIBLE_DEVICES`，
 > 所以需要一个前置钩子（文件名 95 < 98）做转换，并补默认能力 `compute,utility`（enroot 默认只给 utility，不够 CUDA 用）。
 
-> ⚠️ **本集群 2026-09-05 修复的 CPU 容器 bug（务必用下面的修复版，勿用旧版）**：
-> 旧版钩子末行是 `[ -n "${cvd:-}" ] && printf ...` 且开着 `set -eu`——当作业**不带 GPU**（纯 CPU 容器）时
-> env 里没有 `CUDA_VISIBLE_DEVICES`，该 test 为假，而它恰好是脚本最后一条语句，整个脚本以退出码 1 结束，
-> enroot 判定启动失败：所有 CPU 容器作业秒挂（报 `[ERROR] /etc/enroot/hooks.d/95-slurm-gpus.sh exited with return code 1`）。
-> GPU 作业有值可写所以从未暴露。修复 = env 缺失提前 exit 0 + 末尾显式 `exit 0`。
+> ⚠️ **钩子末行必须显式 `exit 0`**：钩子开着 `set -eu`，若最后一条语句是
+> `[ -n "${cvd:-}" ] && printf ...` 这种条件式命令，作业**不带 GPU**（纯 CPU 容器）时该 test 为假，
+> 整个脚本会以退出码 1 结束，enroot 判定启动失败 —— 所有 CPU 容器作业秒挂
+> （报 `[ERROR] /etc/enroot/hooks.d/95-slurm-gpus.sh exited with return code 1`）。
+> 所以 env 缺失要提前 `exit 0`，末尾再显式 `exit 0`。
 
 ```bash
 cat > /etc/enroot/hooks.d/95-slurm-gpus.sh <<'SCRIPT'
 #!/usr/bin/env bash
 # 98-nvidia.sh 的前置钩子（文件名 95 < 98，保证先于它执行）
-# 修复 2026-09-05: CPU 作业(无 CUDA_VISIBLE_DEVICES)时末行 test 失败导致退出码 1
 set -eu
 env_file="${ENROOT_ENVIRON:-}"
 if [ -z "${env_file}" ] || [ ! -f "${env_file}" ]; then
@@ -778,9 +779,9 @@ enroot remove -f alpine-test
 
 # 集群镜像流程（推荐）：管理员在 <ADMIN>（NFS 服务端）root 预置 .sqsh 到共享盘，用户按路径直接用、免特权
 # 例（NGC 国内可达）：
-#   enroot import -o /share/images/pytorch-24.03.sqsh docker://nvcr.io#nvidia/pytorch:24.03-py3
-# 或从缓存镜像转出：enroot export <镜像名> | tee /share/images/<名>.sqsh > /dev/null
-# ⚠️ .sqsh 命名带版本/tag，更新写新文件名，别原地覆盖在用镜像；/share/images 保持 755 root（勿 1777）
+#   enroot import -o <IMAGES_MOUNT>/pytorch-24.03.sqsh docker://nvcr.io#nvidia/pytorch:24.03-py3
+# 或从缓存镜像转出：enroot export <镜像名> | tee <IMAGES_MOUNT>/<名>.sqsh > /dev/null
+# ⚠️ .sqsh 命名带版本/tag，更新写新文件名，别原地覆盖在用镜像；<IMAGES_MOUNT> 保持 755 root（勿 1777）
 ```
 
 ### 5.8 第 5 章验收（核心：容器 + GPU + NFS 全链路，root 与普通用户各一遍）
@@ -791,22 +792,22 @@ srun --gres=gpu:1 --container-image=nvcr.io/nvidia/pytorch:24.03-py3 \
      bash -c 'python -c "import torch; print(torch.cuda.device_count())" && \
               touch /share/from-container-$(hostname) && ls -l /share/from-container-$(hostname)'
 #    期望：device_count()==1，文件属主为提交者（不是 root，uid 映射生效）
-# ② 共享 .sqsh 模式（离线/秒级启动；镜像已预置到 /share/images 时）
-srun --gres=gpu:1 --container-image=/share/images/<你的镜像>.sqsh \
+# ② 共享 .sqsh 模式（离线/秒级启动；镜像已预置到 <IMAGES_MOUNT> 时）
+srun --gres=gpu:1 --container-image=<IMAGES_MOUNT>/<你的镜像>.sqsh \
      --container-mounts=/share:/share python -c "import torch;print(torch.cuda.device_count())"
 
 # ③【普通用户】（多用户化的核心验证；lab 已建）
 runuser -u lab -- srun -D /tmp -N1 -w <GPU01> -o /tmp/lab-ct-%j.out \
-    --container-image=/share/images/ubuntu-22.04.sqsh cat /etc/os-release ; echo EXIT=$?
-#    ↑ CPU 容器：修复 5.5 钩子后应 EXIT=0（修复前必挂 exit 1）
+    --container-image=<IMAGES_MOUNT>/ubuntu-22.04.sqsh cat /etc/os-release ; echo EXIT=$?
+#    ↑ CPU 容器：应 EXIT=0（钩子末行漏了 exit 0 就会 exit 1）
 runuser -u lab -- srun -D /tmp -N1 -w <GPU01> --gres=gpu:1 -o /tmp/lab-ct-%j.out \
-    --container-image=/share/images/pytorch-2.12.1-cuda13.0-cudnn9-devel.sqsh \
+    --container-image=<IMAGES_MOUNT>/pytorch-2.12.1-cuda13.0-cudnn9-devel.sqsh \
     python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 #    期望：True NVIDIA GeForce RTX 3060
 
-# ④ 交互会话（ENROOT_REMAP_ROOT=n 默认以本人身份进容器；确需 root 时加 --container-remap-root）
+# ④ 交互会话（ENROOT_REMAP_ROOT=n：容器内就是本人身份；不要加 --container-remap-root）
 salloc --gres=gpu:1 --time=02:00:00
-srun --pty --container-image=/share/images/<你的镜像>.sqsh \
+srun --pty --container-image=<IMAGES_MOUNT>/<你的镜像>.sqsh \
      --container-mounts=/share/home/$USER:/workspace bash
 # ⑤ 批处理示例（普通用户从登录节点提交；root 提交时 -o 用本地 /tmp 路径，见 2.3 警告框）
 sbatch --gres=gpu:1 -o /tmp/test-%j.out --wrap 'nvidia-smi -L'
@@ -1142,7 +1143,7 @@ for q in "count(slurm_node_state{state=\"idle\"}) or on() vector(0)" \
 
 # ③ 提交一个作业, 30 秒内“有作业节点”变 1、队列表出现该作业（root 提交时 -o 用本地 /tmp）
 sbatch --gres=gpu:1 -o /tmp/test-%j.out --time=00:05:00 \
-  --container-image=/share/images/<你的镜像>.sqsh \
+  --container-image=<IMAGES_MOUNT>/<你的镜像>.sqsh \
   --wrap="nvidia-smi -L || true"
 squeue -o "%.8i %.12u %.14j %.3t %N"
 
@@ -1328,96 +1329,18 @@ sacctmgr show assoc format=Cluster,Account,User,AdminLevel
 
 ### 7.5 管理脚本（建号 + 配额，[<ADMIN>] 一次性安装）
 
-> ⚠️ **下面这段内嵌脚本是早期版本，仅供理解流程，别直接照抄。**
-> 维护版本在 `base-cluster/scripts/cluster-admin/add-user.sh`：站点无关（自动判定管理/计算节点）、
-> 支持 `-u/-g` 对齐各节点 UID/GID，并且**拒绝创建重复 UID**。
-> 关键差异：旧版用 `useradd ... -o`，在目标 UID 已被占用时会**静默建出重复 UID** ——
-> 重复 UID 会让 enroot 容器里解析不到真实用户名（`/etc/enroot/hooks.d/10-shadow.sh`
-> 只按 UID 取一条 passwd 记录），用户 `ssh` 进容器报 `Permission denied (publickey)`。
+用仓库里的**维护版本**（站点无关：自动判定管理/计算节点；支持 `-u/-g` 对齐各节点 UID/GID；**拒绝创建重复 UID**）：
+
 ```bash
-mkdir -p /opt/cluster-admin
-cat > /opt/cluster-admin/add-user.sh <<'SCRIPT'
-#!/usr/bin/env bash
-# 用法:
-#   在 <ADMIN> 上:   /opt/cluster-admin/add-user.sh <用户名> [配额如 500G]
-#                  (创建家目录 /share/home/<用户名> 并设置 /share 配额)
-#   在 <GPU01>/<GPU02>: /opt/cluster-admin/add-user.sh <用户名>
-#                  (仅建账号与组，不建家目录; 家目录经 NFS 自动可见)
-# 可选 -u <UID>: 三节点自动分配 UID 不一致时，在计算节点上强制指定
-set -eu
-USERNAME=""; QUOTA="500G"; FORCE_UID=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -u) FORCE_UID="$2"; shift 2 ;;
-    *) if [ -z "$USERNAME" ]; then USERNAME="$1"; shift; else QUOTA="$1"; shift; fi ;;
-  esac
+# 管理节点与各计算节点各装一份（脚本内容相同，自己判定角色）
+for f in add-user.sh set-quota.sh show-quota.sh; do
+  install -o root -g root -m 755 base-cluster/scripts/cluster-admin/$f /opt/cluster-admin/$f
 done
-[ -n "$USERNAME" ] || { echo "用法: add-user.sh <用户名> [配额]  [-u UID]"; exit 1; }
-HOST="$(hostname -s)"
-if id "$USERNAME" &>/dev/null; then echo "[!] $USERNAME 已存在，跳过"; exit 0; fi
-
-case "$HOST" in
-  <ADMIN>)
-    echo "[<ADMIN>] 创建用户与家目录 ..."
-    if [ -n "$FORCE_UID" ]; then
-      useradd -m -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" "$USERNAME"   # 注意: 不要加 -o, 重复 UID 会破坏容器内用户名解析
-    else
-      useradd -m -s /bin/bash -d "/share/home/$USERNAME" "$USERNAME"
-    fi
-    UID_NOW="$(id -u "$USERNAME")"
-    /opt/cluster-admin/set-quota.sh "$USERNAME" "$QUOTA" || true
-    # 自动建 sacctmgr 关联（启用即挂默认 QoS normal = 中等优先级 / 作业限制不限）
-    sacctmgr -i add user "$USERNAME" account=lab qos=normal >/dev/null 2>&1 \
-      || echo "[!] sacctmgr 关联失败，请手动: sacctmgr add user $USERNAME account=lab qos=normal"
-    echo "[<ADMIN>] 完成: $USERNAME uid=$UID_NOW 家目录=/share/home/$USERNAME 磁盘配额=$QUOTA 作业QoS=normal(中等/不限)"
-    echo "[<ADMIN>] 下一步:"
-    echo "        1) passwd $USERNAME"
-    echo "        2) <GPU01>/<GPU02> 上执行: /opt/cluster-admin/add-user.sh $USERNAME"
-    echo "           (若计算节点自动 UID != $UID_NOW, 加 -u $UID_NOW)"
-    echo "        3) 后续调单个用户优先级/配额: sacctmgr(见 7.6)，改后需 systemctl restart slurmctld"
-    ;;
-  <GPU01>|<GPU02>)
-    echo "[$HOST] 创建账号(不建家目录) ..."
-    if [ -n "$FORCE_UID" ]; then
-      useradd -M -s /bin/bash -d "/share/home/$USERNAME" -u "$FORCE_UID" "$USERNAME"   # 注意: 不要加 -o, 重复 UID 会破坏容器内用户名解析
-    else
-      useradd -M -s /bin/bash -d "/share/home/$USERNAME" "$USERNAME"
-    fi
-    echo "[$HOST] 完成: $USERNAME uid=$(id -u "$USERNAME")"
-    ;;
-  *)
-    echo "[!] 未知主机 $HOST —— 请分别在 <ADMIN>/<GPU01>/<GPU02> 上执行本脚本"; exit 1 ;;
-esac
-SCRIPT
-
-cat > /opt/cluster-admin/set-quota.sh <<'SCRIPT'
-#!/usr/bin/env bash
-# set-quota.sh —— 设置/扩容某用户在 /share 上的配额（<ADMIN> 上执行）
-# 用法: /opt/cluster-admin/set-quota.sh <用户名> <大小>    例: 500G / 1T / 200M
-# ext4 按 UID 计配额，覆盖该用户在 /share 上的全部文件; soft=hard 即时生效
-set -eu
-U="${1:?用法: set-quota.sh <用户名> <大小如 500G|1T>}"
-SZ="${2:?用法: set-quota.sh <用户名> <大小如 500G|1T>}"
-case "$SZ" in
-  *[Gg]) N="${SZ%[Gg]}";   BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024*1024}")" ;;
-  *[Tt]) N="${SZ%[Tt]}";   BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024*1024*1024}")" ;;
-  *[Mm]) N="${SZ%[Mm]}";   BLK="$(awk "BEGIN{printf \"%.0f\", $N*1024}")" ;;
-  *) echo "大小需带单位 M/G/T, 如 500G"; exit 1 ;;
-esac
-id "$U" &>/dev/null || { echo "用户 $U 不存在"; exit 1; }
-[ "$(hostname -s)" = <ADMIN> ] || { echo "配额只能在 <ADMIN> 上设置"; exit 1; }
-setquota -u "$U" "$BLK" "$BLK" 0 0 /share
-echo "== 已设置: $U 软/硬上限 = $SZ (blocks=$BLK) =="
-quota -u "$U" | tail -3
-SCRIPT
-
-cat > /opt/cluster-admin/show-quota.sh <<'SCRIPT'
-#!/usr/bin/env bash
-# show-quota.sh —— 查看 /share 全部用户配额使用情况（<ADMIN> 上执行）
-repquota -u /share
-SCRIPT
-chmod +x /opt/cluster-admin/*.sh
 ```
+
+> `useradd` **不能**加 `-o`：目标 UID 已被占用时会静默建出重复 UID，而 enroot 的 `10-shadow.sh`
+> 只按 UID 取一条 passwd 记录 → 容器里解析不到真实用户名，用户 `ssh` 进容器报
+> `Permission denied (publickey)`。门户在开通账号时也会把 `add-user.sh` 同步到目标节点。
 
 **新用户上线流程**：
 ```bash
@@ -1434,15 +1357,15 @@ passwd <新建用户名>
 
 用户须知模板（写入 `/etc/skel/CLUSTER-README.txt`，新家目录自动携带）：
 ```
-【目录】 /share/home/<用户名> 家目录(NFS 共享) | /share/datasets 公共数据集区 | /share/images 镜像(只读)
+【目录】 /share/home/<用户名> 家目录(NFS 共享) | /share/datasets 公共数据集区 | <IMAGES_MOUNT> 镜像(只读)
 【配额】 每人在 /share 总量默认 500G（家目录+数据集+缓存合计）。查看: quota -s。扩容找管理员。
 【数据集】 /share/datasets 全读、只能删改自己下载的；同名无法覆盖别人的，命名带上用户名/日期。
 【作业】 sbatch -p gpu -N1 -c4 --wrap "echo hi"
-        srun -p gpu -N1 --gres=gpu:1 --container-image=/share/images/<镜像>.sqsh python3 train.py
+        srun -p gpu -N1 --gres=gpu:1 --container-image=<IMAGES_MOUNT>/<镜像>.sqsh python3 train.py
         squeue / scancel <jobid> / sacct
 ```
 
-### 7.6 每用户静态优先级 + 作业配额（不用 fairshare，2026-09-06 已落地）
+### 7.6 每用户静态优先级 + 作业配额（不用 fairshare）
 
 > 设计：管理员**人为调控**的静态优先级，不用 fairshare 的自动动态公平。每个用户挂一个 QoS，
 > QoS 承载"该用户优先级 + 作业级限制"；所有人默认同档 `normal`（中等、不限），需要时单独给某人
@@ -1454,7 +1377,7 @@ passwd <新建用户名>
 # slurm.conf 追加（<ADMIN>；已含 7.4 的会计行）
 cat >> /etc/slurm/slurm.conf <<'CONF'
 
-# ---- 静态优先级(管理员调控) + 强制关联 (2026-09-06) ----
+# ---- 静态优先级(管理员调控) + 强制关联 ----
 PriorityWeightQOS=1        # 权重=1 → 作业优先级显示值 = QoS.Priority（1~10 整数档）
 PriorityFlags=NO_NORMAL_QOS
 AccountingStorageEnforce=associations,limits
@@ -1499,9 +1422,7 @@ sacctmgr -i delete qos name=vip-alice
 ```
 
 > fairshare 说明：本方案**刻意不用** fairshare（`PriorityWeightFairShare=0` 且不设份额）；
-> 若要日后切回动态公平，去掉 `NO_NORMAL_QOS`/权重改 fairshare 即可（参考旧版 runbook 附录）。
-
-**无抢占（当前配置与实测结论，2026-09-06）：**
+> 若要日后切回动态公平，去掉 `NO_NORMAL_QOS` 并把权重改成 fairshare 即可。
 
 - 本集群**未配置抢占**（slurm.conf 无 `PreemptType`/`PreemptMode`，QoS 也无 `Preempt` 字段）。
 - 因此优先级只影响两件事：① 排队时谁在前；② 资源空出后谁先被调度。**正在运行的低优先级作业不会被高优先级打断**。
@@ -1570,7 +1491,7 @@ sacct -u <新建用户名>                          # 有作业记录
 | `slurmd -C` 不显示 GPU | ① 驱动加载（nvidia-smi）；② /dev/nvidia* 存在；③ gres.conf 正确 |
 | 节点 `INVALID_REG+DRAIN` | slurmd 注册与 slurm.conf 不符：最常见是缺 `/etc/slurm/gres.conf`（补 AutoDetect=nvml 重启 slurmd），或 NodeName 行 CPUs/内存/Gres 与 `slurmd -C` 不符 |
 | 容器作业 `mkdir: /scratch/enroot-data: Permission denied` | root 先跑过 enroot 把它建成 0700：`chmod 1777 /scratch/enroot-data`（5.3） |
-| **纯 CPU 容器秒挂：`95-slurm-gpus.sh exited with return code 1`** | 95 钩子旧版末行退出码 bug——用 5.5 的修复版（末尾显式 exit 0） |
+| **纯 CPU 容器秒挂：`95-slurm-gpus.sh exited with return code 1`** | 钩子末行没有显式 `exit 0` —— 按 5.5 的全文修正（env 缺失提前 exit 0 + 末尾显式 exit 0） |
 | 计算节点 `sacct` 报 disabled / Connection refused | ① slurm.conf 没同步到该节点（客户端读本机配置）；② `AccountingStorageHost=localhost` 应填 <ADMIN>。见 7.4⑤ |
 | `squeue --json` 报 fatal serializer_required | 源码构建无 JSON 插件，正常；监控导出器全部 `-h` 文本解析 |
 | 监控“没作业却显示有作业 1” | PromQL `count(空集)` 返回空向量、lastNotNull 残留旧值：查询加 `or on() vector(0)` + `instant:true`（面板已内置） |
@@ -1616,14 +1537,6 @@ journalctl -u slurmd -n 50     # 节点日志
 | `/root/.slurmdb.pass`(600) | <ADMIN> | slurmdbd DB 密码（文档用占位符） |
 | `grafana-slurm-dashboard.json` | <ADMIN> | 仪表盘 JSON（=附录 B） |
 
-### A.3 源文档映射（本手册升级/合并自）
-
-| 本手册章节 | 源文档 |
-|---|---|
-| 1-5 | cluster-deploy-manual.md（去 sudo 化、加 mysql 插件、95 钩子修复版、root_squash 警告） |
-| 6 | slurm-monitoring-runbook.md |
-| 7-8 | slurm-multiuser-runbook.md |
-
 ## 附录 B：grafana-slurm-dashboard.json 全文（= 同目录同名文件，导入用）
 
 > 保存为 `/tmp/dash.json` 后执行 6.6 的导入命令。uid=`slurm-realtime`，标题「SLURM 实时调度总览」，
@@ -1631,7 +1544,7 @@ journalctl -u slurmd -n 50     # 节点日志
 > 值来自队列导出器 `%Q`，1~10 档下即 QoS 档值）/ 5 按用户聚合（每用户每状态作业数，R/PD 分行显示）/
 > 6 节点 CPU 分配 / 7 GPU 显存占用 / 8 **节点内存占用（全宽）**（node_exporter `node_memory_*`，已用=总量−可用，
 > instance 已转 node 标签）。第 4 号面板状态列显示原始代码（R/PD/CG…）；要中文标签需在面板 overrides 里把
-> matcher 字段名 `state` 改成 `状态` 后重新导入。节点内存使用率面板未保留（不展示百分比表）。
+> matcher 字段名 `state` 改成 `状态` 后重新导入。本仪表盘不含节点内存使用率面板（不展示百分比表）。
 
 ```json
 {
@@ -1736,27 +1649,7 @@ journalctl -u slurmd -n 50     # 节点日志
 
 ---
 
-## 附录 C：本手册固化的修复清单（全部来自本集群实战）
-
-| 问题（会踩的坑） | 固化位置 | 一句话对策 |
-|---|---|---|
-| 首次编译漏 mysql 插件，开会计要整包重建 | 3.1/3.3 | 编译依赖加 libmariadb-dev + `ln -sf mariadb_config mysql_config`，configure 后核对三行输出 |
-| pyxis 95 钩子导致纯 CPU 容器必挂 | 5.5 | 用修复版脚本（env 缺失 exit 0 + 末尾显式 exit 0） |
-| root 先跑 enroot 把 /scratch/enroot-data 建成 0700 | 5.3 | 预建 1777（幂等执行） |
-| root 批处理作业 -o 落 /share 秒死（root_squash） | 2.3 警告框 | root 作业 -o 用 /tmp；或普通用户提交 |
-| 计算节点 sacct disabled / refused | 7.4⑤ | slurm.conf 三节点同步 + `AccountingStorageHost=<ADMIN>`（勿 localhost） |
-| 配额无法在计算节点自查询 | 7.2 | <ADMIN> 启 `quotarpc` + 计算节点装 quota 客户端 |
-| 监控空集残留旧值（没作业显示 1） | 6.7 | `or on() vector(0)` + instant（JSON 已内置） |
-| sinfo 状态带后缀匹配不到 | 6.3 导出器 | `.lower().strip(" *-")`（勿删） |
-| Grafana apt NO_PUBKEY | 6.5 方式 A | keyring 必须 `gpg --dearmor` 二进制 |
-| apt.grafana.com 限速 | 6.5 方式 B | GitHub release + gh-proxy.com 前缀 |
-| Grafana 首启 30 秒无监听 | 6.5 | 轮询 :3000 再 curl /api/health |
-| 显存单位非法 | 附录 B | 单位 `bytes`，表达式保留原始字节 |
-| slurmdbd 启动 innodb 告警 | 7.4② | 99-slurm.cnf：buffer_pool≥2G、lock_wait≥450、max_allowed_packet≥64M |
-| 管理员改 slurm.conf 忘记同步节点 | 4.6②/7.4⑤ | 每次改完同步全部节点 + 重启 slurmd |
-
 > 密码约定：文档只用占位符 `<GRAFANA_PASSWORD>` / `<SLURMDB_PASSWORD>`；实际值分别存本机
 > Grafana（自设）与 `/root/.slurmdb.pass`(600)。
-> 一致性：本手册附录 B JSON == 同目录 `grafana-slurm-dashboard.json` == 线上 Grafana（2026-09-05 复核）。
 
 **部署完成。** 从第 1 章到第 7 章每章验收通过后，最后跑一遍第 8.1 节总验收即可交付使用。

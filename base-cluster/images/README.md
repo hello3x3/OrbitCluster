@@ -93,7 +93,7 @@ ssh root@<ADMIN> 'chown root:root <IMAGES_MOUNT>/cuda12.8.sqsh && chmod 644 <IMA
 #    ssh -p <端口> <用户名>@<节点IP> 进去看 nvidia-smi
 ```
 
-> `start_ssh.sh` 已是加固版，重建时不要换回旧的那份（见下方「加固要求」）。
+> `start_ssh.sh` 已是加固版（见下方「加固要求」）。
 > 换镜像后记得同步更新本文件「镜像清单」表里对镜像的说明（哪些内置了 sshd、能否交互 SSH）。
 
 ## 用法（srun / 公钥 / host key）

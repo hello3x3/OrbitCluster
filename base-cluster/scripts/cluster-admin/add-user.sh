@@ -29,7 +29,7 @@ HOST="$(hostname -s)"
 ACCOUNT="${CLUSTER_ACCOUNT:-lab}"
 
 # ---- UID/GID 预检 -----------------------------------------------------------
-# 为什么必须拦重复 UID（踩过的坑）：
+# 为什么必须拦重复 UID：
 #   enroot 的 passwd hook（/etc/enroot/hooks.d/10-shadow.sh）会执行
 #   `getent passwd <uid>` 取出**唯一一条**记录写进容器的 /etc/passwd。
 #   UID 重复时这条取到的是 /etc/passwd 里先出现的那个账号名，于是容器内
