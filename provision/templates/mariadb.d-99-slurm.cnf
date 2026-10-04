@@ -1,0 +1,6 @@
+# 由 provision/render.sh 从 cluster.conf 生成
+
+[mysqld]
+innodb_buffer_pool_size = 2G
+innodb_lock_wait_timeout = 450
+max_allowed_packet = 64M

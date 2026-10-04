@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""render_docs.py —— 把仓库里的 markdown 渲染成本集群的实值版本。
+"""render_docs.py —— 把仓库里的 markdown 渲染成站点实值版本。
 
 被 provision/render.sh 的「文档」阶段调用：
 
     python3 render_docs.py --repo <仓库根> --out <out/docs> --map <TOKEN=VALUE 文件>
 
 做什么：
-  1. 遍历仓库里的 *.md（跳过 .git/、provision/、oa/sites/、oa/config-snapshot/）
+  1. 遍历仓库里的 *.md（跳过 .git/、provision/ 等生成器自身与第三方内容）
   2. 把 <TOKEN> 占位符替换成 cluster.conf 推出的实值
      （<ADMIN> / <ADMIN_IP> / <GPU01>…<GPU0N> / <LAN_CIDR> / <SSH_PORT> …）
   3. **不改**角色名、账号名、路径名里的 admin：
@@ -24,10 +24,10 @@ import re
 import shutil
 import sys
 
-SKIP_DIRS = ('.git', 'provision', os.path.join('oa', 'sites'), os.path.join('oa', 'config-snapshot'))
+SKIP_DIRS = ('.git', 'provision')
 
 SKIP_DIRNAMES = {'.git', '__pycache__', 'node_modules'}
-SKIP_PREFIXES = (os.path.join('oa', 'sites'), os.path.join('oa', 'config-snapshot'), 'provision')
+SKIP_PREFIXES = ('provision',)
 
 
 def _skip_dir(name):
@@ -36,7 +36,7 @@ def _skip_dir(name):
 
 
 def collect_md(repo):
-    """仓库里要渲染的 markdown（跳过第三方/生成物/别的站点档案/现场快照/生成器自身）。"""
+    """仓库里要渲染的 markdown（跳过第三方/生成物/生成器自身）。"""
     out = []
     for root, dirs, files in os.walk(repo):
         rel = os.path.relpath(root, repo)
@@ -134,7 +134,7 @@ def main():
     os.makedirs(os.path.dirname(report_path) or '.', exist_ok=True)
     with open(report_path, 'w', encoding='utf-8') as fh:
         fh.write("# 文档渲染报告（由 provision/render.sh 生成）\n\n")
-        # 节点占位符 ↔ 本集群节点：新增机器后这里会多出 <GPU02>、<GPU03>…
+        # 节点占位符 ↔ 站点节点：新增机器后这里会多出 <GPU02>、<GPU03>…
         # 文档正文里**没有**的节点不会被自动补写（文档是示例，不会凭空长段落）；
         # 但配置文件（hosts/fstab/slurm.conf/exports…）是按 NODE 行循环生成的，会自动齐全。
         fh.write("## 节点占位符 ↔ 本集群节点\n\n| 占位符 | 本集群节点 |\n|---|---|\n")
@@ -149,8 +149,8 @@ def main():
             fh.write("| `%s` | %d |\n" % (k, changed[k]))
         fh.write("\n合计 %d 处。\n\n" % sum(changed.values()))
         fh.write("## 渲染后仍保留的小写 `admin`\n\n")
-        fh.write("下面这些 `admin` **没有**被替换 —— 它们应当是**门户角色名 / 门户账号名 / "
-                 "历史引文**：\n\n")
+        fh.write("下面这些 `admin` **没有**被替换 —— 它们应当是**门户角色名 / 门户账号名**："
+                 "\n\n")
         for rel, i, ln in leftovers:
             fh.write("- `%s:%d` — %s\n" % (rel, i, ln))
         fh.write("\n> ⚠️ 请核对上面每一行：如果哪一行里的 `admin` 其实指的是**管理节点主机名**，"

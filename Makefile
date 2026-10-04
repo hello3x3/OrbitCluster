@@ -7,7 +7,7 @@
 #   make reset                          还原仓库模板（撤销就地替换）
 #   make print                          只打印到屏幕，不落盘（先看效果）
 #   make out                            不动仓库，另存到 provision/out/
-#   make sites                          渲染两套回归夹具（与真机 / 站点档案对照用）
+#   make sites                          渲染两套回归夹具（验证生成器；可与真机逐项对照）
 #   make check                          渲染后打印「需要人工核对」清单
 #   make test                           跑门户本地测试（CTL 安全 + 冒烟）
 #   make clean                          清掉 provision/out*

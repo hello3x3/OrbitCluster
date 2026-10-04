@@ -333,7 +333,7 @@ echo "    输出: $OUT$( [ "$PRINT" = 1 ] && echo ' (仅打印)')"
 [ "$PRINT" = 0 ] && [ "$CLEAN" = 1 ] && { rm -rf "$OUT"; echo "    已清空旧输出"; }
 
 # ---- /etc/hosts ----
-# 注意：127.0.1.1 必须是**本机**主机名（手册 1.3 的踩坑点），所以每台一份、内容不同
+# 注意：127.0.1.1 必须是**本机**主机名（手册 1.3），所以每台一份、内容不同
 render_hosts() {
   local out="$1" name="$2" tpl="$HERE/templates/hosts.in"
   if [ "$PRINT" = 1 ]; then
@@ -357,6 +357,28 @@ render enroot.conf.in      "$OUT/etc/enroot/enroot.conf"
 
 # ---- sshd 加固（门户模式必做）----
 render sshd-portal-only.conf "$OUT/etc/ssh/sshd_config.d/10-portal-only.conf"
+
+# ---- Slurm 其余配置 ----
+render cgroup.conf            "$OUT/etc/slurm/cgroup.conf"
+render plugstack.conf         "$OUT/etc/slurm/plugstack.conf"
+render plugstack.d-pyxis.conf "$OUT/etc/slurm/plugstack.conf.d/pyxis.conf"
+render slurmdbd.conf.in       "$OUT/etc/slurm/slurmdbd.conf"
+[ "$PRINT" = 0 ] && chmod 600 "$OUT/etc/slurm/slurmdbd.conf"   # 内含口令占位符，目标机上应 600
+
+# ---- 运行时目录 / 开机重建 ----
+render tmpfiles.d-enroot.conf "$OUT/etc/tmpfiles.d/enroot.conf"
+render tmpfiles.d-pyxis.conf  "$OUT/etc/tmpfiles.d/pyxis.conf"
+
+# ---- slurmd 等远程文件系统就绪再起 ----
+render slurmd.service.d-20-wait-remote-fs.conf \
+       "$OUT/etc/systemd/system/slurmd.service.d/20-wait-remote-fs.conf"
+
+# ---- MariaDB 调优（slurmdbd 依赖）----
+render mariadb.d-99-slurm.cnf "$OUT/etc/mysql/mariadb.conf.d/99-slurm.cnf"
+
+# ---- enroot GPU 可见性钩子（enroot 只跑 +x 的钩子，必须 755）----
+render enroot.hooks.d-95-slurm-gpus.sh "$OUT/etc/enroot/hooks.d/95-slurm-gpus.sh"
+[ "$PRINT" = 0 ] && chmod 755 "$OUT/etc/enroot/hooks.d/95-slurm-gpus.sh"
 
 # ---- NFS 服务端 ----
 render exports.in          "$OUT/etc/exports"
@@ -387,13 +409,12 @@ if [ "$PRINT" = 0 ] && [ "$INPLACE" = 0 ]; then
   for s in "$OUT"/opt/cluster-admin/*.sh; do GENERATED+=("$s"); done
 fi
 
-# ---- 文档渲染：markdown 里的 <占位符> → 本集群实值 ----
+# ---- 文档渲染：markdown 里的 <占位符> → 站点实值 ----
 # 仓库里的 md 是**模板**（<ADMIN> / <GPU01> / <LAN_CIDR> …）；这里产出可直接阅读/交付的
 # 实值版本到 out/docs/。
 # 注意：仓库文档里仍然保留着少量小写 `admin`，它们**不是主机名**而是
 #     · 门户角色名（bootstrap.py 的第 3 个参数、"默认角色即 admin"）
-#     · 门户账号名（现场实例里有一个叫 admin 的纯平台管理员）
-#     · 历史引文（描述"旧代码把主机名硬编码成 admin"那段排障记录）
+#     · 门户账号名（可能有人把门户账号起名叫 admin）
 #   render_docs.py **不会**碰它们，并把渲染后仍残留的 admin 逐行列进报告供核对。
 DOCMAP="$(mktemp)"
 {
@@ -467,6 +488,10 @@ if [ "$PRINT" = 0 ]; then
     echo "/etc/slurm/gres.conf             ← ${P}etc/slurm/gres.conf"
     echo "/etc/enroot/enroot.conf          ← ${P}etc/enroot/enroot.conf（先装好 enroot）"
     echo "/etc/ssh/sshd_config.d/10-portal-only.conf ← ${P}etc/ssh/sshd_config.d/"
+    echo "/etc/slurm/cgroup.conf / plugstack.conf / plugstack.conf.d/pyxis.conf ← ${P}etc/slurm/"
+    echo "/etc/tmpfiles.d/{enroot,pyxis}.conf ← ${P}etc/tmpfiles.d/"
+    echo "/etc/systemd/system/slurmd.service.d/20-wait-remote-fs.conf ← ${P}etc/systemd/system/slurmd.service.d/"
+    echo "/etc/enroot/hooks.d/95-slurm-gpus.sh ← ${P}etc/enroot/hooks.d/（必须 755）"
     echo '```'
     echo
     echo "## 仅管理节点 \`${MGR_NAME}\`"
@@ -476,6 +501,8 @@ if [ "$PRINT" = 0 ]; then
     echo "/etc/chrony/chrony.conf          ← 追加 ${P}etc/chrony/chrony.conf.append.mgr"
     echo "/etc/cluster-portal/site.conf    ← ${P}etc/cluster-portal/site.conf"
     echo "/etc/cluster-portal/plans.json   ← ${P}etc/cluster-portal/plans.json"
+    echo "/etc/slurm/slurmdbd.conf        ← ${P}etc/slurm/slurmdbd.conf（600；口令填 /root/.slurmdb.pass）"
+    echo "/etc/mysql/mariadb.conf.d/99-slurm.cnf ← ${P}etc/mysql/mariadb.conf.d/"
     if [ "$INPLACE" = 1 ]; then
       echo "/opt/cluster-admin/*.sh          ← rsync -a base-cluster/scripts/cluster-admin/ root@${MGR_NAME}:/opt/cluster-admin/（就地模式不复制副本）"
     else
@@ -496,7 +523,7 @@ if [ "$PRINT" = 0 ]; then
       echo '```'
       echo "README.md / base-cluster/**/*.md / oa/**/*.md  ← 仓库内同名文件，占位符已填成实值"
       echo "provision/REPLACEMENT-REPORT.md                ← 替换统计 + 待人工核对清单"
-      echo "（oa/sites/**、oa/config-snapshot/** 不参与替换，保持原样）"
+      echo "（provision/**、out*/ 不参与替换）"
       echo '```'
     else
       echo "## 文档（已渲染成本集群实值，直接给部署人员看）"

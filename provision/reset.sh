@@ -46,7 +46,7 @@ while IFS= read -r rel; do
 done < "$STATE/files.txt"
 
 # 清掉因此变空的目录。
-# deploy/ 是当前布局；etc/ 与 opt/ 是早期布局留下的，一并扫掉以便从旧版升级过来。
+# deploy/ 是当前布局；etc/ 与 opt/ 是更早的布局名，若存在也一并扫掉。
 for d in "$REPO/deploy" "$REPO/etc" "$REPO/opt"; do
   [ -d "$d" ] || continue
   find "$d" -type d -empty -delete 2>/dev/null || true

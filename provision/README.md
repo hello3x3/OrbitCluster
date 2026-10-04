@@ -12,14 +12,15 @@
 ```
 
 本目录**只生成文件**，不 ssh、不安装、不改任何系统状态；安装动作仍按手册执行。
+**照做一遍的完整流程（含每台节点的下发与验收命令）见 `oa/00-生成器部署.md`。**
 改集群参数永远改 `cluster.conf` 后重新 `make`，不要直接改机器上的生成物。
 
 ## 为什么
 
-原来的做法是：手册里散落着 `<GPU01>`、`<ADMIN_IP>` 等占位符，外加 130 处实值 `admin`；
-换机器时要**全局替换**，而 `admin` 同时又是门户的角色名/路由名/账号名 —— 一替换就误伤。
+手册里的站点值（`<GPU01>`、`<ADMIN_IP>` 等）若写成实值，换机器就得**全局替换**，而 `admin`
+同时又是门户的角色名/路由名/账号名 —— 一替换就误伤。
 
-现在：节点名/IP、卡型卡数、ssh 端口、账户名、存储布局、套餐……**全部集中在 `cluster.conf`**，
+站点参数（节点名/IP、卡型卡数、ssh 端口、账户名、存储布局、套餐……）**全部集中在 `cluster.conf`**，
 目标文件由脚本生成。机器上的 `/etc/hosts`、`/etc/slurm/*.conf`、`/etc/exports`、`/etc/fstab`
 追加行、enroot 配置、sshd 加固文件、门户 `site.conf`/`plans.json` 都从这里推出来。
 
@@ -83,7 +84,7 @@ provision/
 
 ```
 deploy/
-├── etc/hosts.<节点>            ← 每台一份：只有 127.0.1.1 那行不同（用手册 1.3 的踩坑点）
+├── etc/hosts.<节点>            ← 每台一份：只有 127.0.1.1 那行不同（见手册 1.3）
 ├── etc/slurm/slurm.conf        ← 节点行由 NODE 行生成（含 Gres=）
 ├── etc/slurm/gres.conf         ← explicit 模式按卡数生成；auto 模式就是 AutoDetect=nvml
 ├── etc/enroot/enroot.conf
@@ -91,6 +92,12 @@ deploy/
 ├── etc/exports                 ← 单盘一行 / 独立镜像盘两行
 ├── etc/fstab.<节点>            ← 只给"要追加的数据盘/NFS 行"，系统盘行保留安装器原文
 ├── etc/chrony/chrony.conf.append.{mgr,gpu}
+├── etc/slurm/cgroup.conf / plugstack.conf / plugstack.conf.d/pyxis.conf
+├── etc/slurm/slurmdbd.conf     ← 600；DbdHost 由 NODE 行推出，口令留占位符
+├── etc/tmpfiles.d/{enroot,pyxis}.conf          ← /run 下运行时目录开机重建
+├── etc/systemd/system/slurmd.service.d/20-wait-remote-fs.conf
+├── etc/mysql/mariadb.conf.d/99-slurm.cnf       ← slurmdbd 依赖的 MariaDB 调优
+├── etc/enroot/hooks.d/95-slurm-gpus.sh         ← 755；CUDA_VISIBLE_DEVICES → NVIDIA_VISIBLE_DEVICES
 ├── etc/cluster-portal/site.conf + plans.json   ← 门户站点配置与套餐种子
 └── MANIFEST.md                 ← 下发清单（哪台机器放哪些文件）
 ```
@@ -104,7 +111,7 @@ deploy/
 
 ```
 out/
-├── etc/hosts.<节点>            ← 每台一份：只有 127.0.1.1 那行不同（用手册 1.3 的踩坑点）
+├── etc/hosts.<节点>            ← 每台一份：只有 127.0.1.1 那行不同（见手册 1.3）
 ├── etc/slurm/slurm.conf        ← 节点行由 NODE 行生成（含 Gres=）
 ├── etc/slurm/gres.conf         ← explicit 模式按卡数生成；auto 模式就是 AutoDetect=nvml
 ├── etc/enroot/enroot.conf
@@ -112,6 +119,12 @@ out/
 ├── etc/exports                 ← 单盘一行 / 独立镜像盘两行
 ├── etc/fstab.<节点>            ← 只给"要追加的数据盘/NFS 行"，系统盘行保留安装器原文
 ├── etc/chrony/chrony.conf.append.{mgr,gpu}
+├── etc/slurm/cgroup.conf / plugstack.conf / plugstack.conf.d/pyxis.conf
+├── etc/slurm/slurmdbd.conf     ← 600；DbdHost 由 NODE 行推出，口令留占位符
+├── etc/tmpfiles.d/{enroot,pyxis}.conf          ← /run 下运行时目录开机重建
+├── etc/systemd/system/slurmd.service.d/20-wait-remote-fs.conf
+├── etc/mysql/mariadb.conf.d/99-slurm.cnf       ← slurmdbd 依赖的 MariaDB 调优
+├── etc/enroot/hooks.d/95-slurm-gpus.sh         ← 755；CUDA_VISIBLE_DEVICES → NVIDIA_VISIBLE_DEVICES
 ├── etc/cluster-portal/site.conf + plans.json   ← 门户站点配置与套餐种子
 ├── docs/                       ← ★ markdown 渲染成实值版（见下节）
 │   ├── README.md、base-cluster/all-in-one-cluster-manual.md
@@ -139,18 +152,17 @@ out/
 > **仓库里不写任何真实姓名**：文档示例中的集群用户一律是 `<USER>`（渲染成 cluster.conf 里的 `USER`）；
 > 手册里"新用户上线流程"的命令模板用 `<新建用户名>`（**不替换**，因为那是"此处填你的用户名"的意思，
 > 一旦被替换成某个具体账号，命令就从"模板"变成了"照抄即可"，会误导读者）；
-> 真实用户只出现在 `oa/config-snapshot/users.json` 的 `<USERNAME>` 占位里。
+> 本仓库不写任何真实用户名 —— 示例里一律用 `<USERNAME>` / `<USER>` 占位。
 
 ### `admin` 的处理（重要，最容易误伤）
 
-`admin` 在文档里有**四种含义**，只有第一种该替换：
+`admin` 在文档里有**三种含义**，只有第一种该替换：
 
 | 含义 | 例子 | 处理 |
 |---|---|---|
 | ① 管理节点**主机名** | ``scp -r cluster-portal root@admin:/tmp``、`[admin]`、`http://admin:8000` | ✅ 仓库里已改写成 `<ADMIN>`，渲染时填实值 |
 | ② 门户**角色名** | `bootstrap.py（root 缺省即 admin 角色）`、`bootstrap.py root <新密码> admin --force` | ❌ 保持 `admin` |
 | ③ 门户**账号名** | `` `admin`（另一管理员账号…） `` | ❌ 保持 `admin` |
-| ④ **历史引文** | `旧代码把主机名硬编码成老集群的 admin（node_hostname() != "admin"）` | ❌ 保持 `admin` |
 
 另外这些词虽含 `admin` 但不是主机名，已被词边界规则排除：
 `cluster-admin`（路径）、`admin_users` / `admin_required`（路由与装饰器）、
@@ -159,13 +171,13 @@ out/
 渲染后在 `out/docs/_REPLACEMENT-REPORT.md` 里给出三份清单：
 
 1. 每个文档替换了多少处；
-2. **原文里没有被占位符覆盖的小写 `admin`**（当前 8 处，全部是②③④）——
+2. **原文里没有被占位符覆盖的小写 `admin`**（应当都是门户角色名/账号名）——
    若哪一行其实是主机名，报告会让它暴露出来，而不是静默出错；
 3. 文档引用了但 `cluster.conf` 里没有的节点占位符（如 2 节点集群读 3 节点示例，会提示 `<GPU01>` 系列未映射）。
 
-> 约定：新增/修改文档时，**站点值一律写 `<占位符>`**；`admin` 只在表示角色/账号/历史时保留原样。
-> 排除渲染的目录：`oa/sites/**`（别的站点档案）、`oa/config-snapshot/**`（现场实值快照）、
-> `provision/**`（生成器自身文档）、`.venv*/`、`out*/`。
+> 约定：新增/修改文档时，**站点值一律写 `<占位符>`**；`admin` 只在表示角色/账号时保留原样。
+> 排除渲染的目录：`provision/**`（生成器自身文档）、
+> `.venv*/`、`out*/`。
 
 ## 自检：生成器 vs 两套真实集群
 
@@ -175,7 +187,7 @@ out/
 # 现场集群：与 admin 上的真实 /etc/{hosts,exports,slurm/{slurm,gres}.conf,enroot/enroot.conf} 对照
 provision/render.sh -c provision/conf/field-3node.conf --clean
 
-# 3090 集群：与 oa/sites/3090-2node/ 的档案对照（档案里是 <ADMIN> 占位符，需先还原）
+# 3090 集群（第二套真实参数，作回归夹具：确认不同参数下都能渲染）
 provision/render.sh -c provision/conf/3090-2node.conf --clean -o provision/out-3090
 ```
 
@@ -190,6 +202,7 @@ provision/render.sh -c provision/conf/3090-2node.conf --clean -o provision/out-3
 | `/etc/hosts` | ✅（真实机器上多一条**过期**的 `gpu01` 条目，生成器只输出配置内的节点） | ✅（仅条目顺序不同） |
 | `site.conf` | ✅（生成器会多写 `SEED_PLANS=`，让 `plans.json` 真正生效） | — |
 | `fstab` | ✅ 数据盘行一致 | ✅ NFS 行一致（生成器不输出机器专属的系统盘 UUID 行） |
+| `cgroup.conf` / `plugstack*` / `tmpfiles.d/*` / `slurmd` drop-in / `99-slurm.cnf` / `95-slurm-gpus.sh` / `slurmdbd.conf` | ✅ 一致 | ✅ 一致（忽略注释后逐行相同） |
 
 ## 注意
 
@@ -198,4 +211,6 @@ provision/render.sh -c provision/conf/3090-2node.conf --clean -o provision/out-3
 * `GRES_MODE=auto`（`AutoDetect=nvml`）推导出的类型名可能是 `nvidia_geforce_rtx_3090`
   这种长名字，会让节点 `IDLE+DRAIN+INVALID_REG`；想要干净名字就用 `GRES_MODE=explicit`。
 * 生成器**不处理**：静态 IP/netplan、NVIDIA 驱动、munge 密钥分发、Slurm 源码编译 ——
-  这些仍按 `base-cluster/all-in-one-cluster-manual.md` 执行（后续 `deploy.sh` 会把它们也包进来）。
+  这些仍按 `base-cluster/all-in-one-cluster-manual.md` 执行；但它们**用到的配置文件**
+  （slurmdbd.conf / cgroup.conf / plugstack / tmpfiles / slurmd drop-in / MariaDB / 95 钩子）
+  都已由生成器给出，见上面的产物树。

@@ -1,9 +1,12 @@
 # ============================================================================
 # /etc/cluster-portal/site.conf —— 由 provision/render.sh 从 cluster.conf 生成
 #   读取方：portalapp/siteconf.py（门户进程）与 deploy/portal-ctl（root 助手）
+#   格式：每行 KEY=VALUE，# 起注释，键名大小写不敏感；值不要加引号、行尾不要写 ;
 #   优先级：环境变量 PORTAL_<KEY> > 本文件 > 代码内置默认值
 #   本文件**不含密钥**，只描述这套集群的形状。
 # ============================================================================
+
+# ---- 站点参数（在本文件生效，全部可改）----
 
 # 节点间 ssh 端口（门户助手据此 ssh/scp 到各计算节点建号、提交、保存镜像）。
 # 该端口同时会被自动加入「用户不可申请的保留端口」列表。
@@ -21,5 +24,37 @@ DEFAULT_GPU_MODEL=@@DEFAULT_GPU_MODEL@@
 # 与 base-cluster/scripts/cluster-admin/add-user.sh 的 CLUSTER_ACCOUNT 保持一致。
 ACCOUNT=@@ACCOUNT@@
 
-# 首次建库时的套餐种子。
+# 首次建库时的套餐种子 JSON；留空则用内置套餐 + 上面的默认型号。
 SEED_PLANS=/etc/cluster-portal/plans.json
+
+# 镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描；root 助手也在这里读写个人镜像）。
+IMAGES_MOUNT=@@IMAGES_MOUNT@@
+
+# 分区名。预留：当前代码按 sinfo 自动探测，填了也不改调度行为。
+PARTITION=@@PARTITION@@
+
+# 透传给用户容器的额外共享盘（NAS/数据集）。可写多行，一行一项。
+# 格式 <宿主路径>[:<容器内路径>][:ro|rw]，默认 ro；宿主机上必须真的挂好（见 01-部署手册 2.2/2.3）。
+# ⚠️ 只能在这里配，绝不接受请求参数 —— 门户 web 在威胁模型里是不可信组件。
+# EXTRA_MOUNTS=/mnt/nas/datasets:/mnt/nas/datasets:rw
+# EXTRA_MOUNTS=/mnt/nas/share:/mnt/nas/share:ro
+
+# ---- 环境变量开关（不在本文件生效）----
+# 由 systemd 单元的环境变量控制（install.sh 写入 unit，或 systemctl edit cluster-portal）。
+# ⚠️ 助手（portal-ctl）是经 sudo 调起的，环境变量会被 sudo 丢掉 —— 改助手行为请改本文件。
+#   PORTAL_DATA                门户数据目录（portal.db / secret）      默认 /var/lib/cluster-portal
+#   PORTAL_CTL                 root 助手路径                          默认 /usr/local/sbin/portal-ctl
+#   PORTAL_PORT                门户监听端口                           默认 8000
+#   PORTAL_SECRET              Flask session 密钥（不设则自动生成并落盘）
+#   PORTAL_COOKIE_SECURE       1 = Cookie 只走 HTTPS（架了 TLS 再开）   默认 0
+#   PORTAL_PASSWD_FILE         明文口令文件路径                         默认 /etc/cluster-portal/users.passwd
+#   PORTAL_PASSWD_SYNC         0 = 关掉口令文件监视                     默认 1（开）
+#   PORTAL_PASSWD_SYNC_SECONDS 口令文件监视间隔（秒）                   默认 20
+#   PORTAL_SAVE_SYNC           1 = "保存镜像"同步执行（仅冒烟测试用）     默认 0
+#   PORTAL_EXPIRY_DISABLE      1 = 关掉到期自动保存/停机                 默认 0（开）
+#   PORTAL_EXPIRY_POLL         到期扫描间隔（秒）                       默认 25
+#   PORTAL_EXPIRE_BUFFER_MIN   提交时长 = 用户所选 + 该缓冲（分钟）       默认 15
+#   PORTAL_PORT_COOLDOWN_S     停机后端口冷却（秒）                     默认 15
+#   PORTAL_DIRECT_CTL          1 = 绕过 sudo 直接执行助手（排障用）       默认 0
+# 另有几个环境变量可临时覆盖上面的站点参数（排障用；正式配置请改本文件）：
+#   PORTAL_SSH_PORT / PORTAL_ACCOUNT / PORTAL_IMAGES_DIR / PORTAL_EXTRA_MOUNTS / PORTAL_SITE_CONF
