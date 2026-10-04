@@ -1,48 +1,27 @@
 #!/bin/bash
-# start_ssh.sh - 以环境变量 SSH_PORT 指定的端口启动 sshd，并打印实际监听端口
+# start_ssh.sh —— 在 SSH_PORT 端口启动 sshd；确认监听后打印连接信息；无额外参数时保持任务存活。
+# 镜像构建源：Dockerfile 把它 COPY 成 /opt/start_ssh.sh。
 #
-# ⚠️ 本文件是**镜像构建源**：门户使用的 .sqsh 镜像里 /opt/start_ssh.sh 就是它。
-#    来源：从现场镜像 /share/images/cuda12.8.0-devel-ubuntu24.04.sqsh 里取出，
-#    并按下面的「安全修正」加固后纳入版本控制（此前只存在于镜像里，回归无从谈起）。
+# 用法（Slurm + pyxis/enroot，显式传入命令，不依赖 ENTRYPOINT）:
+#   export SSH_PORT=3333                        # 普通用户用 >=1024；缺省 52300
+#   srun --container-image=<镜像> --container-env=SSH_PORT \
+#        --container-mounts=$HOME:$HOME /opt/start_ssh.sh
+#   追加参数则在 sshd 之外执行它们（如交互 shell）:
+#   srun --pty --container-image=<镜像> --container-env=SSH_PORT \
+#        --container-mounts=$HOME:$HOME /opt/start_ssh.sh bash -l
+#   docker: docker run -d -e SSH_PORT=2222 <镜像> /opt/start_ssh.sh
 #
-# 用法（Slurm + pyxis/enroot，推荐显式把脚本作为命令传入，不依赖 ENTRYPOINT）:
-#   export SSH_PORT=2222
-#   srun --container-image=<镜像> --container-remap-root \
-#        --container-env=SSH_PORT /opt/start_ssh.sh
-#   想在 sshd 之外再执行别的命令(如交互 shell)时，把命令追加为参数:
-#   srun --pty --container-image=<镜像> --container-remap-root \
-#        --container-env=SSH_PORT /opt/start_ssh.sh bash -l
-#
-# 用法（docker）:
-#   docker run -d -e SSH_PORT=2222 <镜像> /opt/start_ssh.sh
-#
-# 说明:
-#   - **安全修正（重要）**：原版只在"非 root 模式"才关掉口令认证，而镜像内置的
-#     sshd_config 是 `PermitRootLogin yes` + `PermitEmptyPasswords yes`（镜像 root
-#     还有固定口令）。一旦容器以 root 运行（srun 加 --container-remap-root，或
-#     /etc/enroot/enroot.conf 里 ENROOT_REMAP_ROOT=y），而 enroot **共享宿主机网络
-#     命名空间**，那就等于把一个"口令公开的 sshd"暴露给整个内网。
-#     现在改为**任何身份都强制只认公钥**：PermitRootLogin=prohibit-password +
-#     PasswordAuthentication=no + PermitEmptyPasswords=no。
-#   - 非 root 模式额外关掉 PAM（读不到 /etc/shadow，没必要经过 PAM）。
-#   - 公钥默认放 passwd home 的 ~/.ssh/authorized_keys（建议挂载 home）
-#     不想挂 home 时，用 SSH_AUTHORIZED_KEYS=<容器内绝对路径> 指到挂载进来的单文件:
-#       export SSH_AUTHORIZED_KEYS=/opt/ssh-authorized_keys
-#       srun --no-container-remap-root \
-#            --container-env=SSH_PORT,SSH_AUTHORIZED_KEYS \
-#            --container-mounts=$HOME/.ssh/authorized_keys:/opt/ssh-authorized_keys:ro \
-#            /opt/start_ssh.sh
-#   - 未设置 SSH_PORT 时 root/非 root 统一默认监听 52300（非特权端口，非 root 也能绑）
-#   - host key 稳定性: 显式设置 SSH_HOSTKEY_DIR=<挂载盘绝对路径> 可让指纹跨任务稳定
-#     (root/非 root 均生效)；否则 root 用镜像内置密钥，非 root 用 $HOME/.ssh-hostkeys
-#   - 特权端口(<1024)需要 root，非 root 请用 --container-remap-root 或 SSH_PORT>=1024
-
+# 认证：任何身份都禁止 root 登录、关闭全部密码认证，只认公钥。
+#   公钥默认取 passwd home 的 ~/.ssh/authorized_keys；SSH_AUTHORIZED_KEYS=<容器内路径>
+#   可指到单独挂进来的公钥文件（不必挂整个 $HOME）。
+# host key：给了 SSH_HOSTKEY_DIR=<挂载盘路径> 就生成/复用到该目录（指纹跨任务稳定）；
+#   否则 root 用镜像内置密钥，非 root 用 $HOME/.ssh-hostkeys。
+# 拿不到自己的 pidfile（例如端口被占用）时直接 exit 1。
 set -u
 
 # ---------- 端口解析 ----------
 SSH_PORT="${SSH_PORT:-}"
 if [ -z "$SSH_PORT" ]; then
-    # root/非 root 统一默认 52300
     SSH_PORT=52300
     echo "[start_ssh] 未设置 SSH_PORT，使用默认端口 $SSH_PORT"
 fi
@@ -57,7 +36,7 @@ if [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
 fi
 if [ "$(id -u)" -ne 0 ] && [ "$SSH_PORT" -lt 1024 ]; then
     echo "[start_ssh] 错误: 非 root 用户无法绑定特权端口 $SSH_PORT。" >&2
-    echo "[start_ssh] 请使用 srun --container-remap-root，或设置 SSH_PORT>=1024" >&2
+    echo "[start_ssh] 请改用 >=1024 的端口（不要用 --container-remap-root 去换 root）" >&2
     exit 1
 fi
 
@@ -65,32 +44,29 @@ SSHD=/usr/sbin/sshd
 PIDFILE=/tmp/sshd.pid
 OPTS=(-e -o PidFile="$PIDFILE" -p "$SSH_PORT")
 
-# root 模式下 sshd 要求 /run/sshd 存在且归 root 所有(0755，不能 world-writable)
+# root 模式下 sshd 要求 /run/sshd 存在且归 root 所有
 if [ "$(id -u)" -eq 0 ]; then
     mkdir -p /run/sshd
 fi
 
-# ---------- 认证策略（root / 非 root 一致：只认公钥）----------
-# 见文件头「安全修正」。这几项必须在 host key 处理之前加进去，任何分支都不例外。
-OPTS+=(-o PermitRootLogin=prohibit-password \
+# ---------- 认证策略（root / 非 root 一致）----------
+OPTS+=(-o PermitRootLogin=no \
        -o PasswordAuthentication=no \
        -o PermitEmptyPasswords=no \
        -o KbdInteractiveAuthentication=no \
-       -o PubkeyAuthentication=yes)
+       -o ChallengeResponseAuthentication=no \
+       -o PubkeyAuthentication=yes \
+       -o AuthenticationMethods=publickey)
 if [ "$(id -u)" -ne 0 ]; then
     OPTS+=(-o UsePAM=no)
     echo "[start_ssh] 非 root 模式: 仅公钥认证"
 else
-    echo "[start_ssh] root 模式: 仅公钥认证（已禁用口令/空口令登录）"
+    echo "[start_ssh] root 模式: 已禁止 root 登录 + 只认公钥（口令/空口令全关）"
 fi
 
 # ---------- host keys ----------
-# host key 策略：
-#   未设置 SSH_HOSTKEY_DIR：
-#     root    -> 用镜像内置密钥 /etc/ssh/ssh_host_*（同一镜像指纹恒定，容器间共享）
-#     非 root -> 生成到 $HOME/.ssh-hostkeys（home 挂载则跨任务复用，否则每次重建）
-#   显式设置 SSH_HOSTKEY_DIR=<挂载盘绝对路径>（方案1，root/非 root 均生效）：
-#     一律生成/复用该目录密钥 -> 指纹跨任务稳定且按用户/项目隔离
+# 默认：root 用镜像内置密钥；非 root 生成到 $HOME/.ssh-hostkeys。
+# 设置了 SSH_HOSTKEY_DIR 则一律生成/复用该目录（指纹跨任务稳定）。
 USE_PERSISTENT=0
 if [ -n "${SSH_HOSTKEY_DIR:-}" ]; then
     USE_PERSISTENT=1
@@ -118,10 +94,8 @@ if [ "$USE_PERSISTENT" -eq 1 ]; then
 fi
 
 # ---------- 公钥文件 ----------
-# 默认: root 读 /root/.ssh/authorized_keys; 非 root 读 passwd home 下 .ssh/authorized_keys
-# 可选: SSH_AUTHORIZED_KEYS=<容器内绝对路径> 把公钥文件指到任意挂载进来的单文件，
-#       配合 --container-mounts=<宿主公钥文件>:<该路径>:ro 即可免密登录，
-#       无需把整个 $HOME 挂进容器(避免 ~/.bashrc 等点文件被容器会话改动)
+# 默认读 passwd home 的 ~/.ssh/authorized_keys；
+# SSH_AUTHORIZED_KEYS=<容器内绝对路径> 可指到单独挂进来的公钥文件。
 if [ -n "${SSH_AUTHORIZED_KEYS:-}" ]; then
     OPTS+=(-o AuthorizedKeysFile="$SSH_AUTHORIZED_KEYS")
     if [ -r "$SSH_AUTHORIZED_KEYS" ]; then
@@ -139,7 +113,9 @@ if [ "$RC" -ne 0 ]; then
     exit 1
 fi
 
-# 等待 pidfile 出现
+# ---------- 确认 sshd 真的起来了 ----------
+# 只认 sshd 自己写的 pidfile：它绑定失败时父进程仍返回 0，而 /proc/net/tcp 是整个
+# 网络命名空间（与宿主机共享）的全量表 —— 别人占着同端口也会显示在听，两者都不能用。
 PID=""
 for _ in $(seq 1 100); do
     if [ -s "$PIDFILE" ]; then
@@ -149,7 +125,13 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 
-# 从 /proc/net/tcp 确认实际监听端口
+if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+    echo "[start_ssh] 启动失败: sshd 没能监听端口 $SSH_PORT（多半已被别的进程占用）" >&2
+    echo "[start_ssh] 启动失败: 本容器与宿主机共享网络，请换一个端口重试" >&2
+    exit 1
+fi
+
+# 双保险：再从 /proc/net/tcp 确认端口在听
 HEX=$(printf '%04X' "$SSH_PORT")
 LISTENING=0
 for _ in $(seq 1 100); do
@@ -171,7 +153,8 @@ if [ "$LISTENING" -eq 1 ]; then
     echo " [start_ssh] 连接示例(节点IP): ssh -p $SSH_PORT $(id -un)@${IP:-<节点IP>}"
     echo "============================================================"
 else
-    echo "[start_ssh] 警告: 未能确认端口 $SSH_PORT 正在监听，sshd 可能启动失败" >&2
+    echo "[start_ssh] 启动失败: 端口 $SSH_PORT 未能确认监听（PID=$PID）" >&2
+    exit 1
 fi
 
 # ---------- 保持任务存活 / 转交额外命令 ----------
