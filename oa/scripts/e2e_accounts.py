@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """e2e / 验证脚本的测试账号守卫：号段隔离 + 保证清理 + 断言清理干净。
 
-由来（真实事故，改这个文件前请先读）：
-    2026-09-12 的一次 e2e 验证在计算节点上用**裸 useradd -u 1002** 建了测试账号 sshtest2，
-    事后没有清理。次日门户给真实用户 lnq 分配 uid 1002（管理节点当时 1002 空闲），
-    计算节点上于是出现"两个账号共用一个 UID"。enroot 的 passwd hook
+为什么要守卫（改这个文件前请先读）：
+    在计算节点上用**裸 useradd -u <某 UID>** 建测试账号、事后又不清理，就会与日后分到
+    同一 UID 的真实用户形成"两个账号共用一个 UID"。enroot 的 passwd hook
     （/etc/enroot/hooks.d/10-shadow.sh）只按 UID 执行 `getent passwd <uid>` 取**一条**记录
-    写进容器 /etc/passwd，取到的是先注册的 sshtest2 —— 容器里根本没有 lnq，
+    写进容器 /etc/passwd，取到的是先注册的那个 —— 容器里根本没有真实用户，
     用户 ssh 进去报 "Permission denied (publickey)"，看起来像密钥问题，排查代价很高。
 
 本模块给测试脚本三层保障：

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 6 端到端验收 —— 3090-2node 站点（在管理节点本地执行）
+"""Phase 6 端到端验收（在管理节点本地执行，站点无关）
+
+用法：
+  E2E_MGT=<管理节点名> E2E_PEER=<计算节点名> python3 oa/scripts/e2e_verify.py
+
+节点名/ssh 端口/GPU 型号/镜像可用环境变量覆盖；不传时自动读 /etc/cluster-portal/site.conf
+（SSH_PORT、DEFAULT_GPU_MODEL）。
 
 覆盖真实门户流程：
   管理员登录 → 自动建号（两节点 UID 一致 + 家目录 + /share 配额 + sacctmgr）
@@ -16,9 +22,9 @@
   （OS 账号两节点/家目录/配额记录/Slurm 关联/门户记录/个人镜像目录），
   有残留就计入 FAIL 并以非 0 退出。
   需要自建 OS 账号时请用 `GUARD.create_os_account()`（走正规 add-user.sh，
-  UID 强制取保留号段 59000-59999），**不要再用裸 useradd** ——
-  2026-09-13 的线上事故正是一个裸 useradd 建出、又没清理的测试账号（sshtest2, uid 1002）
-  撞上了真实用户 lnq 的 UID，导致容器内解析不到 lnq、ssh 报 Permission denied (publickey)。
+  UID 强制取保留号段 59000-59999），**不要用裸 useradd** ——
+  裸 useradd 建的测试账号一旦没清理，就会和日后分到同一 UID 的真实用户撞号，
+  导致容器内解析不到真实用户名、ssh 报 Permission denied (publickey)。
 """
 import http.cookiejar
 import json
@@ -31,20 +37,36 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+def _site_conf(key, default=""):
+    """按 /etc/cluster-portal/site.conf 取值（缺文件/缺键则返回 default）。"""
+    try:
+        with open("/etc/cluster-portal/site.conf", encoding="utf-8") as fh:
+            for raw in fh:
+                ln = raw.split("#", 1)[0].strip()
+                if "=" in ln:
+                    k, v = ln.split("=", 1)
+                    if k.strip().upper() == key:
+                        return v.strip()
+    except OSError:
+        pass
+    return default
+
+
 BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8000")
-MGT = os.environ.get("E2E_MGT", "<ADMIN>")
-PEER = os.environ.get("E2E_PEER", "<GPU01>")
-SSH_PORT = os.environ.get("E2E_SSH_PORT", "2022")
-GPU_MODEL = os.environ.get("E2E_GPU_MODEL", "RTX 3090")
-IMAGE_SUB = os.environ.get("E2E_IMAGE", "cuda12.8.0")
+MGT = os.environ["E2E_MGT"] if os.environ.get("E2E_MGT") else ""
+PEER = os.environ["E2E_PEER"] if os.environ.get("E2E_PEER") else ""
+SSH_PORT = os.environ.get("E2E_SSH_PORT") or _site_conf("SSH_PORT") or "22"
+GPU_MODEL = os.environ.get("E2E_GPU_MODEL") or _site_conf("DEFAULT_GPU_MODEL") or ""
+IMAGE_SUB = os.environ.get("E2E_IMAGE", "cuda")
 USER = os.environ.get("E2E_USER", "e2etest")
 PWD = os.environ.get("E2E_PWD", "E2eTest_2026x")
+if not MGT or not PEER:
+    sys.exit("请用 E2E_MGT=<管理节点> E2E_PEER=<计算节点> 指定真实节点名")
 KEY = "/tmp/e2e_key"
 PORT1, PORT2 = 28771, 28772
 
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts"))
-import e2e_accounts as ea      # noqa: E402  (oa/scripts/e2e_accounts.py)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import e2e_accounts as ea      # noqa: E402  （同目录）
 
 PASS, FAIL = [], []
 
@@ -85,8 +107,8 @@ def peer(cmd, timeout=90):
 
 
 # 测试账号守卫：号段隔离 + 保证清理（atexit/信号）+ 断言清理干净。
-# 教训：2026-09-13 的事故正是一个**没清理的测试账号**（sshtest2, uid 1002）撞了真实用户 lnq，
-# 导致容器里解析不到 lnq、ssh 报 Permission denied (publickey)。见 oa/scripts/e2e_accounts.py。
+# 裸 useradd 建的测试账号若没清理，会和日后分到同一 UID 的真实用户撞号，
+# 导致容器里解析不到真实用户名、ssh 报 Permission denied (publickey)。见 oa/scripts/e2e_accounts.py。
 GUARD = ea.TestAccountGuard(run_local=sh, run_peer=peer, peer_name=PEER, log=log)
 
 

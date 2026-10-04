@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-install.sh —— 在 admin 节点以 root 执行：门户安装自检
+# verify-install.sh —— 在管理节点以 root 执行：门户安装自检
 # 用法: bash verify-install.sh [门户端口(默认8000)]
 set -eu
 PORT="${1:-8000}"
@@ -61,8 +61,8 @@ fi
 chk "套餐>=1"                "python3 -c 'import sqlite3;c=sqlite3.connect(\"/var/lib/cluster-portal/portal.db\");print(c.execute(\"SELECT COUNT(*) FROM plans\").fetchone()[0])' | grep -qv '^0$'"
 # 「用户管理」页的配额列要在**服务的沙箱里**读得到 /share 配额。
 # PrivateDevices=yes 会把 /dev/sda 从沙箱的 /dev 里摘掉，而 repquota 必须先 stat() 这个设备节点；
-# 少了 BindReadOnlyPaths=/dev/sda，配额整列会变成「—」，额度漂移（库里 500G / OS 实际 5G）
-# 肉眼完全看不出来 —— 线上真实事故：某用户 5G 配额去存 ~10G 镜像，报 quota exceeded 才发现。
+# 少了 BindReadOnlyPaths=/dev/sda，配额整列会变成「—」，库里额度与 OS 实际值的漂移
+# 肉眼完全看不出来 —— 只有写入超过配额、报 quota exceeded 时才会暴露。
 SVC_PID="$(systemctl show cluster-portal -p MainPID --value 2>/dev/null || true)"
 if [ -n "$SVC_PID" ] && [ -d "/proc/$SVC_PID" ]; then
   _q_n="$(nsenter -t "$SVC_PID" -m -- runuser -u portal -- sudo -n /usr/local/sbin/portal-ctl quota-all 2>/dev/null \
@@ -85,7 +85,7 @@ chk "portal 不能写应用代码"  "! runuser -u portal -- test -w /opt/cluster
 # 沙箱的反面：能给 portal-ctl 留下写 /share 的口子吗？
 # ProtectSystem=strict 会把整个层级（含 /share 这个挂载点）挂成只读，只有 ReadWritePaths
 # 里列了的目录才可写；漏了 /share，门户就"只能看不能动"——提交作业 / 保存镜像 / 登记公钥 /
-# 开通用户 / 注销用户全部报 EROFS（线上真实事故）。sudo→portal-ctl 的 root 子进程继承
+# 开通用户 / 注销用户全部报 EROFS。sudo→portal-ctl 的 root 子进程继承
 # 同一挂载命名空间，所以必须在**服务的命名空间里**试写，在宿主机上试写是测不出来的。
 SVC_PID="$(systemctl show cluster-portal -p MainPID --value 2>/dev/null || true)"
 if [ -n "$SVC_PID" ] && [ -d "/proc/$SVC_PID" ]; then
@@ -138,7 +138,7 @@ else
 fi
 
 echo "== 集群账号一致性 =="
-# 重复 UID 是本项目踩过的真实故障根因：
+# 重复 UID 会造成的故障：
 # enroot 的 /etc/enroot/hooks.d/10-shadow.sh 会执行 `getent passwd <uid>` 取**一条**
 # 记录写进容器 /etc/passwd；UID 重复时取到的是先注册的那个账号名，容器里就没有
 # 真实用户名条目 → sshd 解析不到 → 用户 ssh 进容器报 Permission denied (publickey)。

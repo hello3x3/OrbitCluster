@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e_security.sh —— 在 admin 节点以 root 执行的门户安全端到端回归。
+# e2e_security.sh —— 在管理节点以 root 执行的门户安全端到端回归。
 #
 # 验证两件事（这正是产品模型的核心）：
 #   ✅ 用户能用自己的密钥 ssh 进【自己的容器】

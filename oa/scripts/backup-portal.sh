@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backup-portal.sh —— 在 admin 节点以 root 执行：打包门户完整状态用于备份/迁移
+# backup-portal.sh —— 在管理节点以 root 执行：打包门户完整状态用于备份/迁移
 # 用法: bash backup-portal.sh [输出目录(默认 /var/backups/cluster-portal)]
 #
 # ⚠️ 产物里含 /etc/cluster-portal/users.passwd —— 那是**全站明文门户口令**。
