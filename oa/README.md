@@ -28,34 +28,23 @@ OrbitCluster/
 │       └── show-quota.sh            # 全员配额一览
 └── oa/                              # ② 门户交付包（依赖 base-cluster 已就绪）
     ├── README.md                    # 本文件
+    ├── 00-生成器部署.md             # ★ 从这开始：改参数 → make → 下发整套集群（含验收）
     ├── 01-部署手册.md               # 部署（先读）：门户安装/初始化/验收
     ├── 02-管理手册.md               # 管理：用户/套餐/代申请/密码文件/备份恢复/排障
     ├── 03-使用手册.md               # 使用：登录、资料、申请、连接、日志、停机
     ├── cluster-portal/              # 门户完整源码/安装器/助手/测试
-    ├── sites/                       # ★ 站点档案：同一份代码适配不同集群
-    │   └── 3090-2node/              #   另一套实例的档案：2 节点，各 3×RTX3090，sshd 2022
-    │       ├── README.md            #   本站点与旧集群的差异清单 + 部署要点
-    │       ├── site.conf            #   → /etc/cluster-portal/site.conf（ssh 端口/GPU 型号/套餐种子）
-    │       ├── plans.json           #   → /etc/cluster-portal/plans.json（首次建库的套餐）
-    │       ├── slurm.conf           #   → /etc/slurm/slurm.conf
-    │       └── gres.conf            #   → /etc/slurm/gres.conf
-    ├── config-snapshot/             # 现场非密钥配置快照（env-notes 变量表请先读）
-    │   ├── env-notes.md             # ★ 主机/IP/端口/版本/差异点总表（换机器必看）
-    │   ├── plans.json / users.json / settings.json / instances.json
-    │   ├── nodes.txt / images-list.txt / versions.txt
-    │   ├── systemd/  sudoers、systemd 单元原文
-    │   └── etc-cluster-portal/users.passwd.example（密码模板，见快照 README）
     └── scripts/
         ├── backup-portal.sh         # root：整机备份（代码+DB+明文密码文件）
         ├── verify-install.sh        # root：安装自检
         ├── e2e_security.sh          # root：容器可达 / 宿主机不可达
-        └── e2e_accounts.py          # root：建号全流程（保留 UID 段，测完清理）
+        ├── e2e_accounts.py          # root：建号全流程守卫（保留 UID 段，测完清理）
+        └── e2e_verify.py            # root：端到端验收（27 项断言，站点无关）
 ```
 
 > **站点无关设计**：门户代码里不再写死集群的 ssh 端口、节点名、GPU 型号。
 > 节点列表与分区名由 `sinfo` 运行时探测，节点 IP 从 `/etc/hosts` 解析，
 > 其余变量放在 `/etc/cluster-portal/site.conf`（见 `cluster-portal/portalapp/siteconf.py`）。
-> 因此换机器**不需要改代码**，只需准备一个 `sites/<站点>/` 目录。
+> 因此换机器**不需要改代码**，只需改 `provision/cluster.conf` 后重新 `make`。
 
 > 路径约定：本包各手册中的 `base-cluster/…`、`oa/…`、`provision/…` 均相对**工作区根目录**（内含
 > 这三个目录的那个目录，即 `OrbitCluster/`）；散见的 `/opt/cluster-portal`、
@@ -76,9 +65,9 @@ OrbitCluster/
    `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`。
 2. **② 部署门户**：按 `oa/01-部署手册.md` 把 `cluster-portal/` 拷到管理节点一键
    安装（`install.sh <代码目录> <端口> [站点目录]`，幂等；自动创建默认管理员 root，初始密码落盘
-   `/root/.cluster-portal-admin`）+ 按需初始化/迁移账号。
-3. **账号与套餐**：迁移或重设门户密码（`config-snapshot/README.md`「密码」一节），按需用管理页
-   重建套餐/用户。
+   `/root/.cluster-portal-admin`）+ 按需初始化账号。
+3. **账号与套餐**：安装器自动创建默认管理员 `root`（初始密码落盘 `/root/.cluster-portal-admin`）；
+   其它账号与套餐在管理页开通/录入（首次启动已自动种子化 5 个套餐）。
 4. **③ 验收**：`scripts/verify-install.sh` 自检 + 手册「验收」一节做端到端验证；另有
    `scripts/e2e_security.sh`（用户能进自己的容器、不能进宿主机）与 `scripts/e2e_accounts.py`
    （建号全流程，用保留 UID 段并断言无残留）。

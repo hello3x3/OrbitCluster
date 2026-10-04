@@ -1,2 +1,0 @@
-/share         <LAN_CIDR>(rw,sync,no_subtree_check)
-/share/images  <LAN_CIDR>(rw,sync,no_subtree_check)

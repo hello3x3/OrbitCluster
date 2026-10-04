@@ -41,8 +41,6 @@ secret
 # ------------------------------------- 明文口令 / 密钥 / 备份产物（禁入库）
 # 现场唯一明文口令源，只应存在于目标机 /etc/cluster-portal/ 下
 users.passwd
-# 注意：*.passwd 不会匹配 .passwd.example，模板
-# oa/config-snapshot/etc-cluster-portal/users.passwd.example 照常可入库
 *.passwd
 *.tgz
 *.tar.gz

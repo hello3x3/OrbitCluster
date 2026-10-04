@@ -3,6 +3,9 @@
 面向**实验室小型 GPU 集群**的一体化工程：把「集群怎么搭、用户怎么自助用、换台机器怎么复现」
 固化成可照做的文档与可安装的代码。集群本体为 **Slurm + enroot/pyxis** 容器化 GPU 调度。
 
+> **部署从 [`oa/00-生成器部署.md`](oa/00-生成器部署.md) 开始** —— 改一个 `provision/cluster.conf`，
+> `make` 出全部机器配置与文档，再按 `MANIFEST.md` 下发。本文档与其余手册是深入参考。
+
 仓库分两部分，**有先后依赖**：
 
 | 目录 | 角色 | 说明 |
@@ -39,6 +42,7 @@ OrbitCluster/
 │                                    #     自己是管理节点还是计算节点，两套集群通用
 └── oa/                              # ② 门户交付包
     ├── README.md                    # ★ 交付包总览 + 复现路线（先读这个）
+    ├── 00-生成器部署.md             # ★ 从这开始：改参数 → make → 下发（含验收命令）
     ├── 01-部署手册.md               # 门户安装/初始化/验收（在 base-cluster 之后读）
     ├── 02-管理手册.md               # 用户/套餐/代申请/密码文件/备份恢复/排障
     ├── 03-使用手册.md               # 面向最终用户：登录、资料、申请、连接、日志、停机
@@ -48,15 +52,8 @@ OrbitCluster/
     │   ├── tests/                   #   smoke_local（免集群）/ e2e_live（真机）/ test_ctl_security
     │   ├── run.py / bootstrap.py    #   生产入口 / 账号初始化与重置
     │   └── README.md                #   门户自身文档（功能、安全模型、已知边界）
-    ├── sites/                       # ★ 站点档案：同一份代码适配不同集群，换机器不用改代码
-    │   └── 3090-2node/              #   另一套实例的档案：2 节点，各 3×RTX 3090，sshd 2022
-    │       ├── README.md            #   本站点差异清单 + 三个坑 + 部署顺序
-    │       ├── site.conf            #   ssh 端口 / GPU 型号 / 套餐种子
-    │       ├── plans.json           #   首次建库的套餐
-    │       ├── slurm.conf / gres.conf
-    │       └── e2e_verify.py        #   本站点端到端验收脚本（27 项断言）
-    ├── config-snapshot/             # 现场非密钥配置快照（env-notes.md 换机器必看）
-    └── scripts/                     # backup-portal.sh / verify-install.sh / e2e_security.sh / e2e_accounts.py
+    └── scripts/                     # backup-portal.sh / verify-install.sh / e2e_security.sh
+                                     # e2e_accounts.py（测试账号守卫）/ e2e_verify.py（端到端验收）
 ```
 
 代码与文档中出现的 `base-cluster/…`、`oa/…` 均相对**本仓库根目录**；`/opt/cluster-portal`、
@@ -66,6 +63,9 @@ OrbitCluster/
 
 整条链路是 **⓪ 生成配置 → ① 底层集群 → ② 门户 → ③ 验收**，前一步的产物是后一步的输入。
 **顺序不能颠倒**：门户依赖 Slurm / NFS / enroot 已就绪。
+
+> 可照做的完整流程（每台节点的下发命令、权限、让配置生效、验收命令）见 **`oa/00-生成器部署.md`**；
+> 下面是同一件事的概览。
 
 ### ⓪ 生成配置与文档（不碰集群，在任意一台能编辑仓库的机器上做）
 
@@ -86,7 +86,7 @@ make help                              # 全部目标
 
 1. **文档就地替换** —— `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` 里的
    `<ADMIN>` / `<GPU01>` / `<LAN_CIDR>` / `<USER>` 等占位符被填成本集群实值，直接可读、可交付。
-   （`oa/sites/**`、`oa/config-snapshot/**` 不参与 —— 它们本就是别的站点 / 现场实值档案。）
+   （`provision/**` 是生成器自身文档，同样不参与。）
 2. **机器配置写进 `deploy/`** —— `deploy/etc/` 的目录结构与目标机一一对应
    （`deploy/etc/hosts` → `/etc/hosts`），`deploy/MANIFEST.md` 是下发清单。
    下发就是 `rsync -a deploy/etc/ root@<节点>:/etc/`。
@@ -126,8 +126,9 @@ make help                              # 全部目标
 - `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`（或 `out/opt/cluster-admin/`）。
 - 交互容器镜像的构建源在 `base-cluster/images/`，含加固过的 `start_ssh.sh`。
 
-> 若目标集群与现场快照差异较大（节点数 / 卡型 / ssh 端口不同），先照 `oa/sites/3090-2node/`
-> 做一个自己的站点档案。门户代码不写死 ssh 端口与 GPU 型号，节点列表、分区名是运行时探测，
+> **换集群 = 改参数 + 重新生成**：节点数 / 卡型 / ssh 端口 / 存储布局 / 套餐都写在
+> `provision/cluster.conf`，改完 `make`，站点配置（site.conf、plans.json）与全部 `/etc` 配置
+> 一起生成到 `deploy/`。门户代码本就不写死 ssh 端口与 GPU 型号，节点列表、分区名运行时探测，
 > 因此**换机器不需要改代码**。
 
 ### ② 部署门户（管理节点）
@@ -178,7 +179,7 @@ oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完�
 | 套餐种子 | site.conf 的 `SEED_PLANS` 指向的 JSON | 按机型改 |
 
 `site.conf` 由门户进程（`portalapp/siteconf.py`）与 root 助手（`deploy/portal-ctl`）**同时**读取，
-优先级：环境变量 `PORTAL_<KEY>` > site.conf > 代码内置默认值（即旧集群行为，向后兼容）。
+优先级：环境变量 `PORTAL_<KEY>` > site.conf > 代码内置默认值。
 
 ## 本地开发与测试
 
@@ -198,14 +199,13 @@ E2E_BASE=http://<ADMIN>:8000 .venv-test/bin/python tests/e2e_live.py
 
 ## 仓库约定
 
-- **只跟踪源文件**：代码、手册、配置快照、脚本。
+- **只跟踪源文件**：代码、手册、站点参数与回归夹具、脚本。
 - **不跟踪**：`__pycache__/`、虚拟环境（`.venv*`、`venv/`）、门户运行时数据
   （`oa/cluster-portal/var/`、`portal.db*`、`secret`）、日志、`.sqsh` 容器镜像（数 GB，只部署在
-  集群 `/share/images/`）。规则见 `.gitignore`。
-- **严禁入库明文口令与备份产物**：`users.passwd`、`*.tgz`、`*.key`、`*.pem` 等已在 `.gitignore`
-  中屏蔽；模板 `oa/config-snapshot/etc-cluster-portal/users.passwd.example` 例外，它是示例格式说明。
-  本仓库定位是「可交付、不含密钥」——门户密码的唯一明文权威只在目标机的
-  `/etc/cluster-portal/users.passwd`。
+  集群 `<IMAGES_MOUNT>/`）。规则见 `.gitignore`。
+- **严禁入库明文口令与备份产物**：`users.passwd`、`*.tgz`、`*.key`、`*.pem` 等已在 `.gitignore` 中屏蔽。
+  本仓库定位是「可交付、不含密钥」——门户密码的唯一明文权威是目标机的
+  `/etc/cluster-portal/users.passwd`（安装器创建，格式为每行 `用户名:密码`）。
 - **可执行位**：`oa/cluster-portal/deploy/{install.sh,portal-ctl}` 与 `oa/scripts/*.sh` 需保持 `755`，
   其余文件 `644`；行尾统一 LF（`.gitattributes`）。
 
@@ -218,11 +218,11 @@ Python 3.12 · Flask 3.1.3 + waitress。
 
 | 实例 | 节点构成 | 卡 | sshd | 门户 | 档案（含真实主机名/IP） |
 |---|---|---|---|---|---|
-| A（2026-09 现场） | 3 节点：管理/登录 + 2 计算 | 各 1×RTX 3060 | 2180 | 管理节点 :8000 | `oa/config-snapshot/` |
-| B（另一套） | 2 节点：管理兼计算 + 1 计算 | 各 **3×RTX 3090** | 2022 | 管理节点 :8000 | `oa/sites/3090-2node/` |
+| A（现场实例） | 3 节点：管理/登录 + 2 计算 | 各 1×RTX 3060 | 2180 | 管理节点 :8000 | `provision/cluster.conf` |
+| B（另一套） | 2 节点：管理兼计算 + 1 计算 | 各 **3×RTX 3090** | 2022 | 管理节点 :8000 | `provision/conf/3090-2node.conf` |
 
 > 本表刻意不写主机名 —— 它同时描述两套集群，写成占位符会在渲染时被填成**本集群**的值而失真。
-> 两套的真实主机名/IP 分别在各自的档案目录里。
+> 两套的真实主机名/IP 分别在 `provision/cluster.conf` 与 `provision/conf/3090-2node.conf` 里。
 
-版本细节见 `oa/config-snapshot/versions.txt`；3090 集群的差异与踩坑见
-`oa/sites/3090-2node/README.md`。
+版本组合见上方「环境基线」与 `base-cluster/all-in-one-cluster-manual.md`；
+第二套参数（3090）同时充当生成器的回归夹具：`make sites` 会用它渲染一遍并对照。
