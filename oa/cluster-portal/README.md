@@ -15,7 +15,7 @@ SSH 进容器、看日志、停机。
 | 登录系统；用户须注册才能使用；**仅管理员可注册新用户** | 无公开注册页；管理员在「用户管理」开通账号（普通用户自动在 `<ADMIN>/<GPU01>/<GPU02>` 建号 + 配额 + sacctmgr 关联，也可对已存在的 OS 账号只开通门户） |
 | 申请前必须维护个人信息：**SSH 登录密钥**、**想要的端口**（≥10000、避开常用/他人已申请端口） | 「个人资料」页管理多把 SSH 公钥（写入该用户 `~/.ssh/authorized_keys`，门户统一维护）与端口池；未满足“≥1 密钥 且 ≥1 端口”前禁止申请。端口校验：10000–65535、不在保留常用端口表、全门户唯一 |
 | 资源申请界面：镜像分组下拉(公共 `<IMAGES_MOUNT>/*.sqsh` + **个人镜像** `<IMAGES_MOUNT>/<用户名>/`) + **管理员可配置套餐**(名称/CPU/GPU型号/内存/最长时长 maxtime) + 任务名(必填) + 时长(默认12h，**≤套餐maxtime**，超出提示找管理员) + 节点(默认留空=Slurm自动调度) + SSH端口；可**同时申请多个**；申请后可**停机**/看日志；界面**不展示提交命令** | 「申请资源」单页提交真实 `sbatch` 作业；时长超过套餐 maxtime 时提示"需平台管理员协助申请"，管理员用「代申请资源」可代任何人提交（用该用户端口，底层 OS root `runuser`=等价 `sudo -u`，配额归属被代用户）；运行中资源「连接/详情」直接给出 **`ssh -p <端口> 用户名@真实节点IP`** |
-| **镜像保存**：容器启动后，用户在运行中的资源上「保存镜像」把当前容器状态导出为个人镜像（`<IMAGES_MOUNT>/<用户>/<名称>.sqsh`，名称仅英文/数字/下划线，计入该用户 /share 配额）；资源**到期自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）后自动停机 | 作业以 `--container-name=portal --container-writable` 提交（rootfs 落在计算节点 `ENROOT_DATA_PATH` 下 `pyxis_<jobid>_portal`，作业结束自动清理）；保存 = 以该用户身份 `enroot export` 该运行中容器（分钟级，异步执行并回写该资源行的保存结果）；到期扫描线程按「开始时刻+时长」触发「先自动保存再停机」，Slurm 时长内已含 15 分钟保存余量 |
+| **镜像保存**：容器启动后，用户在运行中的资源上「保存镜像」把当前容器状态导出为个人镜像（`<IMAGES_MOUNT>/<用户>/<名称>.sqsh`，名称：英文/数字/点/横线/下划线/加号、≤32 位，计入该用户 /share 配额）；资源**到期自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）后自动停机 | 作业以 `--container-name=portal --container-writable` 提交（rootfs 落在计算节点 `ENROOT_DATA_PATH` 下 `pyxis_<jobid>_portal`，作业结束自动清理）；保存 = 以该用户身份 `enroot export` 该运行中容器（分钟级，异步执行并回写该资源行的保存结果）；到期扫描线程按「开始时刻+时长」触发「先自动保存再停机」，Slurm 时长内已含 15 分钟保存余量 |
 | **配额/额度透明**：普通用户在「我的资源」读自己磁盘配额（OS repquota 实读）与 Slurm 关联/QoS/优先级/总额度（sacctmgr 实读）；管理员在「用户管理」**改配额**（软=硬，直写 OS setquota 并回读确认，非门户 DB 记录） | 配额不是门户库存量：展示与修改都以集群 OS/Slurm 为权威；系统保留账号（root/portal…）与无同名 OS 账号的纯平台管理员不可设配额 |
 
 ## 目录结构
@@ -33,6 +33,8 @@ cluster-portal/
 │   ├── auth.py           # PBKDF2 口令哈希、公钥格式校验、CSRF
 │   ├── ctl.py            # portal-ctl 客户端（sudo -n）＋节点状态缓存
 │   ├── templates/ static/# 中文界面（Jinja2 + 原生 JS/CSS）
+│   │                     #   base.html 内置通用输入/确认弹窗（#dlg-mask），
+│   │                     #   app.js 的 askText()/askConfirm() 替代 window.prompt/confirm
 ├── run.py                # waitress 生产入口
 ├── bootstrap.py          # 初始化/重置门户账号（--force）
 ├── requirements.txt      # flask、waitress
@@ -207,6 +209,22 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   作业结束由 pyxis 自动清理；因此每次新作业会先在节点本地展开一次镜像（不走 squashfuse 直挂），
   「运行中」之后容器内 sshd 通常还需 1-2 分钟才就绪。
 - 个人镜像目录 `<IMAGES_MOUNT>/<用户名>`（700）由 root 助手维护，web 经 `portal-ctl images` 读取；
+  「我的镜像」页（`/images`）让每个用户管理**自己的**个人镜像：**注释**
+  （`portal-ctl set-image-note <owner|public> <名称> <文本>`，**≤64 个"看得见的字符"**，表情算 1 个；
+  写在**镜像同目录的同名 JSON** 里 `<名称>.sqsh` ↔ `<名称>.json`，随改名/删除一起搬移/清理）、
+  改名 `portal-ctl rename-image`、
+  删除 `portal-ctl delete-image`。
+  两个命令只接受 `<IMAGES_MOUNT>/<用户名>/<名称>.sqsh` 这个形状（新建名字：英文/数字/点/横线/下划线/加号、
+  ≤32 位、不以点开头；**既有文件**用同一宽规则以免老镜像改不动，不许路径分隔符/空白），
+  并校验是普通文件、非软链、属主为该用户；改名/删除都被占用中的资源挡住（改名挡「排队中」，删除挡「排队/运行中」），
+  改名会同步更新实例里记录的镜像路径；
+  **root 打开同一页是全局视图**：`portal-ctl images-all` 列出公共镜像 + 所有人的个人镜像
+  （公共镜像名按"文件安全"规则：允许英文/数字/点/横线/下划线/加号、不以点开头，如
+  `cuda12.8.0-devel-ubuntu24.04`；个人镜像字符集相同、新建名 ≤32 位（既有长名仍可管理），
+  可对任意一个改注释/改名/删除（`portal-ctl admin-image-rename|admin-image-delete <owner|public> …`，
+  仅 root 的路由会调用，非 root 请求 403/报错）；
+  `save-image` 是**原子**的（先写 `<名称>.sqsh.part`，成功才 `os.replace`），所以正在打包的镜像
+  不会出现在任何列表里，失败也不留半成品；
   保存的 .sqsh 属主为用户（计入其 /share 配额）；删除由门户代建号的用户会连同该目录一起清理。
 - 到期自动保存依赖门户后台线程按「开始运行时刻 + 所选时长」触发（提交时长含 15 分钟余量）：
   若服务当时不可用或导出失败（如配额写满），该次自动保存会跳过并记录原因。

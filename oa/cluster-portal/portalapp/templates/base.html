@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=27">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=32">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -24,6 +24,7 @@
     <a href="{{ url_for('admin_apply') }}"{% if ep == 'admin_apply' %} class="active"{% endif %}>代申请资源</a>
     {% endif %}
     <a href="{{ url_for('my_instances') }}"{% if ep in ('my_instances','home') %} class="active"{% endif %}>我的资源</a>
+    <a href="{{ url_for('images_page') }}"{% if ep in ('images_page','image_rename','image_delete') %} class="active"{% endif %}>我的镜像</a>
     <a href="{{ url_for('apply_page') }}"{% if ep == 'apply_page' %} class="active"{% endif %}>申请资源</a>
     <a href="{{ url_for('status_page') }}"{% if ep == 'status_page' %} class="active"{% endif %}>集群状态</a>
     <a href="{{ url_for('profile') }}"{% if ep in ('profile','profile_name','profile_password','profile_key_add','profile_port_add') %} class="active"{% endif %}>个人资料</a>
@@ -42,7 +43,8 @@
   {% if msgs %}
   <div class="flash-wrap">
     {% for cat, m in msgs %}
-    <div class="flash flash-{{ cat }}">{{ m }}</div>
+    <div class="flash flash-{{ cat }}"><span class="flash-text">{{ m }}</span>
+      <button class="flash-x" type="button" data-flash-close title="关闭">✕</button></div>
     {% endfor %}
   </div>
   {% endif %}
@@ -53,7 +55,32 @@
 </main>
 
 <footer class="foot">{{ portal_name }}</footer>
-<script src="{{ url_for('static', filename='app.js') }}?v=27"></script>
+
+<!-- 通用输入 / 确认弹窗（站内样式，替代浏览器自带的 prompt / confirm） -->
+<div class="modal-mask" id="dlg-mask" hidden>
+  <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+    <div class="modal-head"><h3 id="dlg-title">输入</h3>
+      <button class="btn btn-ghost btn-sm" data-dlg-cancel>✕</button></div>
+    <div class="modal-body">
+      <p class="dlg-text" id="dlg-text" hidden></p>
+      <div id="dlg-field">
+        <label class="dlg-label" id="dlg-label" for="dlg-input"></label>
+        <input class="dlg-input" id="dlg-input" autocomplete="off" spellcheck="false">
+        <div class="dlg-foot">
+          <span class="dlg-hint" id="dlg-hint"></span>
+          <span class="dlg-count" id="dlg-count" hidden></span>
+        </div>
+        <p class="dlg-err" id="dlg-err" hidden></p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" data-dlg-cancel>取消</button>
+      <button class="btn btn-primary btn-sm" id="dlg-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}?v=32"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

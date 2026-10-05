@@ -62,8 +62,24 @@ def quota_valid(size):
     """额度是否合法：'100G' / '1T' 之类，或「不限」。"""
     s = quota_canonical(size)
     return bool(QUOTA_SIZE_RE.match(s) or s == QUOTA_UNLIMITED)
-# 个人镜像名：仅英文/数字/下划线（保存路径 /share/images/<user>/<name>.sqsh）
-IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+# 新建的个人镜像名：与公共镜像同字符集（英文/数字/点/横线/下划线/加号，不以点开头），
+# 最长 32 位（保存路径 /share/images/<user>/<name>.sqsh）。
+IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,31}$")
+IMG_NAME_HINT = "英文/数字/点/横线/下划线/加号，1-32 位，不能以点/横线/加号开头"
+# 公共镜像（管理员手工放进 /share/images）与**改动前保存的既有个人镜像**：
+# 名字可能更长或带点，操作已有文件时用这条宽规则，别让老镜像变成"改不动也删不掉"。
+PUBLIC_IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}$")
+
+
+def _img_name_ok(name, owner="", creating=False):
+    """按归属与用途选名字规则。
+
+    creating=True 表示这是"要新建的名字"（保存镜像 / 改名目标）：个人镜像按 ≤32 位规则；
+    否则（列表里的既有文件、改名源）用宽规则，兼容改动前保存的长名字。
+    """
+    if owner in ("", "public"):
+        return bool(PUBLIC_IMG_NAME_RE.match(name or ""))
+    return bool((IMG_NAME_RE if creating else PUBLIC_IMG_NAME_RE).match(name or ""))
 
 # 镜像目录：PORTAL_IMAGES_DIR 环境变量 > site.conf 的 IMAGES_MOUNT > 默认
 IMAGES_DIR = (os.environ.get("PORTAL_IMAGES_DIR")
@@ -1244,7 +1260,7 @@ def create_app(testing=False):
             return _json_err("该账号在集群没有同名 OS 账号，无法保存镜像")
         name = (request.form.get("name") or "").strip()
         if not IMG_NAME_RE.match(name):
-            return _json_err("镜像名只能包含英文/数字/下划线（1-64 位），不能含空格或特殊字符")
+            return _json_err("镜像名只能包含%s（不含空格/路径分隔符）" % IMG_NAME_HINT)
         force = (request.form.get("force") or "") == "1"
         if not force:
             mine_names = {m["name"] for m in _user_images(u["username"])}
@@ -1291,6 +1307,258 @@ def create_app(testing=False):
             log_msg = "；日志清理失败：%s" % str(e)[:80]
         db.del_instance(iid, uid=u["id"])
         return _json_ok("已删除该资源记录%s" % log_msg)
+
+    # ------------------------------------------------------------------ 我的镜像
+    def _img_busy_map():
+        """{镜像绝对路径: [该镜像的活跃实例...]}（改名/删除的占用保护用）。"""
+        m = {}
+        for i in get_db().instances_all_active():
+            m.setdefault(i["image"] or "", []).append(i)
+        return m
+
+    def _image_row(rec, busy):
+        """把一条镜像记录（助手给的 dict）补成页面用的行。"""
+        path = rec["path"]
+        using = busy.get(path, [])
+        size = rec.get("size") or 0
+        base = rec["name"][:-5] if rec["name"].lower().endswith(".sqsh") else rec["name"]
+        return {
+            "name": rec["name"], "base": base, "path": path,
+            "owner": rec.get("owner") or "", "scope": rec.get("scope") or ("public" if not rec.get("owner") else "user"),
+            "size": size, "size_cn": _fmt_bytes(size // 1024),
+            "mtime_cn": datetime.datetime.fromtimestamp(rec.get("mtime") or 0).strftime("%Y-%m-%d %H:%M"),
+            "note": rec.get("note") or "",
+            "created_at": rec.get("created_at") or "",
+            "active": len(using),
+            "pending": len([i for i in using if i["state"] == "PENDING"]),
+        }
+
+    def _my_images(u):
+        """该用户的个人镜像（正在打包的那份不会出现：助手先写 .part，成功才改成 .sqsh）。"""
+        rows = _user_images(u["username"])
+        if not rows:
+            return []
+        busy = _img_busy_map()
+        return [_image_row(r, busy) for r in rows]
+
+    def _all_images():
+        """root 视角：公共镜像 + 所有人的个人镜像（都在同一张表里，带归属）。"""
+        try:
+            rows = ctl.images_all().get("images") or []
+        except ctl.CtlError:
+            rows = []
+        busy = _img_busy_map()
+        out = [_image_row(r, busy) for r in rows]
+        out.sort(key=lambda r: (r["scope"] != "public", r["owner"], r["name"]))
+        return out
+
+    def _is_root(u):
+        return u["username"] == "root"
+
+    @app.route("/images")
+    @login_required
+    def images_page():
+        """我的镜像：改名 / 删除 / 注释；root 还能管理公共镜像与所有人的镜像。"""
+        u = get_user_row()
+        if _is_root(u):
+            return render_template("images.html", images=_all_images(), images_dir=IMAGES_DIR,
+                                   is_root=True, user_count=len(get_db().users_all()))
+        return render_template("images.html", images=_my_images(u), images_dir=IMAGES_DIR,
+                               is_root=False)
+
+    def _image_guard(name):
+        """改名/删除/注释共用的前置校验（自己的镜像）。返回 (u, (name, row), err)。"""
+        u = get_user_row()
+        if not _img_name_ok(name, u["username"]):     # 既有文件：宽规则（含改动前保存的长名）
+            return u, None, "镜像名非法"
+        name = name[:-5] if name.lower().endswith(".sqsh") else name
+        if not _os_ok(u):
+            return u, None, "该账号在集群没有同名 OS 账号，无法管理镜像"
+        row = next((r for r in _my_images(u) if r["name"] == name + ".sqsh"), None)
+        if row is None:
+            return u, None, "个人镜像 %s.sqsh 不存在" % name
+        return u, (name, row), None
+
+    def _own_path(u, name):
+        return os.path.join(IMAGES_DIR, u["username"], name + ".sqsh")
+
+    @app.route("/images/<name>/comment", methods=["POST"])
+    @login_required
+    def image_comment(name):
+        """给自己的镜像写/清空注释（注释存在门户库里，按镜像路径索引）。"""
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, got, err = _image_guard(name)
+        if err:
+            return _json_err(err)
+        name, _row = got
+        note = (request.form.get("note") or "")
+        try:
+            res = ctl.set_image_note(u["username"], name, note)
+        except ctl.CtlError as e:
+            return _json_err(str(e))
+        return _json_ok("注释已清空" if res.get("cleared") else
+                        "注释已保存（%d 个字符）" % (res.get("len") or 0))
+
+    @app.route("/images/<name>/rename", methods=["POST"])
+    @login_required
+    def image_rename(name):
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, got, err = _image_guard(name)
+        if err:
+            return _json_err(err)
+        name, row = got
+        new = (request.form.get("new_name") or "").strip()
+        if new.lower().endswith(".sqsh"):
+            new = new[:-5]
+        if not IMG_NAME_RE.match(new):
+            return _json_err("新名称只能包含%s" % IMG_NAME_HINT)
+        if new == name:
+            return _json_err("新名称与原名相同")
+        if (new + ".sqsh") in {m["name"] for m in _user_images(u["username"])}:
+            return _json_err("已存在同名镜像 %s.sqsh" % new)
+        # 排队中的实例还没把镜像展开到节点本地，改名会让它起不来；运行中的不受影响
+        if row["pending"]:
+            return _json_err("该镜像正被 %d 个排队中的资源使用，请等它启动或删掉资源后再改名"
+                             % row["pending"])
+        old_path, new_path = _own_path(u, name), _own_path(u, new)
+        try:
+            ctl.rename_image(u["username"], name, new)
+        except ctl.CtlError as e:
+            return _json_err("改名失败：%s" % e)
+        n = get_db().rename_image_refs(u["id"], old_path, new_path)
+        tail = "（%d 条历史资源记录同步指向新名字）" % n if n else ""
+        return _json_ok("已改名为 %s.sqsh%s" % (new, tail))
+
+    @app.route("/images/<name>/delete", methods=["POST"])
+    @login_required
+    def image_delete(name):
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, got, err = _image_guard(name)
+        if err:
+            return _json_err(err)
+        name, row = got
+        if row["active"]:
+            return _json_err("该镜像正被 %d 个排队/运行中的资源使用，请先停机并删除这些资源"
+                             % row["active"])
+        try:
+            ctl.delete_image(u["username"], name)
+        except ctl.CtlError as e:
+            return _json_err("删除失败：%s" % e)
+        return _json_ok("已删除个人镜像 %s.sqsh（释放 %s 配额）" % (name, row["size_cn"]))
+
+    # ---------------- root：管理公共镜像与所有人的镜像（只有 root 能进） ----------------
+    def _admin_guard():
+        """返回 (u, err)：只有 root 可以管理所有人的镜像。"""
+        u = get_user_row()
+        if not _is_root(u):
+            return u, "只有 root 可以管理公共镜像与他人镜像"
+        return u, None
+
+    def _admin_target(owner, name):
+        """(绝对路径, 归属显示名)。owner == "public" 指顶层公共镜像。"""
+        if owner in ("public", ""):
+            return os.path.join(IMAGES_DIR, name + ".sqsh"), "公共镜像"
+        return os.path.join(IMAGES_DIR, owner, name + ".sqsh"), owner
+
+    def _admin_scope_ok(owner, name, creating=False):
+        """管理员路由的入参校验（owner 合法 + 名字按归属/用途合法），返回错误文案或 None。"""
+        if owner not in ("public", ""):
+            if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", owner or ""):
+                return "非法用户名：%s" % owner
+        if not _img_name_ok(name, owner, creating=creating):
+            return ("公共镜像名只能包含英文/数字/点/横线/下划线/加号（1-128 位，不能以点开头）"
+                    if owner in ("public", "") else "镜像名只能包含%s" % IMG_NAME_HINT)
+        return None
+
+    @app.route("/admin/images/<owner>/<name>/comment", methods=["POST"])
+    @login_required
+    def admin_image_comment(owner, name):
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, err = _admin_guard()
+        if err:
+            return _json_err(err)
+        name = name[:-5] if name.lower().endswith(".sqsh") else name
+        bad = _admin_scope_ok(owner, name)
+        if bad:
+            return _json_err(bad)
+        path, label = _admin_target(owner, name)
+        if not os.path.exists(path):
+            return _json_err("镜像不存在：%s" % path)
+        note = (request.form.get("note") or "")
+        try:
+            res = ctl.set_image_note(owner, name, note)
+        except ctl.CtlError as e:
+            return _json_err(str(e))
+        return _json_ok("已更新 %s 的注释（%d 个字符）"
+                        % (label if label == "公共镜像" else label + "/" + name,
+                           res.get("len") or 0))
+
+    @app.route("/admin/images/<owner>/<name>/rename", methods=["POST"])
+    @login_required
+    def admin_image_rename(owner, name):
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, err = _admin_guard()
+        if err:
+            return _json_err(err)
+        name = name[:-5] if name.lower().endswith(".sqsh") else name
+        new = (request.form.get("new_name") or "").strip()
+        if new.lower().endswith(".sqsh"):
+            new = new[:-5]
+        bad = _admin_scope_ok(owner, name) or _admin_scope_ok(owner, new, creating=True)
+        if bad:
+            return _json_err(bad)
+        if new == name:
+            return _json_err("新名称与原名相同")
+        old_path, _ = _admin_target(owner, name)
+        new_path, label = _admin_target(owner, new)
+        if os.path.exists(new_path):
+            return _json_err("目标镜像已存在：%s" % new_path)
+        if not os.path.exists(old_path):
+            return _json_err("镜像不存在：%s" % old_path)
+        try:
+            ctl.admin_image_rename(owner, name, new)
+        except ctl.CtlError as e:
+            return _json_err("改名失败：%s" % e)
+        n = get_db().rename_image_refs_all(old_path, new_path)
+        tail = "（%d 条资源记录同步更新）" % n if n else ""
+        return _json_ok("已把 %s/%s 改名为 %s.sqsh%s" % (label, name, new, tail))
+
+    @app.route("/admin/images/<owner>/<name>/delete", methods=["POST"])
+    @login_required
+    def admin_image_delete(owner, name):
+        if not csrf_ok():
+            return _json_err("页面已过期，请刷新后重试")
+        u, err = _admin_guard()
+        if err:
+            return _json_err(err)
+        name = name[:-5] if name.lower().endswith(".sqsh") else name
+        bad = _admin_scope_ok(owner, name)
+        if bad:
+            return _json_err(bad)
+        path, label = _admin_target(owner, name)
+        if not os.path.exists(path):
+            return _json_err("镜像不存在：%s" % path)
+        busy = _img_busy_map().get(path) or []
+        if busy:
+            db = get_db()
+            who = []
+            for i in busy:
+                row = db.user_by_id(i["user_id"])
+                name_u = row["username"] if row else "?"
+                if name_u not in who:
+                    who.append(name_u)
+            return _json_err("该镜像正被 %d 个排队/运行中的资源使用（%s），请先让这些资源停机或删除"
+                             % (len(busy), "、".join(who)))
+        try:
+            ctl.admin_image_delete(owner, name)
+        except ctl.CtlError as e:
+            return _json_err("删除失败：%s" % e)
+        return _json_ok("已删除 %s/%s.sqsh" % (label, name))
 
     # ------------------------------------------------------------------ 集群状态
     @app.route("/status")
@@ -1966,7 +2234,8 @@ def _auto_image_name(task_name, image):
     if not clean:
         clean = re.sub(r"[^A-Za-z0-9_]", "_",
                        os.path.basename(image or "").rsplit(".", 1)[0]).strip("_")
-    clean = (clean[:40]).strip("_") or "task"
+    # 个人镜像名上限 32 位：auto_(5) + clean + _(1) + YYYYMMDD_HHMM(13) → clean 最多 13 位
+    clean = (clean[:13]).strip("_") or "task"
     return "auto_%s_%s" % (clean, datetime.datetime.now().strftime("%Y%m%d_%H%M"))
 
 

@@ -32,11 +32,19 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
                                            门户「启动中 → 运行中」用它判断)
   rm-log <u> <jobid>                      删除某作业日志文件(清理已删除实例残留)
   save-image <u> <jobid> <name> [force]   把运行中容器的当前状态保存为个人镜像
+                                          （名字：英文/数字/点/横线/下划线/加号，≤32 位）
                                           (/share/images/<u>/<name>.sqsh)
                                           是否计入 /share 配额取决于站点：/share/images 与
                                           /share 同一文件系统则计入，独立盘(如本站的 nvme)
                                           则不计入、需单独关注该盘容量
   images <u>                              列出 /share/images/<u> 下该用户个人镜像
+  images-all                              列出公共镜像 + 所有用户的个人镜像（门户 root 视图用）
+  rename-image <u> <旧名> <新名>           个人镜像改名（同目录 rename，配额与属主不变）
+  delete-image <u> <镜像名>                删除个人镜像（只删该用户目录下的普通 .sqsh）
+  admin-image-rename <owner|public> <旧名> <新名>   管理员改任意镜像名（owner 为用户名，public=公共镜像）
+  admin-image-delete <owner|public> <镜像名>        管理员删任意镜像
+  set-image-note <owner|public> <镜像名> <文本>     写镜像注释（存同目录同名 .json；
+                                           允许表情/空格，最多 64 个字符）
   get-keys <u> / set-keys <u>              读写 authorized_keys
   quota <u>                                读取 /share 磁盘配额(实际 OS 值)
   quota-all                                批量读取 /share 全部用户配额
@@ -50,6 +58,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import tempfile
 
 # 用户名规则：小写字母/数字/下划线，且以字母或下划线开头（= Linux 账号名）。
@@ -67,7 +76,13 @@ def quota_valid(size):
     s = (size or "").strip()
     return bool(QUOTA_RE.match(s) or _QUOTA_UNLIMITED_RE.match(s))
 HOURS_RE = re.compile(r"^\d{1,3}:\d{2}:\d{2}$")
-IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+# 新建的个人镜像名：与公共镜像同字符集（英文/数字/点/横线/下划线/加号，不以点开头），最长 32 位。
+IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,31}$")
+IMG_NAME_HINT = "英文/数字/点/横线/下划线/加号，1-32 位，不能以点/横线/加号开头"
+# 公共镜像（管理员手工放进 IMAGES_ROOT）与**改动前保存的既有个人镜像**：
+# 名字可能更长或带点，操作已有文件时用这条宽规则（仍只收文件安全字符：不含 /、不含空白、
+# 不以点开头），别让老镜像变成"改不动也删不掉"。
+PUBLIC_IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}$")
 PUBKEY_RE = re.compile(
     r"^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp(256|384|521)|"
     r"sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) "
@@ -224,6 +239,15 @@ CTL = "portal-ctl"
 # 镜像目录，与门户 app 的 PORTAL_IMAGES_DIR 同一套取值：环境变量 > site.conf > 默认
 IMAGES_ROOT = (os.environ.get("PORTAL_IMAGES_DIR")
                or SITE.get("IMAGES_MOUNT") or "/share/images")
+
+
+def user_uid(username):
+    """该账号的 OS uid；不存在时返回 None。"""
+    try:
+        import pwd
+        return pwd.getpwnam(username).pw_uid
+    except (ImportError, KeyError):
+        return None
 
 
 def out(obj, code=0):
@@ -1575,20 +1599,263 @@ def cmd_images(username):
     """列出 /share/images/<username> 下该用户的个人镜像（web 以 root 视角读取 700 目录）。"""
     if not valid_user(username):
         die("非法用户名或系统保留账号: %s" % username)
-    d = os.path.join(IMAGES_ROOT, username)
-    imgs = []
-    if os.path.isdir(d):
+    imgs = _list_image_dir(os.path.join(IMAGES_ROOT, username), username)
+    out({"ok": True, "user": username, "images": imgs})
+
+
+def _own_image_path(username, name, require=True, creating=False):
+    """个人镜像的绝对路径 + 安全校验（用户名/镜像名都不含路径分隔符）。
+
+    只接受 <IMAGES_ROOT>/<用户名>/<镜像名>.sqsh：普通文件、非软链、属主是该用户。
+    creating=True 时按"新建名字"规则（≤32 位）；否则按宽规则，兼容改动前保存的长名字。
+    """
+    if not valid_user(username):
+        die("非法用户名或系统保留账号: %s" % username)
+    if not (IMG_NAME_RE if creating else PUBLIC_IMG_NAME_RE).match(name or ""):
+        die(("镜像名只能包含 %s: %s" % (IMG_NAME_HINT, name)) if creating
+            else "镜像名不合法（只允许文件安全字符、不以点开头、≤128 位）: %s" % name)
+    path = os.path.join(IMAGES_ROOT, username, name + ".sqsh")
+    if not os.path.lexists(path):
+        if require:
+            die("个人镜像不存在: %s.sqsh" % name)
+        return path          # 不存在也把路径给调用方（改名时用来判断目标是否占用）
+    if os.path.islink(path):
+        die("个人镜像不能是符号链接：%s" % path)
+    uid = user_uid(username)
+    err = _check_regular_outside_home(path, {uid, 0} if uid is not None else {0})
+    if err:
+        die(err)
+    return path
+
+
+def cmd_rename_image(username, old, new):
+    """个人镜像改名：同目录 os.rename，属主/权限/配额口径都不变。"""
+    src = _own_image_path(username, old)
+    new_name = (new or "").strip()
+    if new_name.lower().endswith(".sqsh"):
+        new_name = new_name[:-5]
+    dst = _own_image_path(username, new_name, require=False, creating=True)
+    if os.path.lexists(dst):
+        die("目标镜像已存在：%s.sqsh" % new_name)
+    os.rename(src, dst)
+    _move_note(src, dst)
+    out({"ok": True, "user": username, "old": os.path.basename(src),
+         "name": os.path.basename(dst), "path": dst, "size": os.path.getsize(dst)})
+
+
+def cmd_delete_image(username, name):
+    """删除个人镜像：只删该用户目录下的普通 .sqsh（校验同改名）。"""
+    path = _own_image_path(username, name)
+    size = os.path.getsize(path)
+    os.remove(path)
+    _drop_note(path)
+    out({"ok": True, "user": username, "name": os.path.basename(path),
+         "removed": path, "size": size})
+
+
+def _note_path(image_path):
+    """镜像的"同名 json"路径：<名>.sqsh → <名>.json（同目录），用来存注释等元数据。"""
+    return image_path[:-5] + ".json" if image_path.lower().endswith(".sqsh") else image_path + ".json"
+
+
+def _read_note(image_path):
+    """读镜像的同名 json；不存在/不是合法 JSON 时返回 {}（坏文件不该让列表挂掉）。"""
+    try:
+        with open(_note_path(image_path), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_note(image_path, **fields):
+    """合并写镜像的同名 json（原子替换；文件 644，与镜像同目录）。"""
+    data = _read_note(image_path)
+    data.update({k: v for k, v in fields.items() if v is not None})
+    data.setdefault("name", os.path.basename(image_path)[:-5]
+                    if image_path.lower().endswith(".sqsh") else os.path.basename(image_path))
+    data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    tmp = _note_path(image_path) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, _note_path(image_path))
+    return data
+
+
+def _drop_note(image_path):
+    for p in (_note_path(image_path), _note_path(image_path) + ".tmp"):
         try:
-            for f in sorted(os.listdir(d)):
-                if f.lower().endswith(".sqsh"):
-                    p = os.path.join(d, f)
-                    st = os.stat(p)
-                    if os.path.isfile(p):
-                        imgs.append({"name": f, "path": p, "size": st.st_size,
-                                     "mtime": int(st.st_mtime)})
+            if os.path.lexists(p):
+                os.remove(p)
         except OSError:
             pass
-    out({"ok": True, "user": username, "images": imgs})
+
+
+def _move_note(old_path, new_path):
+    """改名时把同名 json 一起改名（没有就跳过）。"""
+    src, dst = _note_path(old_path), _note_path(new_path)
+    try:
+        if os.path.lexists(src):
+            os.replace(src, dst)
+            data = _read_note(new_path)
+            data["name"] = os.path.basename(new_path)[:-5]
+            _write_note(new_path, name=data["name"])
+    except OSError:
+        pass
+
+
+def _list_image_dir(d, owner=""):
+    """列出某个镜像目录里的 *.sqsh（跳过 .part 等半成品；软链一律忽略）。"""
+    out_rows = []
+    if not os.path.isdir(d):
+        return out_rows
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out_rows
+    for f in names:
+        if not f.lower().endswith(".sqsh"):
+            continue
+        p = os.path.join(d, f)
+        try:
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            st = os.stat(p)
+        except OSError:
+            continue
+        meta = _read_note(p)
+        out_rows.append({"name": f, "path": p, "owner": owner,
+                         "scope": "public" if not owner else "user",
+                         "size": st.st_size, "mtime": int(st.st_mtime),
+                         "note": meta.get("note", ""),
+                         "created_at": meta.get("created_at", ""),
+                         "job_id": meta.get("job_id"),
+                         "node": meta.get("node", "")})
+    return out_rows
+
+
+def cmd_images_all():
+    """公共镜像（IMAGES_ROOT 顶层）+ 所有用户目录里的个人镜像。
+
+    门户 root 的「我的镜像」用它做全局视图；普通用户只用自己的 images <u>。
+    """
+    rows = _list_image_dir(IMAGES_ROOT, "")
+    try:
+        entries = sorted(os.listdir(IMAGES_ROOT))
+    except OSError:
+        entries = []
+    for name in entries:
+        d = os.path.join(IMAGES_ROOT, name)
+        if name.startswith(".") or os.path.islink(d) or not os.path.isdir(d):
+            continue
+        rows += _list_image_dir(d, name)
+    out({"ok": True, "images": rows})
+
+
+NOTE_MAX = 64          # 注释上限（按"看得见的字符"数，一个表情算 1 个）
+_NOTE_JOINERS = (0x200D, 0xFE0E, 0xFE0F)      # ZWJ / 变体选择符
+_NOTE_COMBINING = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+
+
+def note_len(text):
+    """注释长度：表情/国旗/组合符号都按"看得见的字符"算 1 个。
+
+    - ZWJ、变体选择符、肤色修饰、组合记号不计；
+    - 相邻两个区域指示符（国旗 emoji）算 1 个；
+    - 其余每个码位算 1 个（中文/emoji/空格都一样）。
+    """
+    n = 0
+    ri_pending = False
+    join_next = False
+    for ch in text or "":
+        cp = ord(ch)
+        if cp == 0x200D:                      # ZWJ：下一个基字符并入同一簇（👨‍👩‍👧‍👦）
+            join_next = True
+            continue
+        if cp in (0xFE0E, 0xFE0F) or 0x1F3FB <= cp <= 0x1F3FF:
+            continue                          # 变体选择符 / 肤色修饰：不计
+        if any(a <= cp <= b for a, b in _NOTE_COMBINING):
+            continue                          # 组合记号：并入前一个字符
+        if 0x1F1E6 <= cp <= 0x1F1FF:          # 国旗：两个区域指示符合起来算 1
+            if ri_pending:
+                ri_pending = False
+                continue
+            ri_pending = True
+            n += 1
+            continue
+        ri_pending = False
+        if join_next:
+            join_next = False
+            continue
+        n += 1
+    return n
+
+
+def cmd_set_image_note(owner, name, note):
+    """写镜像注释（存在同目录同名 .json 里；owner=public 指公共镜像）。"""
+    path = _any_image_path(owner, name)
+    # 空格/表情都允许：空白（含换行/制表/零宽空格）折成一个空格，再去首尾
+    text = re.sub(r"[\s\u200b]+", " ", note or "").strip()
+    if note_len(text) > NOTE_MAX:
+        die("注释最多 %d 个字符（表情算 1 个），当前 %d 个"
+            % (NOTE_MAX, note_len(text)))
+    old = _read_note(path).get("note", "")
+    _write_note(path, note=text)
+    out({"ok": True, "path": path, "note": text, "len": note_len(text),
+         "cleared": bool(old) and not text})
+
+
+def _any_image_path(owner, name, require=True, creating=False):
+    """管理员操作的目标路径：owner 为 public 时是顶层公共镜像，否则是该用户目录下的镜像。
+
+    只接受 <IMAGES_ROOT>/[<owner>/]<name>.sqsh 这个形状（都是校验过的名字，不含路径分隔符），
+    并要求是普通文件、非软链 —— 管理员可以动任何人的镜像，所以这里**不做属主校验**。
+    """
+    if owner in ("", "public", "-"):
+        if not PUBLIC_IMG_NAME_RE.match(name or ""):
+            die("公共镜像名只能包含英文/数字/点/横线/下划线/加号（1-128 位，不能以点开头）: %s"
+                % name)
+        path = os.path.join(IMAGES_ROOT, name + ".sqsh")
+    else:
+        if not (IMG_NAME_RE if creating else PUBLIC_IMG_NAME_RE).match(name or ""):
+            die(("镜像名只能包含 %s: %s" % (IMG_NAME_HINT, name)) if creating
+                else "镜像名不合法（只允许文件安全字符、不以点开头、≤128 位）: %s" % name)
+        if not USER_RE.match(owner or ""):
+            die("非法用户名: %s" % owner)
+        path = os.path.join(IMAGES_ROOT, owner, name + ".sqsh")
+    if not os.path.lexists(path):
+        if require:
+            die("镜像不存在: %s" % path)
+        return path
+    if os.path.islink(path):
+        die("镜像不能是符号链接：%s" % path)
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        die("镜像必须是普通文件（拒绝目录/设备）：%s" % path)
+    return path
+
+
+def cmd_admin_image_rename(owner, old, new):
+    """管理员给任意镜像改名（含公共镜像）。"""
+    src = _any_image_path(owner, old)
+    dst = _any_image_path(owner, new, require=False, creating=True)
+    if os.path.lexists(dst):
+        die("目标镜像已存在：%s" % dst)
+    os.rename(src, dst)
+    _move_note(src, dst)
+    out({"ok": True, "owner": owner or "public", "old": os.path.basename(src),
+         "name": os.path.basename(dst), "path": dst, "size": os.path.getsize(dst)})
+
+
+def cmd_admin_image_delete(owner, name):
+    """管理员删除任意镜像（含公共镜像）。"""
+    path = _any_image_path(owner, name)
+    size = os.path.getsize(path)
+    os.remove(path)
+    _drop_note(path)
+    out({"ok": True, "owner": owner or "public", "name": os.path.basename(path),
+         "removed": path, "size": size})
 
 
 def _as_user_argv(username, home, argv):
@@ -1608,7 +1875,7 @@ def cmd_save_image(username, job_id, name, force):
     if not valid_user(username):
         die("非法用户名或系统保留账号: %s" % username)
     if not IMG_NAME_RE.match(name or ""):
-        die("镜像名只能包含英文/数字/下划线（1-64 位），不含空格或特殊字符")
+        die("镜像名只能包含 %s（不含空格/路径分隔符）" % IMG_NAME_HINT)
     try:
         job_id = int(job_id)
     except (TypeError, ValueError):
@@ -1644,12 +1911,16 @@ def cmd_save_image(username, job_id, name, force):
     # 正常不会被外人写，这里是纵深防御）
     _ensure_dir_outside_home(tdir, int(uid), int(uid), 0o700)
     target = os.path.join(tdir, name + ".sqsh")
+    # 先导出到 <name>.sqsh.part，成功后再 os.replace 到正式名字：
+    # 这样"正在打包"的那份永远不会以 .sqsh 出现在 /share/images 里（门户列表只认 *.sqsh），
+    # 失败时也不会留下一个看起来可用、其实不完整的镜像。
+    tmp_target = target + ".part"
     if os.path.exists(target) and not force:
         die("个人镜像已存在: %s（如需覆盖请重新提交并确认覆盖）" % target)
 
     container = "pyxis_%d_portal" % job_id
     export_argv = ["enroot", "export"] + (["-f"] if force else []) + \
-                  ["-o", target, container]
+                  ["-o", tmp_target, container]
     timeout = 3600
     import time as _time
     t0 = _time.time()
@@ -1663,6 +1934,7 @@ def cmd_save_image(username, job_id, name, force):
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+        os.replace(tmp_target, target)
     elif uid == "0":
         # 用户名 root：计算节点写 NFS 被 root_squash，先导出到节点本地再 scp 回 admin
         local_tmp = "/scratch/.portal-save-%d-%s.sqsh" % (job_id, name)
@@ -1675,18 +1947,19 @@ def cmd_save_image(username, job_id, name, force):
             die("镜像导出失败: %s" % (r0.stderr.strip()[-300:] or r0.stdout.strip()[-300:]))
         r1 = run(["scp", "-P", SSH_PORT, "-o", "BatchMode=yes",
                   "-o", "StrictHostKeyChecking=accept-new",
-                  "root@%s:%s" % (node, local_tmp), target + ".tmp"], timeout=1800)
+                  "root@%s:%s" % (node, local_tmp), tmp_target], timeout=1800)
         ssh_node(node, ["rm", "-f", local_tmp], timeout=60)
         if r1.returncode != 0:
             _cleanup_partial(target)
             die("镜像回传 admin 失败: %s" % (r1.stderr.strip()[-300:] or r1.stdout.strip()[-300:]))
-        os.replace(target + ".tmp", target)
+        os.replace(tmp_target, target)
     else:
         r = ssh_node(node, _as_user_argv(username, home, export_argv), timeout=timeout)
         chunks.append((r.stdout or "") + (r.stderr or ""))
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+        os.replace(tmp_target, target)
 
     try:
         size = os.path.getsize(target)
@@ -1697,6 +1970,11 @@ def cmd_save_image(username, job_id, name, force):
         die("镜像导出结果为空文件（导出被中断？），请重试")
     dur = int(_time.time() - t0)
     tail = "".join(chunks).strip()
+    try:      # 同目录同名 .json：注释等元数据（覆盖保存时保留原有注释）
+        _write_note(target, user=username, job_id=job_id, node=node, size=size,
+                    created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    except OSError:
+        pass
     out({"ok": True, "user": username, "job_id": job_id, "name": name,
          "path": target, "size": size, "node": node,
          "duration_s": dur, "output": tail[-1500:]})
@@ -1791,6 +2069,28 @@ def main():
             if len(sys.argv) < 3:
                 die("用法: images <用户名>")
             cmd_images(sys.argv[2])
+        elif cmd == "set-image-note":
+            if len(sys.argv) < 5:
+                die("用法: set-image-note <owner|public> <镜像名> <文本>")
+            cmd_set_image_note(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "")
+        elif cmd == "images-all":
+            cmd_images_all()
+        elif cmd == "admin-image-rename":
+            if len(sys.argv) < 5:
+                die("用法: admin-image-rename <owner|public> <旧名> <新名>")
+            cmd_admin_image_rename(sys.argv[2], sys.argv[3], sys.argv[4])
+        elif cmd == "admin-image-delete":
+            if len(sys.argv) < 4:
+                die("用法: admin-image-delete <owner|public> <镜像名>")
+            cmd_admin_image_delete(sys.argv[2], sys.argv[3])
+        elif cmd == "rename-image":
+            if len(sys.argv) < 5:
+                die("用法: rename-image <用户名> <旧名> <新名>")
+            cmd_rename_image(sys.argv[2], sys.argv[3], sys.argv[4])
+        elif cmd == "delete-image":
+            if len(sys.argv) < 4:
+                die("用法: delete-image <用户名> <镜像名>")
+            cmd_delete_image(sys.argv[2], sys.argv[3])
         elif cmd == "get-keys":
             if len(sys.argv) < 3:
                 die("用法: get-keys <用户名>")

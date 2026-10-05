@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ "镜像管理" if is_root else "我的镜像" }} - {{ portal_name }}{% endblock %}
+
+{% block content %}
+{% set admin = is_root %}
+<div class="page-head">
+  <h1>{{ "镜像管理（root）" if admin else "我的镜像" }}</h1>
+  {% if admin %}
+  <p class="muted small">这里列出<b>公共镜像 + 所有人的个人镜像</b>（共 {{ images|length }} 个），
+    可以改任意一个的名称、注释，或删除它。个人镜像位于
+    <span class="mono">{{ images_dir }}/&lt;用户名&gt;/</span>，公共镜像位于
+    <span class="mono">{{ images_dir }}/</span>。正在打包中的镜像不会出现在这里（导出先写
+    <span class="mono">.part</span>，完成才改名）。</p>
+  {% else %}
+  <p class="muted small">这里是你从「我的资源」里对<b>运行中</b>容器执行「保存镜像」得到的个人
+    <span class="mono">.sqsh</span>（计入你的存储配额）。可以改<b>注释</b>、<b>重命名</b>或<b>删除</b>；
+    正在打包中的镜像不会出现在这里。公共镜像由管理员维护，不在本页列出。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>{{ "全部镜像" if admin else "我的镜像" }}
+    <span class="muted small">（{{ images|length }} 个{% if admin %}，归属=公共镜像 或 用户名{% endif %}）</span></h2>
+  {% if images %}
+  <table class="table" id="img-table">
+    <thead>
+      <tr>
+        <th>名称</th>
+        {% if admin %}<th>归属</th>{% endif %}
+        <th>大小</th>
+        <th>保存时间</th>
+        <th>占用</th>
+        <th>注释</th>
+        <th class="ops">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in images %}
+      <tr data-name="{{ m.base }}">
+        <td class="mono">{{ m.name }}</td>
+        {% if admin %}
+        <td class="small">{% if m.scope == 'public' %}<em class="badge-admin">公共</em>{% else %}{{ m.owner }}{% endif %}</td>
+        {% endif %}
+        <td class="mono small">{{ m.size_cn }}</td>
+        <td class="small muted">{{ m.mtime_cn }}</td>
+        <td class="small">
+          {% if m.pending %}<span class="txt-warn">排队中 {{ m.pending }}</span>
+          {% elif m.active %}<span class="muted">运行中 {{ m.active }}</span>
+          {% else %}<span class="muted">空闲</span>{% endif %}
+        </td>
+        <td class="small note-td">
+          {% if m.note %}<span class="note-cell">{{ m.note }}</span><button
+            class="note-more" hidden data-note-full="{{ m.note }}"
+            data-note-title="{{ m.name }}">详情</button>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="ops">
+          {% if admin %}
+          <button class="btn btn-ghost btn-sm" data-img-note="{{ m.base }}" data-owner="{{ m.owner or 'public' }}"
+                  data-note="{{ m.note }}">注释</button>
+          <button class="btn btn-ghost btn-sm" data-img-rename="{{ m.base }}" data-owner="{{ m.owner or 'public' }}">重命名</button>
+          <button class="btn btn-danger btn-sm" data-img-delete="{{ m.base }}" data-img-size="{{ m.size_cn }}"
+                  data-owner="{{ m.owner or 'public' }}">删除</button>
+          {% else %}
+          <button class="btn btn-ghost btn-sm" data-img-note="{{ m.base }}" data-note="{{ m.note }}">注释</button>
+          <button class="btn btn-ghost btn-sm" data-img-rename="{{ m.base }}">重命名</button>
+          <button class="btn btn-danger btn-sm" data-img-delete="{{ m.base }}" data-img-size="{{ m.size_cn }}">删除</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">规则：镜像正被<b>排队中</b>的资源使用时不能改名（改名会同步更新历史资源记录里的引用）；
+    被<b>排队/运行中</b>的资源占用时不能删除。删除不影响已经在跑的容器，但之后不能再用它「重新启动」。</p>
+  {% else %}
+  <p class="muted">还没有镜像{% if not admin %}：在「我的资源」里对一个 <b>运行中</b> 的容器点「保存镜像」，
+    导出完成后就会出现在这里{% endif %}。</p>
+  {% endif %}
+</div>
+
+<!-- 注释全文弹窗（注释上限 16 个字符，一般列里就看得下；超窄屏/长注释时点开看全文） -->
+<div class="modal-mask" id="note-modal" hidden>
+  <div class="modal modal-narrow">
+    <div class="modal-head"><h3>注释 <span id="note-title" class="mono"></span></h3>
+      <button class="btn btn-ghost btn-sm" data-close="note-modal">✕</button></div>
+    <div class="modal-body"><p id="note-body" class="note-full"></p></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" data-close="note-modal">关闭</button>
+    </div>
+  </div>
+</div>
+{% endblock %}

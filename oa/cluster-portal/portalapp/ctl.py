@@ -14,6 +14,26 @@ def _helper_path():
     return os.environ.get("PORTAL_CTL", "/usr/local/sbin/portal-ctl")
 
 
+def _error_detail(r):
+    """助手失败时的可读原因。
+
+    助手把 `{"ok": false, "error": "..."}` 打到 stdout 并返回非 0，所以优先取里面的 error 文案
+    （否则页面上的提示会是一整串 JSON）；拿不到就退回 stderr/stdout 的最后一行。
+    """
+    for stream in (r.stdout, r.stderr):
+        txt = (stream or "").strip()
+        if not txt.startswith("{"):
+            continue
+        try:
+            data = json.loads(txt.splitlines()[-1])
+        except ValueError:
+            continue
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])[:400]
+    tail = (r.stderr or r.stdout or "").strip().splitlines()
+    return tail[-1][:400] if tail else "rc=%d" % r.returncode
+
+
 def run(cmd_args, stdin_json=None, timeout=120):
     """执行 portal-ctl 子命令，返回其 JSON 结果字典；失败抛 CtlError。"""
     helper = _helper_path()
@@ -28,8 +48,7 @@ def run(cmd_args, stdin_json=None, timeout=120):
     except subprocess.TimeoutExpired:
         raise CtlError("助手执行超时(%ss): %s" % (timeout, " ".join(cmd_args)))
     if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "").strip().splitlines()
-        detail = tail[-1][:400] if tail else "rc=%d" % r.returncode
+        detail = _error_detail(r)
         # sudo 本身失败
         if "sudo" in argv[0] and "permission" in (r.stderr or "").lower():
             raise CtlError("权限助手调用被拒（sudo 配置缺失？）: %s" % detail)
@@ -122,6 +141,36 @@ def save_image(username, job_id, name, force=False):
 def images(username):
     """列出 /share/images/<username> 下该用户的个人镜像（root 视角读取 700 目录）。"""
     return run(["images", username], timeout=30)
+
+
+def images_all():
+    """公共镜像 + 所有用户的个人镜像（门户 root 的全局视图）。"""
+    return run(["images-all"], timeout=60)
+
+
+def set_image_note(owner, name, note):
+    """写镜像注释（owner 为用户名或 "public"；注释存在镜像同目录的同名 .json 里）。"""
+    return run(["set-image-note", owner or "public", name, note or ""], timeout=30)
+
+
+def admin_image_rename(owner, old, new):
+    """管理员改任意镜像名（owner 为用户名；公共镜像传 "public"）。"""
+    return run(["admin-image-rename", owner or "public", old, new], timeout=60)
+
+
+def admin_image_delete(owner, name):
+    """管理员删任意镜像（owner 为用户名；公共镜像传 "public"）。"""
+    return run(["admin-image-delete", owner or "public", name], timeout=60)
+
+
+def rename_image(username, old, new):
+    """个人镜像改名（root 助手；同目录 rename，属主与配额口径不变）。"""
+    return run(["rename-image", username, old, new], timeout=60)
+
+
+def delete_image(username, name):
+    """删除个人镜像（root 助手；只删该用户目录下的普通 .sqsh）。"""
+    return run(["delete-image", username, name], timeout=60)
 
 
 def set_keys(user, key_list):

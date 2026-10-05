@@ -82,11 +82,8 @@ def _fake_user_img_dir(user):
     os.makedirs(d, exist_ok=True)
     return d
 
-ctlmod.images = lambda user: {"ok": True, "user": user, "images": [
-    {"name": f, "path": os.path.join(IMGDIR, user, f), "size": os.path.getsize(
-        os.path.join(IMGDIR, user, f)), "mtime": int(os.path.getmtime(os.path.join(IMGDIR, user, f)))}
-    for f in sorted(os.listdir(_fake_user_img_dir(user)))
-    if f.lower().endswith(".sqsh")]}
+ctlmod.images = lambda user: {"ok": True, "user": user,
+                              "images": _list_dir_imgs(_fake_user_img_dir(user), user)}
 
 def _fake_save_image(user, job_id, name, force):
     p = os.path.join(_fake_user_img_dir(user), name + ".sqsh")
@@ -94,10 +91,168 @@ def _fake_save_image(user, job_id, name, force):
         raise ctlmod.CtlError("个人镜像已存在: %s" % p)
     with open(p, "w") as fh:
         fh.write("fake-squashfs\n")
+    _write_note(p, _read_note(p).get("note", ""), user=user, job_id=int(job_id))
     return {"ok": True, "user": user, "job_id": int(job_id), "name": name,
             "path": p, "size": os.path.getsize(p), "node": "<GPU01>"}
 
 ctlmod.save_image = _fake_save_image
+
+
+def _fake_rename_image(user, old, new):
+    d = _fake_user_img_dir(user)
+    src, dst = os.path.join(d, old + ".sqsh"), os.path.join(d, new + ".sqsh")
+    if not os.path.exists(src):
+        raise ctlmod.CtlError("个人镜像不存在: %s.sqsh" % old)
+    if os.path.exists(dst):
+        raise ctlmod.CtlError("目标镜像已存在：%s.sqsh" % new)
+    os.rename(src, dst)
+    _move_note(src, dst)
+    return {"ok": True, "user": user, "old": old + ".sqsh", "name": new + ".sqsh",
+            "path": dst, "size": os.path.getsize(dst)}
+
+
+def _fake_delete_image(user, name):
+    p = os.path.join(_fake_user_img_dir(user), name + ".sqsh")
+    if not os.path.exists(p):
+        raise ctlmod.CtlError("个人镜像不存在: %s.sqsh" % name)
+    size = os.path.getsize(p)
+    os.remove(p)
+    _drop_note(p)
+    return {"ok": True, "user": user, "name": name + ".sqsh", "removed": p, "size": size}
+
+
+ctlmod.rename_image = _fake_rename_image
+ctlmod.delete_image = _fake_delete_image
+
+
+def _note_path(p):
+    return p[:-5] + ".json" if p.lower().endswith(".sqsh") else p + ".json"
+
+
+def _write_note(p, note, **extra):
+    import json as _json
+    data = {"name": os.path.basename(p)[:-5], "note": (note or "").strip()}
+    data.update(extra)
+    with open(_note_path(p), "w", encoding="utf-8") as fh:
+        _json.dump(data, fh, ensure_ascii=False)
+
+
+def _read_note(p):
+    import json as _json
+    try:
+        with open(_note_path(p), encoding="utf-8") as fh:
+            d = _json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _move_note(old, new):
+    if os.path.exists(_note_path(old)):
+        os.replace(_note_path(old), _note_path(new))
+
+
+def _drop_note(p):
+    if os.path.exists(_note_path(p)):
+        os.remove(_note_path(p))
+
+
+def _list_dir_imgs(d, owner=""):
+    """与助手 _list_image_dir 同口径：只认 *.sqsh，忽略软链与 .part。"""
+    if not os.path.isdir(d):
+        return []
+    rows = []
+    for f in sorted(os.listdir(d)):
+        p = os.path.join(d, f)
+        if not f.lower().endswith(".sqsh") or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        rows.append({"name": f, "path": p, "owner": owner,
+                     "scope": "public" if not owner else "user",
+                     "size": os.path.getsize(p), "mtime": int(os.path.getmtime(p)),
+                     "note": _read_note(p).get("note", "")})
+    return rows
+
+
+def _fake_images_all():
+    rows = _list_dir_imgs(IMGDIR)
+    for name in sorted(os.listdir(IMGDIR)):
+        d = os.path.join(IMGDIR, name)
+        if not name.startswith(".") and os.path.isdir(d) and not os.path.islink(d):
+            rows += _list_dir_imgs(d, name)
+    return {"ok": True, "images": rows}
+
+
+def _fake_admin_rename(owner, old, new):
+    d = IMGDIR if owner in ("public", "") else os.path.join(IMGDIR, owner)
+    src, dst = os.path.join(d, old + ".sqsh"), os.path.join(d, new + ".sqsh")
+    if not os.path.exists(src):
+        raise ctlmod.CtlError("镜像不存在: %s" % src)
+    if os.path.exists(dst):
+        raise ctlmod.CtlError("目标镜像已存在：%s" % dst)
+    os.rename(src, dst)
+    _move_note(src, dst)
+    return {"ok": True, "owner": owner, "old": old + ".sqsh", "name": new + ".sqsh",
+            "path": dst, "size": os.path.getsize(dst)}
+
+
+def _fake_admin_delete(owner, name):
+    d = IMGDIR if owner in ("public", "") else os.path.join(IMGDIR, owner)
+    p = os.path.join(d, name + ".sqsh")
+    if not os.path.exists(p):
+        raise ctlmod.CtlError("镜像不存在: %s" % p)
+    size = os.path.getsize(p)
+    os.remove(p)
+    _drop_note(p)
+    return {"ok": True, "owner": owner, "name": name + ".sqsh", "removed": p, "size": size}
+
+
+def _note_len(t):
+    """与助手 note_len 同口径：表情/国旗/组合符号按"看得见的字符"算 1 个。"""
+    n, ri, join = 0, False, False
+    for ch in t or "":
+        cp = ord(ch)
+        if cp == 0x200D:
+            join = True
+            continue
+        if cp in (0xFE0E, 0xFE0F) or 0x1F3FB <= cp <= 0x1F3FF:
+            continue
+        if any(a <= cp <= b for a, b in ((0x0300, 0x036F), (0x1AB0, 0x1AFF),
+                                         (0x20D0, 0x20FF), (0xFE20, 0xFE2F))):
+            continue
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            if ri:
+                ri = False
+                continue
+            ri, n = True, n + 1
+            continue
+        ri = False
+        if join:
+            join = False
+            continue
+        n += 1
+    return n
+
+
+def _fake_set_image_note(owner, name, note):
+    """与助手同口径：空白折成一个空格；超过 64 个"看得见的字符"直接拒绝。"""
+    d = IMGDIR if owner in ("public", "") else os.path.join(IMGDIR, owner)
+    p = os.path.join(d, name + ".sqsh")
+    if not os.path.exists(p):
+        raise ctlmod.CtlError("镜像不存在: %s" % p)
+    import re as _re
+    text = _re.sub(r"[\s\u200b]+", " ", note or "").strip()
+    if _note_len(text) > 64:
+        raise ctlmod.CtlError("注释最多 64 个字符（表情算 1 个），当前 %d 个" % _note_len(text))
+    old_note = _read_note(p).get("note", "")
+    _write_note(p, text)
+    return {"ok": True, "path": p, "note": text, "len": _note_len(text),
+            "cleared": bool(old_note) and not text}
+
+
+ctlmod.set_image_note = _fake_set_image_note
+ctlmod.images_all = _fake_images_all
+ctlmod.admin_image_rename = _fake_admin_rename
+ctlmod.admin_image_delete = _fake_admin_delete
 
 # ---------- fake 配额 / slurm 关联（quota 用可变字典模拟 OS 实际值） ----------
 FAKE_QUOTA = {
@@ -587,6 +742,20 @@ def main():
                data={"name": "bad name!"})
     jj = r.get_json()
     assert not jj["ok"] and "下划线" in jj["error"], jj
+    # 名字规则已放宽：允许点/横线/加号（与公共镜像同字符集），最长 32 位
+    r = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
+               data={"name": "torch.base-2.4"})
+    assert r.get_json()["ok"], r.get_json()
+    assert os.path.isfile(os.path.join(IMGDIR, "alice", "torch.base-2.4.sqsh")), "带点/横线的个人镜像名应允许"
+    r = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
+               data={"name": "a" * 33})
+    jj = r.get_json()
+    assert not jj["ok"] and "32" in jj["error"], jj
+    r = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
+               data={"name": "a" * 32})
+    assert r.get_json()["ok"], r.get_json()
+    assert os.path.isfile(os.path.join(IMGDIR, "alice", ("a" * 32) + ".sqsh")), "32 位应当允许"
+
     # 合法名保存（SAVE_SYNC=1 同步完成）
     r = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
                data={"name": "myfirst"})
@@ -616,6 +785,192 @@ def main():
     r = c.get("/apply")
     assert "公共镜像".encode() in r.data and "我的镜像".encode() in r.data \
         and "myfirst.sqsh".encode() in r.data, "申请页应分组展示公共/个人镜像"
+
+    # ---------------------------------------------------------------- 我的镜像：改名/删除
+    # 用一次性镜像 imgmgmt 做全套（不碰 myfirst.sqsh：后面还要用它申请资源）
+    j = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
+               data={"name": "imgmgmt"}).get_json()
+    assert j["ok"], j
+    img = "imgmgmt"
+
+    page = c.get("/images")
+    assert page.status_code == 200 and "我的镜像".encode() in page.data, page.status_code
+    assert "imgmgmt.sqsh".encode() in page.data, "应列出我的个人镜像"
+    assert "cuda12.8.0-devel-ubuntu24.04.sqsh".encode() not in page.data, "本页不该列公共镜像"
+    assert "data-img-rename".encode() in page.data and "data-img-delete".encode() in page.data, "应有改名/删除按钮"
+
+    def _img_post(act, name, data=None):
+        return c.post("/images/%s/%s" % (name, act), headers={"X-CSRF-Token": tok2}, data=data or {})
+
+    # 公共镜像不归个人管：个人镜像名只允许英文/数字/下划线，公共镜像名（含 . 和 -）连校验都过不了
+    j = c.post("/images/cuda12.8.0-devel-ubuntu24.04/delete",
+               headers={"X-CSRF-Token": tok2}).get_json()
+    assert not j["ok"] and ("非法" in j["error"] or "不存在" in j["error"]), j
+    # 带路径分隔符的名字连路由都匹配不上；其余一律被正则/归属挡住
+    assert c.post("/images/..%2Falice/delete",
+                  headers={"X-CSRF-Token": tok2}).status_code in (400, 404)
+    # 名字带 .sqsh 后缀会被自动去掉（同一个镜像）；非法名字一律拒绝
+    j = _img_post("comment", "myfirst.sqsh", {"note": "带后缀写法"}).get_json()
+    assert j["ok"], j
+    for bad in ("..", ".hidden", "-lead", "a b", "名字"):
+        rr = c.post("/images/%s/delete" % bad, headers={"X-CSRF-Token": tok2})
+        assert rr.is_json, (bad, rr.status_code)
+        assert not rr.get_json()["ok"], rr.get_json()
+    # 非法新名 / 同名 / 缺 CSRF
+    j = _img_post("rename", img, {"new_name": "bad name!"}).get_json()
+    assert not j["ok"] and "下划线" in j["error"], j
+    j = _img_post("rename", img, {"new_name": img}).get_json()
+    assert not j["ok"] and "相同" in j["error"], j
+    j = c.post("/images/%s/rename" % img, data={"new_name": "whatever"}).get_json()
+    assert not j["ok"] and "过期" in j["error"], j
+    # 目标名已存在（myfirst.sqsh）→ 拒
+    j = _img_post("rename", img, {"new_name": "myfirst"}).get_json()
+    assert not j["ok"] and "已存在" in j["error"], j
+    # 正常改名：磁盘文件与列表都跟着变
+    j = _img_post("rename", img, {"new_name": "imgmgmt2"}).get_json()
+    assert j["ok"], j
+    assert os.path.isfile(os.path.join(IMGDIR, "alice", "imgmgmt2.sqsh"))
+    assert not os.path.exists(os.path.join(IMGDIR, "alice", "imgmgmt.sqsh"))
+    names = {x["name"] for x in c.get("/api/images").get_json()["mine"]}
+    assert "imgmgmt2.sqsh" in names and "imgmgmt.sqsh" not in names, names
+    img = "imgmgmt2"
+
+    # 个人镜像改名同样放宽：带点的新名字可用
+    j = _img_post("rename", img, {"new_name": "imgmgmt.v2"})
+    j = j.get_json()
+    assert j["ok"] and os.path.isfile(os.path.join(IMGDIR, "alice", "imgmgmt.v2.sqsh")), j
+    img = "imgmgmt.v2"
+    j = _img_post("rename", img, {"new_name": "a" * 33}).get_json()
+    assert not j["ok"] and "32" in j["error"], j
+
+    # 用一个合成实例验证"占用"规则（不占端口；测完即删，不影响后续用例）
+    dbx = _DB(appmod.DB_PATH)
+    aid = dbx.user_by_name("alice")["id"]
+    img_path = os.path.join(IMGDIR, "alice", img + ".sqsh")
+    s3 = dbx.add_instance(aid, 3, "镜像管理占用", "<GPU01>", 0, 1, 1, 29999, "12:00:00",
+                          img_path, 999998, "PENDING", "", "", "")
+    # 排队中：镜像还没展开到节点本地，改名会让它起不来 → 拒
+    j = _img_post("rename", img, {"new_name": "imgmgmt_x"}).get_json()
+    assert not j["ok"] and "排队" in j["error"], j
+    # 运行中：可以改名（rootfs 已展开），历史资源记录同步指向新名
+    dbx.exec("UPDATE instances SET state='RUNNING' WHERE id=?", (s3,))
+    j = _img_post("rename", img, {"new_name": "imgmgmt3"}).get_json()
+    assert j["ok"], j
+    img = "imgmgmt3"
+    row = dbx.q1("SELECT image FROM instances WHERE id=?", (s3,))
+    assert row["image"].endswith("/%s.sqsh" % img), row
+    # 仍被占用 → 不能删
+    j = _img_post("delete", img).get_json()
+    assert not j["ok"] and "使用" in j["error"], j
+    assert os.path.isfile(os.path.join(IMGDIR, "alice", img + ".sqsh")), "被拒后文件应还在"
+    # 移除占用它的资源记录后即可删除；再删一次报不存在
+    dbx.del_instance(s3)
+    dbx.close()
+    j = _img_post("delete", img).get_json()
+    assert j["ok"], j
+    assert not os.path.exists(os.path.join(IMGDIR, "alice", img + ".sqsh"))
+    j = _img_post("delete", img).get_json()
+    assert not j["ok"] and "不存在" in j["error"], j
+
+    # ---- 注释：写入/改名跟随/删除清理；正在打包（.part）的不列出 ----
+    part = os.path.join(IMGDIR, "alice", "building.sqsh.part")
+    with open(part, "w") as fh:
+        fh.write("x")
+    j = c.post("/instances/%d/save-image" % s1, headers={"X-CSRF-Token": tok2},
+               data={"name": "noted"}).get_json()
+    assert j["ok"], j
+    note = "🚀 训练环境 v2"                     # 表情 + 空格：都允许
+    j = _img_post("comment", "noted", {"note": note}).get_json()
+    assert j["ok"], j
+    page = c.get("/images")
+    assert note.encode() in page.data, "页面应显示注释（含表情）"
+    # 超过 64 个"看得见的字符" → 拒绝
+    j = _img_post("comment", "noted", {"note": "一" * 65}).get_json()
+    assert not j["ok"] and "64" in j["error"], j
+    assert _read_note(os.path.join(IMGDIR, "alice", "noted.sqsh"))["note"] == note, "被拒后注释不变"
+    # 64 个表情（一个算 1 个字符）→ 允许；65 个 → 拒绝
+    j = _img_post("comment", "noted", {"note": "🎉" * 64}).get_json()
+    assert j["ok"], j
+    j = _img_post("comment", "noted", {"note": "🎉" * 65}).get_json()
+    assert not j["ok"] and "64" in j["error"], j
+    j = _img_post("comment", "noted", {"note": note}).get_json()   # 复原成场景用的注释
+    assert j["ok"], j
+    assert b"building.sqsh" not in page.data, "正在打包(.part)的镜像不该出现在列表里"
+    assert not any("building" in x["name"] for x in c.get("/api/images").get_json()["mine"])
+    # 改名后注释跟着走
+    j = _img_post("rename", "noted", {"new_name": "noted2"}).get_json()
+    assert j["ok"], j
+    _npm = os.path.join(IMGDIR, "alice", "noted.json")
+    _np2 = os.path.join(IMGDIR, "alice", "noted2.json")
+    assert os.path.isfile(_np2) and not os.path.exists(_npm), "注释(同名 .json)应跟着改名"
+    assert _read_note(os.path.join(IMGDIR, "alice", "noted2.sqsh"))["note"] == note
+    # 删除后同名 .json 一并清掉
+    j = _img_post("delete", "noted2").get_json()
+    assert j["ok"], j
+    assert not os.path.exists(_np2), "删除镜像应连注释一起删掉"
+    os.remove(part)
+
+    # ---- root：公共镜像 + 所有人的镜像都能改名/注释/删除 ----
+    with open(os.path.join(IMGDIR, "pub_probe.sqsh"), "w") as fh:
+        fh.write("fake\n")
+    os.makedirs(os.path.join(IMGDIR, "bob"), exist_ok=True)
+    with open(os.path.join(IMGDIR, "bob", "bobimg.sqsh"), "w") as fh:
+        fh.write("fake\n")
+    # 非 root 走 /admin/images 必须被拒
+    j = c.post("/admin/images/bob/bobimg/delete", headers={"X-CSRF-Token": tok2}).get_json()
+    assert not j["ok"] and "root" in j["error"], j
+    c.get("/logout")
+    login(c, "root", "RootPass1234")
+    tokr = csrf_of(c, "/images")
+    page = c.get("/images")
+    assert page.status_code == 200, page.status_code
+    for needle in ("pub_probe.sqsh", "bobimg.sqsh", "cuda12.8.0-devel-ubuntu24.04.sqsh",
+                   "归属", "全部镜像"):
+        assert needle.encode() in page.data, "root 视图应包含 %s" % needle
+
+    def _adm(owner, act, iname, data=None):
+        return c.post("/admin/images/%s/%s/%s" % (owner, iname, act),
+                      headers={"X-CSRF-Token": tokr}, data=data or {})
+
+    # 公共镜像的名字带点/横线（cuda12.8.0-devel-ubuntu24.04）也要能管理：
+    # 之前这里被"个人镜像名规则"（只许英文/数字/下划线）挡住了
+    j = _adm("public", "comment", "cuda12.8.0-devel-ubuntu24.04", {"note": "公共基础镜像"}).get_json()
+    assert j["ok"], j
+    assert _read_note(os.path.join(IMGDIR, "cuda12.8.0-devel-ubuntu24.04.sqsh"))["note"] \
+        == "公共基础镜像"
+    with open(os.path.join(IMGDIR, "probe-1.2.sqsh"), "w") as fh:
+        fh.write("fake\n")
+    j = _adm("public", "rename", "probe-1.2", {"new_name": "probe-1.3"}).get_json()
+    assert j["ok"] and os.path.isfile(os.path.join(IMGDIR, "probe-1.3.sqsh")), j
+    j = _adm("public", "delete", "probe-1.3").get_json()
+    assert j["ok"] and not os.path.exists(os.path.join(IMGDIR, "probe-1.3.sqsh")), j
+    # 非法输入照旧被拒：名字带空格、归属非法
+    j = _adm("public", "comment", "probe-1.2", {"note": "x"}).get_json()
+    assert not j["ok"] and "不存在" in j["error"], j
+    j = c.post("/admin/images/bad%21/whatever/delete",
+               headers={"X-CSRF-Token": tokr}).get_json()
+    assert not j["ok"] and "非法用户名" in j["error"], j
+
+    j = _adm("public", "rename", "pub_probe", {"new_name": "pub_renamed"}).get_json()
+    assert j["ok"] and os.path.isfile(os.path.join(IMGDIR, "pub_renamed.sqsh")), j
+    j = _adm("public", "comment", "pub_renamed", {"note": "公共基础镜像"}).get_json()
+    assert j["ok"], j
+    j = _adm("bob", "comment", "bobimg", {"note": "bob 的调试镜像"}).get_json()
+    assert j["ok"], j
+    assert _read_note(os.path.join(IMGDIR, "pub_renamed.sqsh"))["note"] == "公共基础镜像"
+    assert os.path.isfile(os.path.join(IMGDIR, "pub_renamed.json")), "公共镜像的注释也是同名 .json"
+    assert _read_note(os.path.join(IMGDIR, "bob", "bobimg.sqsh"))["note"] == "bob 的调试镜像"
+    j = _adm("public", "delete", "pub_renamed").get_json()
+    assert j["ok"] and not os.path.exists(os.path.join(IMGDIR, "pub_renamed.sqsh")), j
+    assert not os.path.exists(os.path.join(IMGDIR, "pub_renamed.json")), "删除公共镜像连注释一起删"
+    j = _adm("bob", "delete", "bobimg").get_json()
+    assert j["ok"] and not os.path.exists(os.path.join(IMGDIR, "bob", "bobimg.sqsh")), j
+    assert not os.path.exists(os.path.join(IMGDIR, "bob", "bobimg.json"))
+    # 换回 alice 继续后面的用例
+    c.get("/logout")
+    login(c, "alice", "AliceNew88x")      # 早前用例把 alice 口令改成了这个
+    tok2 = csrf_of(c, "/my")
+
     # 用“个人镜像”再申请（白名单放行，验证个人镜像可被自身使用）
     mine_img = next(x["path"] for x in imgs["mine"] if x["name"] == "myfirst.sqsh")
     r = apply_img(mine_img, "个人镜像跑", 28767)

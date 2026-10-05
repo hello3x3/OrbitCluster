@@ -5,6 +5,10 @@
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
   const ACTIVE_STATES = ["PENDING", "RUNNING", "SUSPENDED", "COMPLETING", "STOPPING"];
+  // 个人镜像名（后端 portalapp/app.py 的 IMG_NAME_RE 同口径）：同公共镜像字符集，最长 32 位
+  const IMG_NAME_RE_JS = /^[A-Za-z0-9_][A-Za-z0-9._+-]{0,31}$/;
+  const IMG_NAME_HINT = "英文/数字/点/横线/下划线/加号，1-32 位，不能以点/横线/加号开头";
+  const PUBLIC_IMG_NAME_RE_JS = /^[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}$/;
 
   function csrfToken() {
     const m = $('meta[name="csrf-token"]');
@@ -24,6 +28,107 @@
     t.hidden = false;
     clearTimeout(t._h);
     t._h = setTimeout(() => (t.hidden = true), type === "err" ? 6000 : 3200);
+  }
+
+  /* ---------- 站内输入 / 确认弹窗（替代 window.prompt / window.confirm） ----------
+     askText({title, label, value, hint, counter, validate, okText, danger})  → Promise<string|null>
+     askConfirm({title, text, okText, danger})                                → Promise<true|null>
+     - 焦点自动落在输入框/确定键；Enter 提交、Esc 或点遮罩取消；
+     - validate 返回非空字符串时在弹窗里显示红字，而不是弹 toast。 */
+  let dlgResolve = null;
+  let dlgOpts = null;
+
+  function dlgEls() {
+    return { mask: $("#dlg-mask"), title: $("#dlg-title"), text: $("#dlg-text"),
+             field: $("#dlg-field"), label: $("#dlg-label"), input: $("#dlg-input"),
+             hint: $("#dlg-hint"), count: $("#dlg-count"), err: $("#dlg-err"), ok: $("#dlg-ok") };
+  }
+
+  function dlgClose(value) {
+    const d = dlgEls();
+    if (!d.mask || d.mask.hidden) return;
+    d.mask.hidden = true;
+    const cb = dlgResolve;
+    dlgResolve = null;
+    dlgOpts = null;
+    if (cb) cb(value);
+  }
+
+  function dlgOpen(opts) {
+    return new Promise(resolve => {
+      const d = dlgEls();
+      if (!d.mask) {                       // 兜底：页面没有弹窗标记时退回浏览器原生控件
+        if (opts.kind === "confirm") resolve(window.confirm(opts.text || "确定？") ? true : null);
+        else resolve(window.prompt(opts.text || opts.label || "", opts.value || ""));
+        return;
+      }
+      const isAsk = opts.kind !== "confirm";
+      dlgResolve = resolve;
+      dlgOpts = opts;
+      d.title.textContent = opts.title || (isAsk ? "输入" : "确认");
+      d.text.hidden = isAsk;
+      d.text.textContent = opts.text || "";
+      d.field.hidden = !isAsk;
+      d.label.textContent = opts.label || "";
+      d.label.hidden = !opts.label;
+      d.input.value = isAsk ? (opts.value || "") : "";
+      d.hint.textContent = opts.hint || "";
+      d.err.hidden = true;
+      d.ok.textContent = opts.okText || "确定";
+      d.ok.className = "btn btn-sm " + (opts.danger ? "btn-danger" : "btn-primary");
+      d.input.oninput = () => dlgSyncCount();
+      dlgSyncCount();
+      d.mask.hidden = false;
+      setTimeout(() => { if (isAsk) { d.input.focus(); d.input.select(); } else d.ok.focus(); }, 0);
+    });
+  }
+
+  function dlgSyncCount() {
+    const d = dlgEls();
+    if (!d.count) return;
+    if (dlgOpts && dlgOpts.counter) {
+      d.count.hidden = false;
+      d.count.textContent = dlgOpts.counter(d.input.value);
+    } else {
+      d.count.hidden = true;
+    }
+  }
+
+  function dlgSubmit() {
+    const d = dlgEls();
+    const o = dlgOpts || {};
+    if (o.kind === "confirm") { dlgClose(true); return; }
+    const val = d.input.value;
+    const err = o.validate ? o.validate(val) : "";
+    if (err) {
+      d.err.textContent = err;
+      d.err.hidden = false;
+      d.input.focus();
+      return;
+    }
+    dlgClose(val);
+  }
+
+  function askText(opts) { return dlgOpen(Object.assign({ kind: "ask" }, opts || {})); }
+  function askConfirm(opts) { return dlgOpen(Object.assign({ kind: "confirm" }, opts || {})); }
+
+  function wireDialog() {
+    const d = dlgEls();
+    if (!d.mask) return;
+    $$("[data-dlg-cancel]", d.mask).forEach(b => b.addEventListener("click", () => dlgClose(null)));
+    d.ok.addEventListener("click", dlgSubmit);
+    d.mask.addEventListener("click", ev => { if (ev.target === d.mask) dlgClose(null); });
+    d.input.addEventListener("keydown", ev => {
+      if (ev.key === "Enter") { ev.preventDefault(); dlgSubmit(); }
+      if (ev.key === "Escape") { ev.preventDefault(); dlgClose(null); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (d.mask.hidden) return;
+      if (ev.key === "Escape") { ev.preventDefault(); dlgClose(null); }
+      if (ev.key === "Enter" && ev.target !== d.input && !d.field.hidden) {
+        ev.preventDefault(); dlgSubmit();
+      }
+    });
   }
 
   async function post(url, body) {
@@ -69,7 +174,12 @@
     $$(".xact, .xdel").forEach(b => {
       b.addEventListener("click", async () => {
         const msg = b.dataset.msg || "确定执行该操作？";
-        if (!window.confirm(msg)) return;
+        const go = await askConfirm({
+          title: b.dataset.title || (b.textContent || "").trim() || "确认操作",
+          text: msg, okText: b.dataset.okText || "确定",
+          danger: b.classList.contains("xdel"),
+        });
+        if (!go) return;
         try {
           const d = await post(b.dataset.url, new FormData());
           if (d.ok) {
@@ -86,9 +196,24 @@
       b.addEventListener("click", () => { $("#" + b.dataset.close).hidden = true; });
     });
     $$(".modal-mask").forEach(m => {
+      if (m.id === "dlg-mask") return;      // 通用弹窗自己管（关闭时要 resolve Promise）
       m.addEventListener("click", ev => { if (ev.target === m) m.hidden = true; });
     });
     $$("#btn-refresh").forEach(b => b.addEventListener("click", () => location.reload()));
+
+    /* 顶部提示：固定浮层，点 ✕ 立即收起；错误留 9s、其它 6s 后自动淡出（不占正文流） */
+    $$(".flash").forEach(f => {
+      let gone = false;
+      const close = () => {
+        if (gone) return;
+        gone = true;
+        f.classList.add("flash-hide");
+        setTimeout(() => f.remove(), 260);
+      };
+      const x = f.querySelector("[data-flash-close]");
+      if (x) x.addEventListener("click", close);
+      setTimeout(close, f.classList.contains("flash-error") ? 9000 : 6000);
+    });
 
     /* 管理员改配额：弹出输入框（例 100G/500G/1T）后提交 */
     $$(".act-quota").forEach(b => {
@@ -101,7 +226,17 @@
           ? ("为 " + user + " 设置 /share 配额。\n"
              + "这是系统保留账号：只能填「不限」（清除限额），填具体额度会被后端拒绝。")
           : ("为 " + user + " 设置 /share 磁盘配额（软=硬。例：100G / 500G / 1T；填「不限」表示不限额）：");
-        const size = window.prompt(msg, reserved ? "不限" : "");
+        const size = await askText({
+          title: "设置 /share 磁盘配额",
+          label: msg.split("\n")[0],
+          value: reserved ? "不限" : "",
+          placeholder: reserved ? "不限" : "例：100G / 500G / 1T",
+          hint: reserved
+            ? "系统保留账号只能填「不限」（清除限额），填具体额度会被后端拒绝。"
+            : "软限=硬限，单位可用 G/T；填「不限」表示不限额。",
+          okText: "保存配额",
+          validate: v => v.trim() ? "" : "请填写配额，例如 100G / 500G / 1T / 不限",
+        });
         if (size === null || !size.trim()) return;
         try {
           const fd = new FormData();
@@ -280,15 +415,17 @@
           因容器 host key 存放在你的家目录（.ssh-hostkeys），更换机器/清理后需重新接受。</p>`;
       } else if (b.classList.contains("act-save")) {
         const rec = last[id] || {};
-        let name = window.prompt("保存当前容器状态为个人镜像（保存到 /share/images/" +
-          (rec.username || "") + "/<名称>.sqsh，计入你的 /share 配额）\n名称规则：仅英文/数字/下划线，1-64 位",
-          rec.res_name ? String(rec.res_name).replace(/[^A-Za-z0-9_]/g, "_").slice(0, 40) : "");
+        let name = await askText({
+          title: "保存为个人镜像",
+          label: "镜像名（保存到 /share/images/" + (rec.username || "") + "/<名称>.sqsh）",
+          value: rec.res_name ? String(rec.res_name).replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32) : "",
+          hint: IMG_NAME_HINT + "；导出计入你的 /share 配额",
+          counter: v => v.length + " / 32",
+          okText: "开始保存",
+          validate: v => IMG_NAME_RE_JS.test(v.trim()) ? "" : "只能包含" + IMG_NAME_HINT,
+        });
         if (name === null) return;
         name = name.trim();
-        if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) {
-          toast("镜像名只能包含英文/数字/下划线（1-64 位）", "err");
-          return;
-        }
         async function doSave(force) {
           const fd = new FormData();
           fd.append("name", name);
@@ -300,7 +437,11 @@
         try {
           let d = await doSave(false);
           if (!d.ok && d.need_force) {
-            if (!window.confirm(d.error + "，是否覆盖？")) { b.disabled = false; return; }
+            const over = await askConfirm({
+              title: "覆盖已有镜像？", text: (d.error || "同名镜像已存在") + "，是否覆盖？",
+              okText: "覆盖", danger: true,
+            });
+            if (!over) { b.disabled = false; return; }
             d = await doSave(true);
           }
           toast(d.msg || (d.ok ? "已开始保存镜像" : d.error), d.ok ? "ok" : "err");
@@ -308,8 +449,12 @@
         } catch (e) { toast(e.message || "网络错误", "err"); }
         b.disabled = false;
       } else if (b.classList.contains("act-stop")) {
-        if (!window.confirm("确定停止该资源（作业 #" + (last[id] ? last[id].job_id : id) + "）？"
-          + "\n运行中的容器会被终止，端口随即释放。")) return;
+        const goStop = await askConfirm({
+          title: "停止资源", okText: "停止", danger: true,
+          text: "确定停止该资源（作业 #" + (last[id] ? last[id].job_id : id) + "）？"
+                + "\n运行中的容器会被终止，端口随即释放。",
+        });
+        if (!goStop) return;
         b.disabled = true;
         try {
           const d = await post("/instances/" + id + "/stop", new FormData());
@@ -319,8 +464,12 @@
         b.disabled = false;
       } else if (b.classList.contains("act-restart")) {
         const rec = last[id] || {};
-        if (!window.confirm("确定按原参数重新启动该资源？\n作业 #" + (rec.job_id || id)
-          + " 将重新入队（镜像/套餐资源/端口/时长/任务名不变）。")) return;
+        const goRestart = await askConfirm({
+          title: "重新启动资源", okText: "重新启动",
+          text: "确定按原参数重新启动该资源？\n作业 #" + (rec.job_id || id)
+                + " 将重新入队（镜像/套餐资源/端口/时长/任务名不变）。",
+        });
+        if (!goRestart) return;
         b.disabled = true;
         try {
           const d = await post("/instances/" + id + "/restart", new FormData());
@@ -330,8 +479,12 @@
         b.disabled = false;
       } else if (b.classList.contains("act-delinst")) {
         const rec = last[id] || {};
-        if (!window.confirm("确定删除这条已停止/结束的资源记录？\n作业 #" + (rec.job_id || id)
-          + " 的记录与日志文件将被删除（不可恢复）。")) return;
+        const goDelInst = await askConfirm({
+          title: "删除资源记录", okText: "删除", danger: true,
+          text: "确定删除这条已停止/结束的资源记录？\n作业 #" + (rec.job_id || id)
+                + " 的记录与日志文件将被删除（不可恢复）。",
+        });
+        if (!goDelInst) return;
         b.disabled = true;
         try {
           const d = await post("/instances/" + id + "/delete", new FormData());
@@ -589,13 +742,137 @@
     });
   }
 
+  /* ---------- 我的镜像：注释 / 改名 / 删除（root 时作用于公共与他人镜像） ---------- */
+  // 与助手 portal-ctl 的 note_len 同口径：表情/国旗/组合符号按"看得见的字符"算 1 个
+  const NOTE_MAX = 64;
+
+  function noteLen(str) {
+    let n = 0, ri = false, join = false;
+    for (const ch of str) {
+      const cp = ch.codePointAt(0);
+      if (cp === 0x200d) { join = true; continue; }
+      if (cp === 0xfe0e || cp === 0xfe0f || (cp >= 0x1f3fb && cp <= 0x1f3ff)) continue;
+      if ((cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) ||
+          (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe20 && cp <= 0xfe2f)) continue;
+      if (cp >= 0x1f1e6 && cp <= 0x1f1ff) {
+        if (ri) { ri = false; continue; }
+        ri = true; n += 1; continue;
+      }
+      ri = false;
+      if (join) { join = false; continue; }
+      n += 1;
+    }
+    return n;
+  }
+
+  // 注释列宽度固定：只有"真的放不下"（按渲染宽度）才显示「详情」，与字符个数无关
+  function syncNoteMore() {
+    $$("#img-table .note-td").forEach(td => {
+      const cell = td.querySelector(".note-cell"), more = td.querySelector(".note-more");
+      if (cell && more) more.hidden = cell.scrollWidth <= cell.clientWidth + 1;
+    });
+  }
+
+  function wireImagePage() {
+    const table = $("#img-table");
+    if (!table) return;
+    syncNoteMore();
+    window.addEventListener("resize", syncNoteMore);
+    table.addEventListener("click", async ev => {
+      // 注释列：只显示固定宽度，点开看完整内容
+      const nv = ev.target && ev.target.closest ? ev.target.closest("[data-note-full]") : null;
+      if (nv) {
+        $("#note-title").textContent = nv.dataset.noteTitle || "";
+        $("#note-body").textContent = nv.dataset.noteFull || "";
+        $("#note-modal").hidden = false;
+        return;
+      }
+      const btn = ev.target && ev.target.closest
+        ? ev.target.closest("[data-img-note],[data-img-rename],[data-img-delete]") : null;
+      if (!btn) return;
+      const name = btn.dataset.imgNote || btn.dataset.imgRename || btn.dataset.imgDelete || "";
+      const owner = btn.dataset.owner || "";          // root 视图才有：用户名 或 public
+      const base = owner ? "/admin/images/" + encodeURIComponent(owner) : "/images";
+      btn.disabled = true;
+      const done = msg => { toast(msg, "ok"); setTimeout(() => location.reload(), 700); };
+      try {
+        if (btn.dataset.imgNote !== undefined) {
+          const cur = btn.dataset.note || "";
+          const note = await askText({
+            title: "镜像注释",
+            label: name + ".sqsh",
+            value: cur,
+            placeholder: "留空 = 清空注释",
+            hint: "支持中文/表情/空格，连续空格会合并成一个；表情算 1 个字符",
+            counter: v => noteLen(v) + " / " + NOTE_MAX,
+            okText: "保存注释",
+            validate: v => noteLen(v) > NOTE_MAX
+              ? "最多 " + NOTE_MAX + " 个字符（当前 " + noteLen(v) + " 个）" : "",
+          });
+          if (note === null) { btn.disabled = false; return; }
+          const fd = new FormData();
+          fd.append("note", note);
+          const r = await post(base + "/" + encodeURIComponent(name) + "/comment", fd);
+          if (!r || !r.ok) throw new Error((r && r.error) || "保存注释失败");
+          done(r.msg || "注释已保存");
+          return;
+        }
+        if (btn.dataset.imgRename) {
+          // 公共镜像的名字允许点/横线（cuda12.8.0-devel-ubuntu24.04），个人镜像仍只允许英文/数字/下划线
+          const pub = owner === "public";
+          const rule = pub ? PUBLIC_IMG_NAME_RE_JS : IMG_NAME_RE_JS;
+          const hint = pub ? "英文/数字/点/横线/下划线/加号，1-128 位，不能以点开头"
+                           : IMG_NAME_HINT;
+          const input = await askText({
+            title: pub ? "重命名公共镜像" : "重命名镜像",
+            label: name + ".sqsh →",
+            value: name,
+            hint: "只能包含" + hint,
+            okText: "改名",
+            validate: v => {
+              const t = v.trim().replace(/\.sqsh$/i, "");
+              if (!t) return "请填写新名称";
+              if (!rule.test(t)) return "只能包含" + hint;
+              if (t === name) return "新名称与原名相同";
+              return "";
+            },
+          });
+          if (input === null) { btn.disabled = false; return; }
+          const newName = input.trim().replace(/\.sqsh$/i, "");
+          const fd = new FormData();
+          fd.append("new_name", newName);
+          const r = await post(base + "/" + encodeURIComponent(name) + "/rename", fd);
+          if (!r || !r.ok) throw new Error((r && r.error) || "改名失败");
+          done(r.msg || "已改名");
+          return;
+        }
+        const size = btn.dataset.imgSize ? "（" + btn.dataset.imgSize + "）" : "";
+        const who = owner && owner !== "public" ? "（" + owner + " 的个人镜像）" : "";
+        const goDel = await askConfirm({
+          title: "删除镜像", okText: "删除", danger: true,
+          text: "确定删除镜像 " + name + ".sqsh" + size + who
+                + "？\n删除后无法恢复，也不能再用它「重新启动」历史资源。",
+        });
+        if (!goDel) { btn.disabled = false; return; }
+        const r = await post(base + "/" + encodeURIComponent(name) + "/delete", new FormData());
+        if (!r || !r.ok) throw new Error((r && r.error) || "删除失败");
+        done(r.msg || "已删除");
+      } catch (e) {
+        toast(e.message || "操作失败", "err");
+        btn.disabled = false;
+      }
+    });
+  }
+
   /* ---------- 启动 ---------- */
   document.addEventListener("DOMContentLoaded", () => {
+    wireDialog();
     wireGeneric();
     wireMyPage();
     wireApplyForm();
     wireAdminApply();
     wireHourChips();
     wireCopyButtons();
+    wireImagePage();
   });
 })();

@@ -291,6 +291,17 @@ class DB:
             self.exec("UPDATE instances SET %s, updated_at=? WHERE id=?" % ",".join(sets),
                       args)
 
+    def rename_image_refs_all(self, old_path, new_path):
+        """按路径更新**所有**实例记录的镜像（管理员改名，含公共镜像：任何用户的记录都可能引用）。"""
+        return self.exec("UPDATE instances SET image=? WHERE image=?",
+                         (new_path, old_path)).rowcount
+
+    def rename_image_refs(self, uid, old_path, new_path):
+        """个人镜像改名后，把该用户实例里记录的镜像路径一并改掉（旧记录仍可重启）。"""
+        cur = self.exec("UPDATE instances SET image=? WHERE user_id=? AND image=?",
+                        (new_path, uid, old_path))
+        return cur.rowcount
+
     def active_instance_with_port_node(self, port, node, exclude_iid=None):
         if exclude_iid is None:
             return self.q1("SELECT * FROM instances WHERE port=? AND node=? AND state IN (%s)"
