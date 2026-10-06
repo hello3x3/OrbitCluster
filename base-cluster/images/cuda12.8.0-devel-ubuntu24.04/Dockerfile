@@ -6,9 +6,8 @@ SHELL [ "/bin/bash", "--login", "-c" ]
 # Start as root
 USER root
 
-# 更换 ZJU 源（Ubuntu 24.04 为 deb822 格式）
-RUN sed -i -e 's@//.*archive.ubuntu.com@//mirrors.zju.edu.cn@g' \
-            -e 's@//security.ubuntu.com@//mirrors.zju.edu.cn@g' \
+RUN sed -i -e 's@//.*archive.ubuntu.com@//mirrors.cernet.edu.cn@g' \
+            -e 's@//security.ubuntu.com@//mirrors.cernet.edu.cn@g' \
             /etc/apt/sources.list.d/ubuntu.sources && \
     apt-get clean && \
     apt-get update && \
@@ -47,11 +46,24 @@ RUN chmod +x /opt/start_ssh.sh && \
     mkdir -p /run/sshd
 
 # miniconda3 到 /opt/miniconda3；整体 a+rwX 让所有用户都能改 base；envs 1777 防互删
-RUN wget https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py310_22.11.1-1-Linux-x86_64.sh && \
+RUN wget https://mirrors.cernet.edu.cn/anaconda/miniconda/Miniconda3-py310_22.11.1-1-Linux-x86_64.sh && \
     chmod +x Miniconda3-py310_22.11.1-1-Linux-x86_64.sh && \
     bash Miniconda3-py310_22.11.1-1-Linux-x86_64.sh -b -p /opt/miniconda3 && \
     rm Miniconda3-py310_22.11.1-1-Linux-x86_64.sh && \
     /opt/miniconda3/bin/conda init && \
+    printf '%s\n' \
+        'channels:' \
+        '  - defaults' \
+        'default_channels:' \
+        '  - https://mirrors.cernet.edu.cn/anaconda/pkgs/main' \
+        '  - https://mirrors.cernet.edu.cn/anaconda/pkgs/r' \
+        '  - https://mirrors.cernet.edu.cn/anaconda/pkgs/msys2' \
+        'custom_channels:' \
+        '  conda-forge: https://mirrors.cernet.edu.cn/anaconda/cloud' \
+        '  pytorch: https://mirrors.cernet.edu.cn/anaconda/cloud' \
+        '  nvidia: https://mirrors.cernet.edu.cn/anaconda/cloud' \
+        'show_channel_urls: true' \
+        > /opt/miniconda3/.condarc && \
     chmod -R a+rwX /opt/miniconda3 && \
     chmod 1777 /opt/miniconda3/envs
 
@@ -63,16 +75,41 @@ RUN echo '. /opt/miniconda3/etc/profile.d/conda.sh' >> /etc/profile && \
 RUN /opt/miniconda3/bin/conda clean -afy
 
 # 运行时环境走镜像 ENV：pyxis/enroot 不执行 entrypoint、只注入镜像 ENV，故全终端生效。
-# pip/uv 走 USTC 且禁缓存；conda 无禁缓存开关，包缓存指到 /tmp 不残留
 ENV PATH="/opt/miniconda3/bin:${PATH}" \
     CUDA_HOME=/usr/local/cuda \
     LANG=en_US.UTF-8 \
     LC_CTYPE=zh_CN.UTF-8 \
-    PIP_INDEX_URL=https://mirrors.zju.edu.cn/pypi/web/simple \
+    PIP_INDEX_URL=https://mirrors.cernet.edu.cn/pypi/web/simple \
     PIP_NO_CACHE_DIR=1 \
-    UV_DEFAULT_INDEX=https://mirrors.zju.edu.cn/pypi/web/simple \
+    UV_LINK_MODE=copy \
+    UV_DEFAULT_INDEX=https://mirrors.cernet.edu.cn/pypi/web/simple \
     UV_NO_CACHE=1 \
     CONDA_PKGS_DIRS=/tmp/conda-pkgs
+
+RUN printf '%s\n' \
+        'export CUDA_HOME=/usr/local/cuda' \
+        'export PIP_INDEX_URL=https://mirrors.cernet.edu.cn/pypi/web/simple' \
+        'export PIP_NO_CACHE_DIR=1' \
+        'export UV_DEFAULT_INDEX=https://mirrors.cernet.edu.cn/pypi/web/simple' \
+        'export UV_NO_CACHE=1' \
+        'export UV_LINK_MODE=copy' \
+        'export CONDA_PKGS_DIRS=/tmp/conda-pkgs' \
+        > /etc/profile.d/99-cluster-pkg-env.sh && chmod 644 /etc/profile.d/99-cluster-pkg-env.sh
+
+RUN printf '%s\n' \
+        '# 由镜像提供：包源与缓存设置（容器内新开的交互式 shell）' \
+        '[ -f /etc/profile.d/99-cluster-pkg-env.sh ] && . /etc/profile.d/99-cluster-pkg-env.sh' \
+        >> /etc/bash.bashrc
+
+RUN printf '%s\n' \
+        'CUDA_HOME=/usr/local/cuda' \
+        'PIP_INDEX_URL=https://mirrors.cernet.edu.cn/pypi/web/simple' \
+        'PIP_NO_CACHE_DIR=1' \
+        'UV_DEFAULT_INDEX=https://mirrors.cernet.edu.cn/pypi/web/simple' \
+        'UV_NO_CACHE=1' \
+        'UV_LINK_MODE=copy' \
+        'CONDA_PKGS_DIRS=/tmp/conda-pkgs' \
+        >> /etc/environment
 
 # conda 包缓存目录预置 1777（防 root 先建导致其他用户不可写）
 RUN mkdir -p /tmp/conda-pkgs && \

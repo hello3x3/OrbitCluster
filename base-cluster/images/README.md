@@ -20,7 +20,7 @@ base-cluster/images/
 
 | 镜像（=`<IMAGES_MOUNT>/*.sqsh`） | 基座 | 说明 |
 |---|---|---|
-| `cuda12.8.0-devel-ubuntu24.04` | `nvidia/cuda:12.8.0-devel-ubuntu24.04` | CUDA 12.8 devel（无系统级 cuDNN）+ Ubuntu 24.04，带 sshd / miniconda / USTC 源。要求宿主驱动 >= 570 |
+| `cuda12.8.0-devel-ubuntu24.04` | `nvidia/cuda:12.8.0-devel-ubuntu24.04` | CUDA 12.8 devel（无系统级 cuDNN）+ Ubuntu 24.04，带 sshd / miniconda 源。要求宿主驱动 >= 570 |
 
 ## enroot 如何启动
 
