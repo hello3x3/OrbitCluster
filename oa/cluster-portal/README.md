@@ -223,6 +223,8 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   `cuda12.8.0-devel-ubuntu24.04`；个人镜像字符集相同、新建名 ≤32 位（既有长名仍可管理），
   可对任意一个改注释/改名/删除（`portal-ctl admin-image-rename|admin-image-delete <owner|public> …`，
   仅 root 的路由会调用，非 root 请求 403/报错）；
+  `portal-ctl save-image <用户> <jobid> <名称> [force] [注释]` 的第 5 个参数可选：门户的到期自动保存
+  会传一句 `系统 <时间> 到期自动保存；建议打包成正式镜像后清理`，写进镜像的同名 .json（≤64 字符）；
   `save-image` 是**原子**的（先写 `<名称>.sqsh.part`，成功才 `os.replace`），所以正在打包的镜像
   不会出现在任何列表里，失败也不留半成品；
   保存的 .sqsh 属主为用户（计入其 /share 配额）；删除由门户代建号的用户会连同该目录一起清理。

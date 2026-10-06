@@ -31,7 +31,7 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   ssh-ready <u> <jobid>                    容器里的 sshd 是否已监听(读日志头部的就绪横幅；
                                            门户「启动中 → 运行中」用它判断)
   rm-log <u> <jobid>                      删除某作业日志文件(清理已删除实例残留)
-  save-image <u> <jobid> <name> [force]   把运行中容器的当前状态保存为个人镜像
+  save-image <u> <jobid> <name> [force] [注释]  保存为个人镜像（注释写进同名 json）
                                           （名字：英文/数字/点/横线/下划线/加号，≤32 位）
                                           (/share/images/<u>/<name>.sqsh)
                                           是否计入 /share 配额取决于站点：/share/images 与
@@ -1863,7 +1863,7 @@ def _as_user_argv(username, home, argv):
     return ["runuser", "-u", username, "--", "env", "-C", home] + list(argv)
 
 
-def cmd_save_image(username, job_id, name, force):
+def cmd_save_image(username, job_id, name, force, note=None):
     """把“运行中的容器”整体导出为个人镜像 /share/images/<username>/<name>.sqsh。
 
     - 容器须正在运行（作业属主须为该用户，state=RUNNING，实际节点从 squeue 现查）；
@@ -1970,9 +1970,11 @@ def cmd_save_image(username, job_id, name, force):
         die("镜像导出结果为空文件（导出被中断？），请重试")
     dur = int(_time.time() - t0)
     tail = "".join(chunks).strip()
-    try:      # 同目录同名 .json：注释等元数据（覆盖保存时保留原有注释）
+    try:      # 同目录同名 .json：注释等元数据（覆盖保存时保留原有注释；
+        # 传了 note 就写进去 —— 门户「到期自动保存」用它注明保存时间与清理建议）
         _write_note(target, user=username, job_id=job_id, node=node, size=size,
-                    created_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                    created_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    note=(note or "").strip()[:NOTE_MAX] if note else None)
     except OSError:
         pass
     out({"ok": True, "user": username, "job_id": job_id, "name": name,
@@ -2062,9 +2064,10 @@ def main():
             cmd_rm_log(sys.argv[2], sys.argv[3])
         elif cmd == "save-image":
             if len(sys.argv) < 5:
-                die("用法: save-image <用户名> <jobid> <镜像名> [force]")
+                die("用法: save-image <用户名> <jobid> <镜像名> [force] [注释]")
             cmd_save_image(sys.argv[2], sys.argv[3], sys.argv[4],
-                           sys.argv[5] if len(sys.argv) > 5 else "0")
+                           sys.argv[5] if len(sys.argv) > 5 else "0",
+                           sys.argv[6] if len(sys.argv) > 6 else None)
         elif cmd == "images":
             if len(sys.argv) < 3:
                 die("用法: images <用户名>")

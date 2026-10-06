@@ -85,13 +85,14 @@ def _fake_user_img_dir(user):
 ctlmod.images = lambda user: {"ok": True, "user": user,
                               "images": _list_dir_imgs(_fake_user_img_dir(user), user)}
 
-def _fake_save_image(user, job_id, name, force):
+def _fake_save_image(user, job_id, name, force, note=None):
     p = os.path.join(_fake_user_img_dir(user), name + ".sqsh")
     if os.path.exists(p) and not force:
         raise ctlmod.CtlError("个人镜像已存在: %s" % p)
     with open(p, "w") as fh:
         fh.write("fake-squashfs\n")
-    _write_note(p, _read_note(p).get("note", ""), user=user, job_id=int(job_id))
+    _write_note(p, note if note else _read_note(p).get("note", ""),
+                user=user, job_id=int(job_id))
     return {"ok": True, "user": user, "job_id": int(job_id), "name": name,
             "path": p, "size": os.path.getsize(p), "node": "<GPU01>"}
 
@@ -1000,6 +1001,13 @@ def main():
         re.match(r"^auto_[A-Za-z0-9_]+\.sqsh$", aname), aname
     assert os.path.isfile(os.path.join(IMGDIR, "alice", aname)), "到期自动保存文件应存在"
     assert "到期" in (last["last_save"] or ""), last["last_save"]
+    # 到期自动保存的镜像要在注释里写明由系统何时自动保存，并建议打包成正式镜像后清理
+    _anote = _read_note(os.path.join(IMGDIR, "alice", aname)).get("note", "")
+    assert "到期自动保存" in _anote and "清理" in _anote and "系统 " in _anote, _anote
+    assert _note_len(_anote) <= 64, _anote
+    assert re.search(r"系统 \d{4}-\d\d-\d\d \d\d:\d\d 到期自动保存", _anote), _anote
+    page = c.get("/images")
+    assert _anote.encode() in page.data, "我的镜像页应显示自动保存的注释"
     # 收尾：停机+删除 s1；删除 s2（终端态）
     r = c.post("/instances/%d/stop" % s1, headers={"X-CSRF-Token": tok2})
     assert r.get_json()["ok"]

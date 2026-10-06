@@ -132,10 +132,15 @@ def rm_log(user, job_id):
     return run(["rm-log", user, str(job_id)], timeout=60)
 
 
-def save_image(username, job_id, name, force=False):
-    """把某运行中容器的当前状态保存为 /share/images/<user>/<name>.sqsh（root 助手，可耗时数分钟）。"""
-    return run(["save-image", username, str(job_id), name, "1" if force else "0"],
-               timeout=3600)
+def save_image(username, job_id, name, force=False, note=None):
+    """把某运行中容器的当前状态保存为 /share/images/<user>/<name>.sqsh（root 助手，可耗时数分钟）。
+
+    note 非空时写进镜像的同名 .json（门户「到期自动保存」用它注明保存时间与清理建议）。
+    """
+    args = ["save-image", username, str(job_id), name, "1" if force else "0"]
+    if note:
+        args.append(note)
+    return run(args, timeout=3600)
 
 
 def images(username):

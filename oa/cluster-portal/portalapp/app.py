@@ -2160,10 +2160,13 @@ def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _perform_save(db, iid, username, job_id, name, force):
-    """执行一次镜像导出并写回结果（不触碰 saving 标记，由调用方负责）。返回 (ok, msg, path)。"""
+def _perform_save(db, iid, username, job_id, name, force, note=None):
+    """执行一次镜像导出并写回结果（不触碰 saving 标记，由调用方负责）。返回 (ok, msg, path)。
+
+    note 非空时写进镜像的同名 .json（到期自动保存用它注明保存时间与清理建议）。
+    """
     try:
-        res = ctl.save_image(username, job_id, name, force)
+        res = ctl.save_image(username, job_id, name, force, note)
         path = res.get("path") or ""
         size = res.get("size") or 0
         dur = res.get("duration_s") or 0
@@ -2188,8 +2191,9 @@ def _perform_save(db, iid, username, job_id, name, force):
 def _save_worker(iid, username, job_id, name, force, kind):
     """后台保存线程：手动(kind=manual)或到期(kind=auto)。"""
     db = DB(DB_PATH)
+    note = _auto_save_note(name) if kind == "auto" else None
     try:
-        ok, msg, path = _perform_save(db, iid, username, job_id, name, force)
+        ok, msg, path = _perform_save(db, iid, username, job_id, name, force, note)
         db.set_saving(iid, 0)
         if kind == "auto":
             if ok and path:
@@ -2226,6 +2230,20 @@ def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg):
         "资源已到期，自动保存失败、已停机%s" % note
     db.set_last_save(iid, (save_msg + "；" if save_msg else "") + tail)
     db.set_saving(iid, 0)
+
+
+def _auto_save_note(name):
+    """到期自动保存的镜像注释：写清"系统什么时间自动保存"+"建议打包成正式镜像后清理"。
+
+    时间优先取文件名里的 auto_<任务名>_<YYYYMMDD_HHMM>（与镜像名一致），取不到就用当前时间。
+    """
+    m = re.search(r"_(\d{8}_\d{4})$", (name or "").rstrip(".sqsh"))
+    stamp = m.group(1) if m else datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    try:
+        when = datetime.datetime.strptime(stamp, "%Y%m%d_%H%M").strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    return "系统 %s 到期自动保存；建议打包成正式镜像后清理" % when
 
 
 def _auto_image_name(task_name, image):

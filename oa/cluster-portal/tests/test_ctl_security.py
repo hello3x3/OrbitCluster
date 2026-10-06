@@ -255,6 +255,9 @@ def main():
     _src = open(CTL, encoding="utf-8").read()
     check("rename-image / delete-image 已注册",
           '"rename-image"' in _src and '"delete-image"' in _src)
+    check("save-image 支持可选注释（到期自动保存用）",
+          'sys.argv[6] if len(sys.argv) > 6 else None' in _src
+          and 'def cmd_save_image(username, job_id, name, force, note=None)' in _src)
     check("镜像名不收路径分隔符/空白（新建个人镜像 ≤32 位，公共/既有 ≤128 位）",
           'IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,31}$")' in _src
           and 'PUBLIC_IMG_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}$")' in _src)
