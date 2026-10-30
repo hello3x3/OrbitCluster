@@ -446,6 +446,35 @@ def main():
           _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=x1)") == (False, False, "starting"),
           _v(" [start_ssh] sshd 实际监听端口: 52301 (PID=x1)"))
 
+    # ---- 多账户 / 账户管理契约（Phase 2）----
+    print("== 7) 多账户（账户名 / 参数 / 提交校验）==")
+    check("账户名合法：phd", mod.valid_account("phd"))
+    check("账户名合法：proj-2027", mod.valid_account("proj-2027"))
+    check("账户名拒绝大写", not mod.valid_account("PhD"))
+    check("账户名拒绝数字开头", not mod.valid_account("2027"))
+    check("账户名拒绝横线开头", not mod.valid_account("-phd"))
+    check("账户名拒绝路径分隔符", not mod.valid_account("../etc"))
+    check("账户名拒绝超长", not mod.valid_account("a" * 33))
+    _a, _d, _e = mod._parse_account_opts(["--accounts", "phd, ms", "--default-account", "phd"])
+    check("解析 --accounts/--default-account", _e is None and _a == ["phd", "ms"] and _d == "phd",
+          (_a, _d, _e))
+    _a2, _d2, _e2 = mod._parse_account_opts([])
+    check("未传 --accounts 时返回 None（旧行为 site 默认账户）",
+          _e2 is None and _a2 is None and _d2 is None, (_a2, _d2, _e2))
+    _a3, _d3, _e3 = mod._parse_account_opts(["--accounts", ""])
+    check("显式空 --accounts 返回 []（不建关联）",
+          _e3 is None and _a3 == [] and _d3 is None, (_a3, _d3, _e3))
+    check("submit 会显式传 --account", '"--account=%s"' in src)
+    check("submit 用 sacctmgr 校验账户成员关系（不信任门户）",
+          "不在账户" in src and "_user_account_names" in src)
+    check("账户管理命令已注册", all(x in src for x in (
+        '"accounts"', '"accounts-init"', '"accounts-sync"', '"account-delete"',
+        '"account-users"', '"account-add-user"', '"account-remove-user"',
+        '"user-accounts"')))
+    check("每账户 QoS 前缀固定为 acct-", "acct-" in src)
+    check("账户管理不写账户级 GrpTRES（契约：只按单用户上限）",
+          "set GrpTRES" not in src and "grptres=gres" not in src)
+
     if FAIL:
         print("\n有 %d 项失败: %s" % (len(FAIL), ", ".join(FAIL)))
         return 1

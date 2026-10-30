@@ -22,7 +22,18 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">2</span>任务名称
+    <h2 class="step-title"><span class="step-no">2</span>计费账户
+      <span class="muted small">（选择该用户实际关联的账户；不选则用其默认账户）</span></h2>
+    <select name="account" id="account-sel" aria-label="计费账户" disabled>
+      <option value="">先选择用户…</option>
+    </select>
+    <p class="field-hint" id="account-hint" hidden></p>
+    <p class="field-note">账户下拉随「帮谁申请」自动加载；账户优先级/单用户上限见选项文字。
+      目标用户没有可选账户时，作业由 Slurm 按该用户默认账户记账。</p>
+  </section>
+
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">3</span>任务名称
       <span class="muted small">（必填）</span></h2>
     <label><input name="task_name" id="atask" required placeholder="3-10 个字符"
                   aria-label="任务名称"></label>
@@ -34,7 +45,7 @@
   {# 镜像 / 套餐：各占一行、左对齐（标签在上、控件在下）。
      两行必须同宽，否则控件会因两个标签的文字长短不同而左右错开。 #}
   <section class="step">
-    <h2 class="step-title"><span class="step-no">3</span>镜像 / 套餐</h2>
+    <h2 class="step-title"><span class="step-no">4</span>镜像 / 套餐</h2>
     <div class="field-stack">
       <label>镜像 <span class="muted small">（含该用户的个人镜像）</span>
         <select name="image" id="aimg-sel" required disabled>
@@ -55,7 +66,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">4</span>时长
+    <h2 class="step-title"><span class="step-no">5</span>时长
       <span class="muted small">（小时）</span></h2>
     <div class="hours-block">
       <label class="hours">
@@ -74,7 +85,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">5</span>节点</h2>
+    <h2 class="step-title"><span class="step-no">6</span>节点</h2>
     <select name="node">
       <option value="">自动分配（推荐）</option>
       {% for n in nodes %}
@@ -84,7 +95,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">6</span>SSH 端口
+    <h2 class="step-title"><span class="step-no">7</span>SSH 端口
       <span class="muted small">（所选用户端口池；使用中不可选）</span></h2>
     <select name="port" id="aport" required>
       <option value="">先在上方选择用户…</option>

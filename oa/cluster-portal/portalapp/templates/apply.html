@@ -23,7 +23,26 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">2</span>选择镜像
+    <h2 class="step-title"><span class="step-no">2</span>选择账户
+      <span class="muted small">（计费账户；多账户的单用户额度可叠加）</span></h2>
+    {% if accounts and accounts|length > 1 %}
+    <select name="account" id="account-sel" required aria-label="计费账户">
+      {% for a in accounts %}
+      <option value="{{ a.name }}"
+              {% if a.name == default_account or (not default_account and loop.first) %}selected{% endif %}>
+        {{ a.name }}{% if a.is_default %}（默认）{% endif %}（优先级 {{ a.priority }}，单用户最多 {% if a.per_user_gpu_cap %}{{ a.per_user_gpu_cap }} 卡{% else %}不限{% endif %}）
+      </option>
+      {% endfor %}
+    </select>
+    <p class="field-note">作业会计入所选账户；临时项目到期后将不能再选择该账户提交。</p>
+    {% elif accounts %}
+    <input type="hidden" name="account" value="{{ default_account or accounts[0].name }}">
+    <p class="field-note">你当前只有一个账户 <b class="mono">{{ accounts[0].name }}</b>，申请将自动记入该账户。</p>
+    {% endif %}
+  </section>
+
+  <section class="step">
+    <h2 class="step-title"><span class="step-no">3</span>选择镜像
       <span class="muted small">（公共镜像由管理员维护；「我的镜像」是你此前从运行中容器保存的 .sqsh）</span></h2>
     {% if image_groups.public or image_groups.mine %}
     <select name="image" required aria-label="镜像">
@@ -48,7 +67,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">3</span>选择套餐
+    <h2 class="step-title"><span class="step-no">4</span>选择套餐
       <span class="muted small">（管理员预设：CPU / GPU型号 / 内存 / 名称 / 最长时长）</span></h2>
     <div class="plan-list" id="plan-list">
       {% for pl in plans %}
@@ -73,7 +92,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">4</span>时长
+    <h2 class="step-title"><span class="step-no">5</span>时长
       <span class="muted small">（不能超过所选套餐最大时长）</span></h2>
     <div class="hours-block">
       <label class="hours">
@@ -92,7 +111,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">5</span>指定节点</h2>
+    <h2 class="step-title"><span class="step-no">6</span>指定节点</h2>
     <select name="node" id="node-sel">
       <option value="">自动分配（推荐）</option>
       {% for n in nodes %}
@@ -102,7 +121,7 @@
   </section>
 
   <section class="step">
-    <h2 class="step-title"><span class="step-no">6</span>SSH 端口
+    <h2 class="step-title"><span class="step-no">7</span>SSH 端口
       <span class="muted small">（从你的端口池选择；使用中的端口不可选）</span></h2>
     {% if my_ports %}
     <select name="port" required aria-label="SSH 端口">

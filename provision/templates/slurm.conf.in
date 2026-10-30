@@ -47,3 +47,14 @@ JobAcctGatherFrequency=30
 PriorityWeightQOS=1
 PriorityFlags=NO_NORMAL_QOS
 AccountingStorageEnforce=associations,limits
+
+# ---- 抢占：高优先级 QoS 可抢占低优先级 QoS 的运行中作业 ----
+# PreemptType=preempt/qos：按 QoS 的 Preempt 列表决定谁能抢谁。
+#   需要在 sacctmgr 里给高优 QoS 配 preempt=<可被抢占的 QoS>（例：vip 的 preempt=normal），
+#   没配 Preempt 的 QoS（如默认 normal）不会去抢任何人。
+# PreemptMode=CANCEL：直接 kill 被抢占作业（先 SIGTERM，GraceTime 后 SIGKILL）；
+#   改成 REQUEUE 则被杀后重新排队（容器内状态同样不会保留）。
+# 注意：门户只会在「到期/手动停机」时自动保存镜像，被抢占不会触发保存。
+# PreemptExemptTime=00:05:00   # 可选：刚启动的作业在此时长内免于被抢占
+PreemptType=preempt/qos
+PreemptMode=CANCEL

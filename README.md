@@ -5,6 +5,10 @@
 
 > **部署从 [`oa/00-生成器部署.md`](oa/00-生成器部署.md) 开始** —— 改一个 `provision/cluster.conf`，
 > `make` 出全部机器配置与文档，再按 `MANIFEST.md` 下发。本文档与其余手册是深入参考。
+>
+> 门户按**多账户**建模：一套集群可配置多个 Slurm 会计账户（示例站点 `ZJU-CV` 为 `phd/ms/be/ra`，
+> 默认 `phd`）；root 在「管理账户」页维护每个账户的优先级 / 单用户卡数上限 / 可抢占 / 成员 / 到期，
+> 用户申请时选账户，**多账户额度叠加**。账户与 OS 用户是两回事（见「命名约定」）。
 
 仓库分两部分，**有先后依赖**：
 
@@ -26,13 +30,14 @@ OrbitCluster/
 ├── provision/                       # ⓪ 部署生成器（动手前先做：一个 cluster.conf → 全部配置与文档）
 │   ├── README.md                    #   变量表 / 渲染规则 / 与真机对照的自检结果
 │   ├── cluster.conf.example         #   ★ 拷成 cluster.conf 后**只改这一个文件**
+│   │                                #     含 CLUSTER_NAME / ACCOUNTS / DEFAULT_ACCOUNT / USER 等
 │   ├── render.sh                    #   生成器（只生成文件，不 ssh、不改任何机器）
 │   ├── lib/render_docs.py           #   markdown 占位符替换 + 待人工核对的报告
-│   ├── templates/                   #   目标文件模板（hosts/slurm/gres/exports/fstab/sshd…）
+│   ├── templates/                   #   目标文件模板（hosts/slurm/gres/exports/fstab/sshd/site.conf…）
 │   ├── conf/                        #   两套**真实**集群参数（回归夹具，与真机对照用）
 │   └── out/                         #   生成物（已 gitignore）
 ├── base-cluster/                    # ① 底层集群（门户的前提）
-│   ├── all-in-one-cluster-manual.md # 全量部署手册（1753 行，逐章带验收命令）
+│   ├── all-in-one-cluster-manual.md # 全量部署手册（逐章带验收命令；含多账户/QoS/抢占/配额）
 │   ├── grafana-slurm-dashboard.json # Grafana 仪表盘（= 手册附录 B）
 │   ├── important.md                 # 交互容器 SSH 登录的 srun 示例
 │   ├── images/                      # 交互容器镜像的构建源（Dockerfile + 加固的 start_ssh.sh）
@@ -42,10 +47,10 @@ OrbitCluster/
 │                                    #     自己是管理节点还是计算节点，两套集群通用
 └── oa/                              # ② 门户交付包
     ├── README.md                    # ★ 交付包总览 + 复现路线（先读这个）
-    ├── 00-生成器部署.md             # ★ 从这开始：改参数 → make → 下发（含验收命令）
-    ├── 01-部署手册.md               # 门户安装/初始化/验收（在 base-cluster 之后读）
-    ├── 02-管理手册.md               # 用户/套餐/代申请/密码文件/备份恢复/排障
-    ├── 03-使用手册.md               # 面向最终用户：登录、资料、申请、连接、日志、停机
+    ├── 00-生成器部署.md             # ★ 从这开始：改参数 → make → 下发（含账户初始化与验收命令）
+    ├── 01-部署手册.md               # 门户安装/初始化（含 accounts-init）/验收（在 base-cluster 之后读）
+    ├── 02-管理手册.md               # 用户/套餐/代申请/**管理账户**/密码文件/备份恢复/排障
+    ├── 03-使用手册.md               # 面向最终用户：登录、资料、申请（选账户）、连接、日志、停机
     ├── cluster-portal/              # 门户完整源码（Flask + SQLite + waitress）
     │   ├── portalapp/               #   应用、鉴权、DB、站点配置、特权助手客户端、模板
     │   ├── deploy/                  #   install.sh 一键安装 + portal-ctl（root 特权助手）
@@ -72,6 +77,10 @@ OrbitCluster/
 只编辑 **一个文件** `provision/cluster.conf`（节点名 / IP / 卡型卡数 / sshd 端口 / 账户 /
 存储布局），然后在仓库根目录执行 `make`：
 
+> 其中 `CLUSTER_NAME` / `ACCOUNTS` / `DEFAULT_ACCOUNT` 决定集群名与站点账户清单
+> （示例站点：`ZJU-CV`、`phd,ms,be,ra`、默认 `phd`；`ACCOUNT` 是兼容旧单账户键）。
+> 它们会被渲染进 `site.conf` 与文档；**Slurm 里的账户由门户安装时的 `accounts-init` 创建**。
+
 ```bash
 make                                   # ★ 就地替换：文档 + 机器配置都写回**当前仓库**
 make SET="SSH_PORT=2222 USER=alice"    # 临时覆盖个别配置项（不写回 cluster.conf）
@@ -85,7 +94,8 @@ make help                              # 全部目标
 `make` 做两件事，**都只落在当前仓库里**：
 
 1. **文档就地替换** —— `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` 里的
-   `<ADMIN>` / `<GPU01>` / `<LAN_CIDR>` / `<USER>` 等占位符被填成本集群实值，直接可读、可交付。
+   `<ADMIN>` / `<GPU01>` / `<LAN_CIDR>` / `<CLUSTER_NAME>` / `<ACCOUNTS>` / `<DEFAULT_ACCOUNT>` /
+   `<USER>` 等占位符被填成本集群实值，直接可读、可交付。
    （`provision/**` 是生成器自身文档，同样不参与。）
 2. **机器配置写进 `deploy/`** —— `deploy/etc/` 的目录结构与目标机一一对应
    （`deploy/etc/hosts` → `/etc/hosts`），`deploy/MANIFEST.md` 是下发清单。
@@ -111,7 +121,7 @@ make help                              # 全部目标
 | `deploy/etc/ssh/sshd_config.d/10-portal-only.conf` | 同路径（**只允许 root 登录宿主机**） | 每台 |
 | `deploy/etc/fstab.<节点>` | 追加到 `/etc/fstab`（只给数据盘 / NFS 行，系统盘行别动） | 管理 + 各计算 |
 | `deploy/etc/exports` | `/etc/exports` | 管理节点 |
-| `deploy/etc/chrony/*`、`deploy/etc/cluster-portal/*` | 追加 / 同路径 | 管理节点 |
+| `deploy/etc/chrony/*`、`deploy/etc/cluster-portal/*` | 追加 / 同路径（`site.conf` 含 `ACCOUNTS`/`DEFAULT_ACCOUNT`） | 管理节点 |
 | `base-cluster/scripts/cluster-admin/*.sh` | `/opt/cluster-admin/` | 管理节点（就地模式不复制副本，直接 rsync 源目录）|
 | `README.md`、`base-cluster/**/*.md`、`oa/**/*.md` | 就地替换，直接阅读 | — |
 | `deploy/MANIFEST.md` | 下发清单本身 | — |
@@ -123,13 +133,16 @@ make help                              # 全部目标
 
 - 手册里凡是要落地 `/etc/hosts`、`slurm.conf`、`/etc/exports`、`/etc/fstab` 的地方，
   **直接用 `deploy/etc/` 那份**，不要手写。
+- **账户**：`cluster.conf` 的 `ACCOUNTS`/`DEFAULT_ACCOUNT` 只写进 `site.conf`；Slurm 里的会计账户与
+  `acct-<账户名>` QoS 在门户安装时由 `portal-ctl accounts-init` 创建（也可按底层手册 §7.4 手工建）。
+  每账户的“单用户同时最多 N 卡”用 QoS `MaxTRESPerUser`，**不用 account 级 `GrpTRES`**（见手册 §7.6）。
 - `/opt/cluster-admin/` 三个脚本取 `base-cluster/scripts/cluster-admin/`（或 `out/opt/cluster-admin/`）。
 - 交互容器镜像的构建源在 `base-cluster/images/`，含加固过的 `start_ssh.sh`。
 
-> **换集群 = 改参数 + 重新生成**：节点数 / 卡型 / ssh 端口 / 存储布局 / 套餐都写在
+> **换集群 = 改参数 + 重新生成**：节点数 / 卡型 / ssh 端口 / 存储布局 / 套餐 / **账户清单**都写在
 > `provision/cluster.conf`，改完 `make`，站点配置（site.conf、plans.json）与全部 `/etc` 配置
 > 一起生成到 `deploy/`。门户代码本就不写死 ssh 端口与 GPU 型号，节点列表、分区名运行时探测，
-> 因此**换机器不需要改代码**。
+> 因此**换机器不需要改代码**（新增账户后记得重跑 `portal-ctl accounts-init`）。
 
 ### ② 部署门户（管理节点）
 
@@ -143,24 +156,29 @@ deploy/install.sh <代码目录> <端口> [站点目录]   # 幂等
 
 安装器会把应用代码设为 **root 属主**（`portal` 进程不可写代码），并对 systemd 单元做沙箱加固
 （`ProtectSystem=strict` + `ReadWritePaths` + `UMask=0077`）。
+安装过程中还会按 `site.conf` 的 `ACCOUNTS` 自动执行 `portal-ctl accounts-init`（幂等建账户 + `acct-*` QoS；
+Slurm 未就绪时只告警），装完可用 `portal-ctl accounts` 核对。之后 root 可在门户「管理账户」页
+维护账户的优先级 / 单用户卡数上限 / 可抢占 / 成员 / 到期；用户开通与申请资源时都要选账户。
 
 ### ③ 验收
 
 ```bash
-oa/scripts/verify-install.sh     # 安装自检：含 sshd 白名单 / 代码属主 / enroot 断言
+oa/scripts/verify-install.sh     # 安装自检：含 sshd 白名单 / 代码属主 / enroot / ACCOUNTS 初始化断言
 oa/scripts/e2e_security.sh       # 端到端安全验收：用户能进自己的容器、不能进宿主机
 oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完自动清理并断言无残留）
 ```
 
-再按 `01-部署手册.md` 的「验收」一节做一遍人工确认。
+再按 `01-部署手册.md` 的「验收」一节做一遍人工确认（含账户：`portal-ctl accounts`、
+`portal-ctl user-accounts <用户>`、申请时选账户）。
 
 ### ④ 日常使用
 
 | 我要做什么 | 看哪本 / 敲什么 |
 |---|---|
 | 开通用户、改配额、代申请、备份恢复、排障 | `oa/02-管理手册.md` |
-| 登录门户、申请资源、连容器、看日志、停机 | `oa/03-使用手册.md` |
-| 加机器 / 换卡型 / 换端口等改参数 | 编辑 `provision/cluster.conf` → `make` → 下发变化的文件 |
+| **管理账户 / 临时高优项目 / 多账户额度** | `oa/02-管理手册.md` §1b、§1d；门户 root 的「管理账户」页 |
+| 登录门户、申请资源（选计费账户）、连容器、看日志、停机 | `oa/03-使用手册.md` |
+| 加机器 / 换卡型 / 换端口 / 增减账户等改参数 | 编辑 `provision/cluster.conf` → `make` → 下发变化的文件 |
 | 整机备份、安装自检 | `oa/scripts/backup-portal.sh`、`oa/scripts/verify-install.sh` |
 | 本地跑测试（不需要集群） | `make test` |
 
@@ -175,11 +193,27 @@ oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完�
 | 节点列表 / 分区名 | `sinfo` 运行时探测 | 不用改 |
 | 节点 IP | `/etc/hosts` 解析（取最后一条非回环地址） | 写好 hosts 即可 |
 | 节点间 ssh 端口 | `/etc/cluster-portal/site.conf` 的 `SSH_PORT` | **要改** |
+| **账户列表 / 默认账户** | `site.conf` 的 `ACCOUNTS` / `DEFAULT_ACCOUNT`（由 `cluster.conf` 生成） | **要改**：增减账户、换默认账户；重启门户并重跑 `portal-ctl accounts-init` |
 | GPU 型号展示名 | site.conf 的 `GPU_MODEL_MAP`（纯数字 token 自动补 `RTX `） | 一般不用改 |
 | 套餐种子 | site.conf 的 `SEED_PLANS` 指向的 JSON | 按机型改 |
 
 `site.conf` 由门户进程（`portalapp/siteconf.py`）与 root 助手（`deploy/portal-ctl`）**同时**读取，
 优先级：环境变量 `PORTAL_<KEY>` > site.conf > 代码内置默认值。
+
+## 命名约定（集群名 / 账户 / OS 用户）
+
+| 名字 | 含义 | 配置键 | 示例（现场站点） |
+|---|---|---|---|
+| **集群名** | `slurm.conf` 的 `ClusterName`，也是 sacctmgr 的 cluster 名 | `CLUSTER_NAME` | `ZJU-CV` |
+| **会计账户** | Slurm 的计费/优先级/额度单位，**可多个**，一个用户可同时属于多个 | `ACCOUNTS`（逗号分隔） | `phd,ms,be,ra` |
+| **默认账户** | 新用户默认挂的账户，必须在 `ACCOUNTS` 内 | `DEFAULT_ACCOUNT` | `phd` |
+| **OS 用户** | Linux 账号（运维/示例用户），与 Slurm 账户无关 | `USER` | `zju` |
+
+> 账户由 root 在门户「管理账户」页维护：优先级（1~10）/ 单用户卡数上限（QoS `MaxTRESPerUser`，
+> 0=不限）/ 可抢占 / 成员 / 到期。**账户不设总额度**（不用 account 级 `GrpTRES`）；
+> 多账户额度**叠加**（如 `phd` 8 + 临时项目 16 = 同时最多 24 卡，受物理卡数限制）。
+> 文档模板里这些都写成 `<CLUSTER_NAME>` / `<ACCOUNTS>` / `<DEFAULT_ACCOUNT>` / `<USER>` 占位符，
+> `ZJU-CV`/`phd` 只是现场站点的示例值，不要把它们写死进通用文档。
 
 ## 本地开发与测试
 
@@ -214,15 +248,17 @@ E2E_BASE=http://<ADMIN>:8000 .venv-test/bin/python tests/e2e_live.py
 Ubuntu 24.04 · Slurm 26.05.1（源码编译，含 MySQL 会计 + NVML）· enroot 4.2.1 · pyxis v0.24.0 ·
 Python 3.12 · Flask 3.1.3 + waitress。
 
-已落地的两套实例：
+已落地的实例与回归夹具：
 
-| 实例 | 节点构成 | 卡 | sshd | 门户 | 档案（含真实主机名/IP） |
+| 实例 | 节点构成 | 卡 | sshd | 账户 | 档案（含真实主机名/IP） |
 |---|---|---|---|---|---|
-| A（现场实例） | 3 节点：管理/登录 + 2 计算 | 各 1×RTX 3060 | 2180 | 管理节点 :8000 | `provision/cluster.conf` |
-| B（另一套） | 2 节点：管理兼计算 + 1 计算 | 各 **3×RTX 3090** | 2022 | 管理节点 :8000 | `provision/conf/3090-2node.conf` |
+| A（现场实例 `ZJU-CV`） | 4 节点：管理 `3090-00` + 3 计算 | 各 4×RTX 3090 | 2022 | `phd,ms,be,ra`（默认 `phd`） | `provision/cluster.conf` |
+| B（回归夹具，3090） | 2 节点：管理兼计算 + 1 计算 | 各 3×RTX 3090 | 2022 | 单账户 `lab` | `provision/conf/3090-2node.conf` |
+| C（字段夹具，3060） | 3 节点：管理/登录 + 2 计算 | 各 1×RTX 3060 | 2180 | 单账户 `lab` | `provision/conf/field-3node.conf` |
 
-> 本表刻意不写主机名 —— 它同时描述两套集群，写成占位符会在渲染时被填成**本集群**的值而失真。
-> 两套的真实主机名/IP 分别在 `provision/cluster.conf` 与 `provision/conf/3090-2node.conf` 里。
+> 本表刻意不写主机名 —— 它同时描述多套集群，写成占位符会在渲染时被填成**本集群**的值而失真。
+> 各套的真实主机名/IP 与账户清单在对应 `.conf` 里；`ZJU-CV` / `phd` 等只是现场站点示例，
+> 通用文档里一律用 `<CLUSTER_NAME>` / `<ACCOUNTS>` / `<DEFAULT_ACCOUNT>` / `<USER>` 占位符。
 
 版本组合见上方「环境基线」与 `base-cluster/all-in-one-cluster-manual.md`；
-第二套参数（3090）同时充当生成器的回归夹具：`make sites` 会用它渲染一遍并对照。
+两套参数（3090 双盘 / 3060 三节点）同时充当生成器的回归夹具：`make sites` 会分别渲染一遍并对照。

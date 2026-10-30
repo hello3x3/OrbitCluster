@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}管理账户 - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>管理账户</h1>
+  <p class="muted">Slurm 计费账户（QoS）管理，仅超级管理员 root 可见/可用。
+    每个账户对应一个 <code>acct-&lt;名称&gt;</code> QoS：<b>优先级</b>越大调度越优先；<b>单用户上限</b>
+    是该账户下<b>每个用户</b>同时最多占用的 GPU 卡数（0 = 不限）。多个账户的额度可叠加。
+    临时项目可设置到期时间：到期后只禁止新提交，<b>不会</b>终止正在运行的作业。</p>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+{% if accounts_slurm_ok is defined and not accounts_slurm_ok %}
+<div class="alert alert-warn">读取 Slurm 账户快照失败：{{ accounts_slurm_err or '未知错误' }}。
+  页面仍显示门户库里的账户配置，但“Slurm 未同步/成员”等信息可能不准确；保存账户会重试同步。</div>
+{% endif %}
+
+<section class="card">
+  <h2>新建账户</h2>
+  <form method="post" action="/admin/accounts/add" class="acct-form" id="acct-add-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="row">
+      <label>账户名
+        {# `-` 必须转义：Chrome 111+ 按 HTML 规范用 v 标志编译 pattern，字符类里裸 `-` 会让整条属性被忽略 #}
+        <input name="name" required maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}"
+               placeholder="例如 proj"
+               title="小写字母开头，只能包含小写字母、数字、下划线、横线（1-32 位）">
+      </label>
+      <label>说明 <input name="description" maxlength="200" placeholder="可选，展示在账户列表里"></label>
+      <label>优先级
+        <input type="number" name="priority" value="5" min="1" max="10" required
+               title="1-10，越大调度越优先">
+      </label>
+      <label>单用户卡数上限
+        <input type="number" name="per_user_gpu_cap" value="0" min="0" max="64" required
+               title="该账户下每个用户同时最多占用的 GPU 卡数；0 = 不限">
+      </label>
+    </div>
+    <div class="row acct-flags">
+      <label class="chk"><input type="checkbox" name="preempt" value="1"> 可抢占低优先级账户</label>
+      <label class="chk"><input type="checkbox" name="is_temporary" value="1"> 临时项目</label>
+      <label>到期时间
+        <input type="datetime-local" name="expires_at" step="60"
+               title="临时项目可设置；留空 = 长期有效">
+      </label>
+    </div>
+    <button class="btn btn-primary" type="submit">创建账户</button>
+    <span class="muted small">账户名创建后不可修改（Slurm 账户名即计费名）</span>
+  </form>
+</section>
+
+<section class="card">
+  <h2>账户列表（{{ accounts|length }}）</h2>
+  {% if accounts %}
+  <table class="table" id="acct-table">
+    <thead><tr>
+      <th>账户名</th><th>类型</th><th>优先级</th><th>单用户上限</th>
+      <th>可抢占</th><th>成员数</th><th>到期</th><th>操作</th>
+    </tr></thead>
+    <tbody>
+    {% for a in accounts %}
+      <tr>
+        <td>
+          <b class="mono">{{ a.name }}</b>
+          {% if a.name == default_account %}<span class="badge-default" title="站点默认账户">默认</span>{% endif %}
+          {% if not a.enabled %}<span class="st st-cancelled">已停用</span>{% endif %}
+          {% if a.expired %}<span class="st st-cancelled">已到期</span>{% endif %}
+          {% if not a.slurm_ok %}<span class="badge-warn" title="门户库有该账户，但 Slurm 中未找到（或读取失败）。保存一次账户即可触发同步。">Slurm 未同步</span>{% endif %}
+          {% if a.description %}<div class="small muted acct-desc">{{ a.description }}</div>{% endif %}
+        </td>
+        <td>{% if a.is_temporary %}<span class="badge-temp">临时</span>{% else %}长期{% endif %}</td>
+        <td class="mono">{{ a.priority }}</td>
+        <td class="mono">{% if a.per_user_gpu_cap %}{{ a.per_user_gpu_cap }} 卡{% else %}不限{% endif %}</td>
+        <td>{% if a.preempt %}<span class="st st-running">是</span>{% else %}否{% endif %}</td>
+        <td class="mono">{{ a.member_count }}</td>
+        <td class="mono small">{% if a.expires_at %}{{ (a.expires_at or '')|replace('T', ' ') }}{% else %}—{% endif %}</td>
+        <td class="ops">
+          <button class="btn btn-ghost btn-sm act-acct-edit" type="button"
+                  data-target="acct-edit-{{ a.name }}">编辑</button>
+          <button class="btn btn-ghost btn-sm act-acct-members" type="button"
+                  data-account="{{ a.name }}">成员（{{ a.member_count }}）</button>
+          <button class="btn btn-danger btn-sm act-acct-del" type="button"
+                  data-name="{{ a.name }}"
+                  data-url="/admin/accounts/{{ a.name }}/delete"
+                  data-msg="确定删除账户「{{ a.name }}」？{% if a.member_count %}该账户还有 {{ a.member_count }} 个成员，Slurm 侧会拒绝删除；请先在「成员」弹窗里移除全部成员。{% else %}删除后不可恢复。{% endif %}">删除</button>
+        </td>
+      </tr>
+      <tr id="acct-edit-{{ a.name }}" hidden>
+        <td colspan="8">
+          <form method="post" action="/admin/accounts/{{ a.name }}/edit" class="acct-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="name" value="{{ a.name }}">
+            <div class="row">
+              <label>账户名 <input value="{{ a.name }}" disabled></label>
+              <label>说明 <input name="description" maxlength="200" value="{{ a.description }}"></label>
+              <label>优先级 <input type="number" name="priority" min="1" max="10" value="{{ a.priority }}" required></label>
+              <label>单用户卡数上限 <input type="number" name="per_user_gpu_cap" min="0" max="64" value="{{ a.per_user_gpu_cap }}" required></label>
+            </div>
+            <div class="row acct-flags">
+              <label class="chk"><input type="checkbox" name="preempt" value="1" {% if a.preempt %}checked{% endif %}> 可抢占低优先级账户</label>
+              <label class="chk"><input type="checkbox" name="is_temporary" value="1" {% if a.is_temporary %}checked{% endif %}> 临时项目</label>
+              <label>到期时间
+                <input type="datetime-local" name="expires_at" step="60"
+                       value="{{ ((a.expires_at or '')|replace(' ', 'T'))[:16] }}">
+              </label>
+            </div>
+            <button class="btn btn-primary btn-sm" type="submit">保存修改</button>
+            {% if not a.slurm_ok %}<span class="muted small">保存会调用账户同步，尝试在 Slurm 中创建/更新该账户</span>{% endif %}
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">暂无账户：请先在上方创建，或确认站点配置里的 ACCOUNTS。</p>
+  {% endif %}
+</section>
+
+<!-- 成员管理弹窗 -->
+<div class="modal-mask" id="members-modal" hidden>
+  <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="members-title">
+    <div class="modal-head"><h3 id="members-title">账户成员</h3>
+      <button class="btn btn-ghost btn-sm" type="button" data-close="members-modal">✕</button></div>
+    <div class="modal-body">
+      <div id="members-list" class="acct-members"></div>
+      <p class="empty" id="members-empty" hidden>该账户暂无成员</p>
+      <div class="acct-member-add" id="member-add-box">
+        <h3>添加成员</h3>
+        <label>门户用户
+          <select id="member-user">
+            {% for u in users %}
+            <option value="{{ u.id }}" data-username="{{ u.username }}">{{ u.username }}{% if u.display_name and u.display_name != u.username %}（{{ u.display_name }}）{% endif %}{% if u.role == 'admin' %}（管理员）{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="chk"><input type="checkbox" id="member-default"> 同时设为该用户的默认账户</label>
+        <button class="btn btn-primary btn-sm" type="button" id="member-add-btn">添加成员</button>
+        <p class="field-hint" id="member-add-hint" hidden></p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" type="button" data-close="members-modal">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="acct-page-data">{"accounts": {{ accounts|tojson }}, "default": {{ default_account|tojson }}}</script>
+{% endblock %}

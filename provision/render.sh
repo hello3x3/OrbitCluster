@@ -166,7 +166,11 @@ TIMEZONE="$(cfg TIMEZONE Asia/Shanghai)"
 # 仓库里不写任何真实姓名，一律用 <USER> 占位，渲染时填成这里配的值。
 # ⚠️ shell 变量故意叫 USER_VAL —— 不要把 CFG 里的 USER 直接赋给 $USER 去遮蔽环境变量。
 USER_VAL="$(cfg USER lab)"
-ACCOUNT="$(cfg ACCOUNT lab)"
+# Slurm 会计账户：ACCOUNT 是**旧单账户键**（兼容），新配置用 ACCOUNTS + DEFAULT_ACCOUNT。
+# 解析规则见下面「多账户」小节：ACCOUNTS 缺省取 ACCOUNT；DEFAULT_ACCOUNT 缺省取第一个账户。
+ACCOUNT_CFG="$(cfg ACCOUNT lab)"
+ACCOUNTS_CFG="$(cfg ACCOUNTS)"
+DEFAULT_ACCOUNT_CFG="$(cfg DEFAULT_ACCOUNT)"
 SHARE_MOUNT="$(cfg SHARE_MOUNT /share)"
 SHARE_DEVICE="$(cfg SHARE_DEVICE)"
 IMAGES_DEVICE="$(cfg IMAGES_DEVICE)"
@@ -175,6 +179,48 @@ GRES_MODE="$(cfg GRES_MODE auto)"
 GPU_PREFIX="$(cfg GPU_PREFIX RTX)"
 PORTAL_PORT="$(cfg PORTAL_PORT 8000)"
 SLURM_VERSION="$(cfg SLURM_VERSION 26.05.1)"
+
+# ---------------------------------------------------------------------------
+# 多账户（ACCOUNTS=逗号分隔；DEFAULT_ACCOUNT=新用户默认账户）
+#
+#   优先级：ACCOUNTS 显式配置 > 旧键 ACCOUNT > 兜底 lab
+#          DEFAULT_ACCOUNT 显式配置 > ACCOUNTS 第一个 > 兜底 lab
+#   规则与门户（portalapp/siteconf.py）和 root 助手（portal-ctl）保持一致：
+#     账户名 ^[a-z][a-z0-9_-]{0,31}$；默认账户必须在账户列表内。
+#   这里**直接 fail**（而不是渲染出一份自相矛盾的配置再等部署时炸）。
+#   SUBST[ACCOUNT] 保留，语义固定为「默认账户」，旧模板/旧文档不用改。
+# ---------------------------------------------------------------------------
+declare -a ACCOUNTS_LIST=()
+_add_account() {
+  local a="$1" x
+  [ -z "$a" ] && return 0
+  if ! [[ "$a" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+    echo "  [错误] 非法账户名 '$a'：须匹配 ^[a-z][a-z0-9_-]{0,31}$（小写字母开头，仅小写字母/数字/下划线/横线）" >&2
+    exit 1
+  fi
+  for x in "${ACCOUNTS_LIST[@]}"; do
+    [ "$x" = "$a" ] && return 0
+  done
+  ACCOUNTS_LIST+=("$a")
+}
+if [ -n "$ACCOUNTS_CFG" ]; then
+  IFS=',' read -r -a _acct_parts <<< "$ACCOUNTS_CFG"
+  for _a in "${_acct_parts[@]}"; do _add_account "$(trim "$_a")"; done
+  unset _acct_parts _a
+fi
+if [ "${#ACCOUNTS_LIST[@]}" -eq 0 ]; then _add_account "$(trim "$ACCOUNT_CFG")"; fi
+if [ "${#ACCOUNTS_LIST[@]}" -eq 0 ]; then _add_account lab; fi
+DEFAULT_ACCOUNT="$(trim "$DEFAULT_ACCOUNT_CFG")"
+[ -n "$DEFAULT_ACCOUNT" ] || DEFAULT_ACCOUNT="${ACCOUNTS_LIST[0]}"
+_has_default=0
+for _a in "${ACCOUNTS_LIST[@]}"; do [ "$_a" = "$DEFAULT_ACCOUNT" ] && _has_default=1; done
+if [ "$_has_default" != 1 ]; then
+  echo "  [错误] DEFAULT_ACCOUNT=$DEFAULT_ACCOUNT 不在 ACCOUNTS（${ACCOUNTS_LIST[*]}）中" >&2
+  exit 1
+fi
+ACCOUNTS_STR="$(IFS=,; printf '%s' "${ACCOUNTS_LIST[*]}")"
+ACCOUNT="$DEFAULT_ACCOUNT"    # 旧键 ACCOUNT 的渲染值 = 默认账户（兼容旧模板/旧文档）
+unset _a _has_default
 
 # 管理节点是否同时是计算节点（决定它要不要 NFS 客户端行、要不要 slurmd）
 MGR_IS_COMPUTE=0
@@ -264,7 +310,9 @@ SUBST[MGR_NAME]="$MGR_NAME";           SUBST[MGR_IP]="$MGR_IP"
 SUBST[CLUSTER_NAME]="$CLUSTER_NAME";   SUBST[PARTITION]="$PARTITION"
 SUBST[SSH_PORT]="$SSH_PORT";           SUBST[LAN_CIDR]="$LAN_CIDR"
 SUBST[TIMEZONE]="$TIMEZONE";           SUBST[USER]="$USER_VAL"
-SUBST[ACCOUNT]="$ACCOUNT";             SUBST[SHARE_MOUNT]="$SHARE_MOUNT"
+SUBST[ACCOUNT]="$ACCOUNT";             SUBST[ACCOUNTS]="$ACCOUNTS_STR"
+SUBST[DEFAULT_ACCOUNT]="$DEFAULT_ACCOUNT"
+SUBST[SHARE_MOUNT]="$SHARE_MOUNT"
 SUBST[IMAGES_MOUNT]="$IMAGES_MOUNT";   SUBST[PORTAL_PORT]="$PORTAL_PORT"
 SUBST[SLURM_VERSION]="$SLURM_VERSION"; SUBST[GRES_BODY]="$GRES_BODY"
 SUBST[NODE_HOSTS]="${NODE_HOSTS%$'\n'}"; SUBST[NODE_LINES]="${NODE_LINES%$'\n'}"
@@ -328,6 +376,7 @@ gen_plans_json() {
 }
 
 echo "==> 渲染集群: ${CLUSTER_NAME}  节点: ${NODE_LIST}  管理节点: ${MGR_NAME}"
+echo "    账户: ${ACCOUNTS_STR}（默认 ${DEFAULT_ACCOUNT}）"
 echo "    配置: $CONF"
 echo "    输出: $OUT$( [ "$PRINT" = 1 ] && echo ' (仅打印)')"
 [ "$PRINT" = 0 ] && [ "$CLEAN" = 1 ] && { rm -rf "$OUT"; echo "    已清空旧输出"; }
@@ -447,6 +496,8 @@ DOCMAP="$(mktemp)"
   echo "<SSH_PORT>=${SSH_PORT}"
   echo "<CLUSTER_NAME>=${CLUSTER_NAME}"
   echo "<ACCOUNT>=${ACCOUNT}"
+  echo "<ACCOUNTS>=${ACCOUNTS_STR}"
+  echo "<DEFAULT_ACCOUNT>=${DEFAULT_ACCOUNT}"
   echo "<USER>=${USER_VAL}"
   echo "<TIMEZONE>=${TIMEZONE}"
   echo "<PORTAL_PORT>=${PORTAL_PORT}"

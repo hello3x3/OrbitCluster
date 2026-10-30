@@ -58,6 +58,25 @@
         <input type="password" name="password" maxlength="128" placeholder="留空自动生成">
       </label>
     </div>
+    {% if accounts %}
+    <div class="row" id="create-acctrow">
+      <label>集群账户（可多选）
+        <select name="accounts" id="create-accounts" class="multi-select" multiple
+                size="{{ accounts|length if accounts|length < 4 else 4 }}">
+          {% for a in accounts %}
+          <option value="{{ a.name }}" {% if a.name == default_account or (not default_account and loop.first) %}selected{% endif %}{% if not a.enabled %} disabled{% endif %}>{{ a.name }}（优先级 {{ a.priority }}，单用户最多 {% if a.per_user_gpu_cap %}{{ a.per_user_gpu_cap }} 卡{% else %}不限{% endif %}{% if not a.enabled %}，已停用{% endif %}）</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>默认账户
+        <select name="default_account" id="create-default-account">
+          {% for a in accounts %}<option value="{{ a.name }}" {% if a.name == default_account or (not default_account and loop.first) %}selected{% endif %}{% if not a.enabled %} disabled{% endif %}>{{ a.name }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <p class="field-note" style="margin-top:-4px">普通用户至少选 1 个账户，默认账户必须是已选之一（管理员角色可留空）。
+      多账户额度可叠加：同一用户在多个账户下的单用户上限相加（仍受物理卡数限制）。</p>
+    {% endif %}
     <button class="btn btn-primary" type="submit">开通账号</button>
     <span class="muted small">提交后请立即把初始密码告知用户（仅本次显示）</span>
   </form>

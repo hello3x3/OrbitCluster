@@ -9,6 +9,7 @@
       {% if i.startup_error %}<div class="small txt-err">⚠ {{ i.startup_error }}</div>{% endif %}</td>
   <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
   <td class="mono">{{ i.node_cn }}</td>
+  <td class="mono small">{{ i.account or '—' }}</td>
   <td class="mono">{{ i.port }}</td>
   <td class="small">{{ i.gpus }}×GPU · {{ i.cpus }}核 · {{ i.mem_gb }}G</td>
   <td class="mono small">{{ i.hours }}</td>
@@ -62,13 +63,38 @@
         {% else %}<span class="txt-err">读取失败：{{ my_quota.disk_err }}</span>{% endif %}
       </td>
     </tr>
-    {% if my_quota.slurm %}
+    {% if my_quota.accounts %}
+    <tr>
+      <th style="width:180px">账户额度</th>
+      <td>
+        <div class="acct-quota-grid">
+          {% for a in my_quota.accounts %}
+          <div class="acct-quota-card{% if a.is_default %} is-default{% endif %}">
+            <div class="acct-quota-head">
+              <b class="mono">{{ a.name }}</b>
+              {% if a.is_default %}<span class="badge-default" title="你的默认账户">默认</span>{% endif %}
+            </div>
+            <div class="small">QoS <code>{{ a.qos }}</code></div>
+            <div class="small">优先级 <b>{{ a.priority }}</b>
+              ｜ 单用户同时最多
+              <b>{% if a.per_user_gpu_cap %}{{ a.per_user_gpu_cap }} 卡{% else %}不限{% endif %}</b></div>
+          </div>
+          {% endfor %}
+        </div>
+        <p class="muted small" style="margin:8px 0 0">多账户额度<b>可叠加</b>：同时属于多个账户时，
+          可并行使用的额度为各账户上限之和（仍受集群物理卡数限制）。默认账户用于未显式指定账户的提交。</p>
+      </td>
+    </tr>
+    {% elif my_quota.slurm %}
     <tr><th>Slurm 关联</th><td>计费账号 <b>{{ my_quota.slurm.accounts }}</b> ｜ QoS：<b>{{ my_quota.slurm.qos }}</b></td></tr>
     <tr><th>Slurm 优先级</th><td>关联优先级 <b>{{ my_quota.slurm.assoc_priority }}</b></td></tr>
     <tr><th>总额度</th><td>{{ my_quota.slurm.total }}（QoS/关联未设 MaxTRES/GrpTRES/作业数/时长限制时显示“不限”）</td></tr>
     {% elif my_quota.slurm_err %}<tr><th>Slurm 额度</th><td class="txt-err">读取失败：{{ my_quota.slurm_err }}</td></tr>{% endif %}
   </table>
-  {% if my_quota.slurm %}
+  {% if my_quota.accounts %}
+  <p class="muted small" style="margin-top:8px">含义：作业会计入你在「申请资源」中选择的账户；
+    每个账户的优先级/单用户上限由管理员在「管理账户」中维护。</p>
+  {% elif my_quota.slurm %}
   <p class="muted small" style="margin-top:8px">含义：你的 Slurm 作业挂在<code>{{ my_quota.slurm.accounts }}</code>
     计费账号下、按 {{ my_quota.slurm.qos }} 进队调度（数值为该 QoS 的调度优先级，越大越优先）；
     “总额度”是 Slurm 在该 QoS/关联上给你的资源限额，未设置即为不限。</p>
@@ -82,7 +108,7 @@
   <table class="table" id="inst-table">
     <thead>
       <tr>
-        <th>作业#</th><th>资源</th><th>状态</th><th>节点</th><th>端口</th>
+        <th>作业#</th><th>资源</th><th>状态</th><th>节点</th><th>账户</th><th>端口</th>
         <th>配置</th><th>时长</th><th>申请时间</th><th>操作</th>
       </tr>
     </thead>

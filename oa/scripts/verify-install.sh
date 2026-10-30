@@ -137,6 +137,32 @@ else
   echo "  [i] 未安装 /etc/cluster-portal/site.conf → 使用代码内置默认值（ssh 端口 2180、RTX 3060）"
 fi
 
+echo "== 会计账户（多账户）=="
+_ACCT_JSON="$(/usr/local/sbin/portal-ctl accounts </dev/null 2>&1 || true)"
+if printf '%s' "$_ACCT_JSON" | grep -q '"ok": *true'; then
+  SITE_ACCTS="$(sed -n 's/^ACCOUNTS=//p' /etc/cluster-portal/site.conf 2>/dev/null | tr -d ' \r' | head -1)"
+  [ -n "$SITE_ACCTS" ] || SITE_ACCTS="$(sed -n 's/^ACCOUNT=//p' /etc/cluster-portal/site.conf 2>/dev/null | tr -d ' \r' | head -1)"
+  _ACCT_MISS="$(printf '%s' "$_ACCT_JSON" | SITE_ACCTS="$SITE_ACCTS" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+have = {a.get("name") for a in (d.get("accounts") or []) if a.get("exists")}
+want = [x.strip() for x in (os.environ.get("SITE_ACCTS") or "").split(",") if x.strip()]
+print(",".join(x for x in want if x not in have))' 2>/dev/null || true)"
+  if [ -z "$_ACCT_MISS" ]; then
+    echo "  [OK] ACCOUNTS 账户均已初始化：${SITE_ACCTS:-（未配置，使用单账户回退）}"
+  else
+    echo "  [FAIL] 以下账户未在 Slurm 中创建：$_ACCT_MISS"
+    echo "         修法：在管理节点以 root 执行 /usr/local/sbin/portal-ctl accounts-init"
+    fail=1
+  fi
+else
+  echo "  [FAIL] portal-ctl accounts 失败（slurmdbd 未运行？）：$(printf '%s' "$_ACCT_JSON" | head -c 200)"
+  fail=1
+fi
+
 echo "== 集群账号一致性 =="
 # 重复 UID 会造成的故障：
 # enroot 的 /etc/enroot/hooks.d/10-shadow.sh 会执行 `getent passwd <uid>` 取**一条**

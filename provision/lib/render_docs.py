@@ -9,7 +9,8 @@
 做什么：
   1. 遍历仓库里的 *.md（跳过 .git/、provision/ 等生成器自身与第三方内容）
   2. 把 <TOKEN> 占位符替换成 cluster.conf 推出的实值
-     （<ADMIN> / <ADMIN_IP> / <GPU01>…<GPU0N> / <LAN_CIDR> / <SSH_PORT> …）
+     （<ADMIN> / <ADMIN_IP> / <GPU01>…<GPU0N> / <LAN_CIDR> / <SSH_PORT> …
+      / <ACCOUNT> / <ACCOUNTS> / <DEFAULT_ACCOUNT> …）
   3. **不改**角色名、账号名、路径名里的 admin：
      `cluster-admin`、`admin_users`、`admin_required`、`.cluster-portal-admin`、
      `reset-admin`（靠词边界天然排除），以及 `bootstrap.py admin … admin`（bootstrap 的
@@ -27,7 +28,9 @@ import sys
 SKIP_DIRS = ('.git', 'provision')
 
 SKIP_DIRNAMES = {'.git', '__pycache__', 'node_modules'}
-SKIP_PREFIXES = ('provision',)
+# 生成器只渲染「要交付的文档」。私有/工作目录（审计报告、NAS 审计、临时契约、
+# 真机探勘记录）必须排除：它们不属于站点文档，且就地渲染会改写这些文件。
+SKIP_PREFIXES = ('provision', 'review', 'nas_audit', '.team', '.recon')
 
 
 def _skip_dir(name):
@@ -83,8 +86,13 @@ def main():
     total = {}
     leftovers = []
     unmapped = {}
+    unmapped_site = {}
     written = []
     nodeish = re.compile(r'<((?:ADMIN|GPU\d+)(?:_[A-Z0-9]+)?)>')
+    # 多账户相关占位符：<ACCOUNT> 是旧单账户键（渲染值 = 默认账户），
+    # <ACCOUNTS> / <DEFAULT_ACCOUNT> 是新键。它们不是"节点"，单独统计未映射，
+    # 这样文档里写错/漏配时报告会明确指出来，而不是把 <ACCOUNTS> 原样留在交付文档里。
+    siteish = re.compile(r'<(ACCOUNTS|DEFAULT_ACCOUNT|ACCOUNT)>')
     for rel in collect_md(a.repo):
         if report_rel and rel == report_rel:
             continue
@@ -106,6 +114,8 @@ def main():
         # ③ 替换后仍存在的"节点类"占位符 → 说明 cluster.conf 里没有对应节点
         for m in nodeish.finditer(text):
             unmapped.setdefault(m.group(1), set()).add(rel)
+        for m in siteish.finditer(text):
+            unmapped_site.setdefault(m.group(1), set()).add(rel)
         if a.print:
             continue
         dst = os.path.join(a.out, rel)
@@ -144,6 +154,15 @@ def main():
         fh.write("\n> 文档正文只覆盖到上面这些位次。cluster.conf 里**再加机器**时：\n"
                  "> 配置文件（每台的 /etc/hosts、fstab、slurm NodeName、exports、chrony…）会按 NODE 行\n"
                  "> 自动全部生成；而文档正文不会自动多出段落 —— 文档里的示例就是示例。\n\n")
+        # 多账户相关占位符 ↔ 站点实值（默认账户/账户列表）
+        site_tokens = [t for t in ('<ACCOUNT>', '<ACCOUNTS>', '<DEFAULT_ACCOUNT>')
+                       if t in tokens]
+        if site_tokens:
+            fh.write("## 多账户占位符 ↔ 本集群实值\n\n| 占位符 | 本集群值 |\n|---|---|\n")
+            for t in site_tokens:
+                fh.write("| `%s` | `%s` |\n" % (t, tokens[t]))
+            fh.write("\n> `<ACCOUNT>` 是兼容旧配置的单账户键，渲染值恒为**默认账户**；"
+                     "新文档请优先用 `<ACCOUNTS>` / `<DEFAULT_ACCOUNT>`。\n\n")
         fh.write("## 占位符替换统计\n\n| 文档 | 替换处数 |\n|---|---|\n")
         for k in sorted(changed):
             fh.write("| `%s` | %d |\n" % (k, changed[k]))
@@ -161,11 +180,20 @@ def main():
                      "如果本集群确实没有这些节点，可以忽略（文档里的示例比本集群规模大）：\n\n")
             for t in sorted(unmapped):
                 fh.write("- `<%s>` —— 见于 %s\n" % (t, "、".join(sorted(unmapped[t]))))
+        if unmapped_site:
+            fh.write("\n## 未能替换的账户类占位符\n\n")
+            fh.write("文档里引用了下列占位符，但 cluster.conf 没有提供对应值 —— "
+                     "请检查 ACCOUNTS / DEFAULT_ACCOUNT / ACCOUNT：\n\n")
+            for t in sorted(unmapped_site):
+                fh.write("- `<%s>` —— 见于 %s\n" % (t, "、".join(sorted(unmapped_site[t]))))
     print("  文档渲染: %d 个文件、%d 处替换；残留小写 admin %d 处（已列入报告待核对）"
           % (len(changed), sum(changed.values()), len(leftovers)))
     if unmapped:
         print("  [i] 有 %d 个节点类占位符未映射（本集群节点更少）：%s"
               % (len(unmapped), " ".join("<%s>" % t for t in sorted(unmapped))))
+    if unmapped_site:
+        print("  [!] 有 %d 个账户类占位符未映射：%s"
+              % (len(unmapped_site), " ".join("<%s>" % t for t in sorted(unmapped_site))))
     return 0
 
 

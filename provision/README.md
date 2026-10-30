@@ -67,7 +67,7 @@ provision/
 
 | 段 | 键 | 说明 |
 |---|---|---|
-| 集群标识 | `CLUSTER_NAME` / `ACCOUNT` | slurm 集群名 / 会计账户名（建号脚本与门户共用） |
+| 集群标识 | `CLUSTER_NAME` / `ACCOUNTS` / `DEFAULT_ACCOUNT` / `ACCOUNT` | slurm 集群名 / 会计账户列表（逗号分隔）/ 新用户默认账户 / 兼容旧单账户键 |
 | 网络系统 | `LAN_CIDR` / `SSH_PORT` / `TIMEZONE` / `USER` | 网段、sshd 端口、时区、集群用户（文档示例里的 `<USER>`） |
 | 存储 | `SHARE_DEVICE` / `SHARE_MOUNT` / `IMAGES_DEVICE` / `IMAGES_MOUNT` | 数据盘与镜像盘（`IMAGES_DEVICE` 留空=同盘） |
 | Slurm | `SLURM_VERSION` / `PARTITION` / `GRES_MODE` / `GPU_PREFIX` | 版本、分区名、gres 生成方式、展示名前缀 |
@@ -77,6 +77,40 @@ provision/
 `cpus` / `mem_mb` 取自该机 `slurmd -C | head -1`；`sockets`/`threads` 不填则按单路 2 线程估算。
 留空 `cpus`/`mem_mb` 也能渲染，但 `slurm.conf` 里会是 `@@待实测@@` 占位符，并出现在
 `deploy/MANIFEST.md` 的"待实测回填"清单里 —— **上线前必须填**。
+
+### 多账户（`ACCOUNTS` / `DEFAULT_ACCOUNT`）
+
+`ACCOUNT` 是旧的单账户键，继续可用；新配置用 `ACCOUNTS` + `DEFAULT_ACCOUNT`：
+
+```conf
+CLUSTER_NAME=ZJU-CV
+ACCOUNTS=phd,ms,be,ra        # 逗号分隔，可带空格
+DEFAULT_ACCOUNT=phd          # 必须在 ACCOUNTS 里；留空=第一个账户
+ACCOUNT=phd                  # 兼容旧配置；ACCOUNT 缺省时就是唯一账户
+```
+
+解析规则（`render.sh` 与 `portalapp/siteconf.py`、`deploy/portal-ctl` 一致）：
+
+* `ACCOUNTS` 缺省 → 取 `ACCOUNT`；两者都缺省 → 兜底 `lab`。
+* `DEFAULT_ACCOUNT` 缺省 → 取 `ACCOUNTS` 第一个；再缺省 → `lab`。
+* 账户名必须匹配 `^[a-z][a-z0-9_-]{0,31}$`，`DEFAULT_ACCOUNT` 必须在列表内；
+  否则渲染直接报错退出（不产出自相矛盾的 `site.conf`）。
+
+每个账户在 Slurm 里对应一个 QoS `acct-<账户名>`，由门户（仅 root 的【管理账户】页）
+维护 `Priority`（1–10）与 `MaxTRESPerUser=gres/gpu=N`（该账户下**每个用户**同时最多 N 卡，
+0=不限）；**不使用账户级 `GrpTRES`**，因此多个账户的额度可以叠加。`preempt=true` 的账户
+其 QoS `Preempt` 会由助手全量重算为所有优先级更低的 `acct-*`。
+
+初始化/同步账户（部署后执行一次，之后由门户页面代劳）：
+
+```bash
+portal-ctl accounts-init      # 按 site.conf 的 ACCOUNTS 幂等建 account + acct-* QoS
+portal-ctl accounts           # 查看账户/QoS/成员数（JSON）
+```
+
+生成物里的 `site.conf` 会带 `ACCOUNTS` / `DEFAULT_ACCOUNT` / `ACCOUNT` / `CLUSTER_NAME`；
+`add-user.sh` 用 `--account <名>`（可重复）/ `--default-account <名>`（或环境变量
+`CLUSTER_ACCOUNTS` / `CLUSTER_DEFAULT_ACCOUNT` / `CLUSTER_ACCOUNT`）建关联并设默认账户。
 
 ## 生成物
 
@@ -145,7 +179,8 @@ out/
 | `<GPU01>`…`<GPU0N>`、`<GPU01_IP>`… | 第 1…N-1 个**计算**节点（按位置从 01 编号；管理节点只算 `<ADMIN>`） |
 | `<ADMIN_CPUS>` / `<GPU01_MEM>` / `<GPU01_GPUS>` … | 各 NODE 行的 cpus/mem_mb/gpus（手册 §4.2 的 slurm.conf 示例用） |
 | `<GPU_TYPE>` | 第一个带卡节点的 gpu_model |
-| `<LAN_CIDR>` `<SSH_PORT>` `<CLUSTER_NAME>` `<ACCOUNT>` `<USER>` `<TIMEZONE>` `<PORTAL_PORT>` `<SHARE_MOUNT>` `<IMAGES_MOUNT>` `<PARTITION>` `<SLURM_VERSION>` | 同名配置键 |
+| `<ACCOUNTS>` `<DEFAULT_ACCOUNT>` `<ACCOUNT>` | `ACCOUNTS`（逗号列表）/ `DEFAULT_ACCOUNT`（= 默认账户）/ 兼容旧键 `ACCOUNT`（渲染为默认账户） |
+| `<LAN_CIDR>` `<SSH_PORT>` `<CLUSTER_NAME>` `<USER>` `<TIMEZONE>` `<PORTAL_PORT>` `<SHARE_MOUNT>` `<IMAGES_MOUNT>` `<PARTITION>` `<SLURM_VERSION>` | 同名配置键 |
 
 不参与替换的（本就不是站点值）：`<新建用户名>`（手册命令模板，表示"这里填你要建的用户名"） `<UID>` `<KEY>` `<YYYYMMDD_HHMM>` `<GRAFANA_PASSWORD>` `<SLURMDB_PASSWORD>`；`base-cluster/images/**/Dockerfile` 里的 `<MAINTAINER_NAME>` / `<MAINTAINER_EMAIL>` 也不渲染（Dockerfile 不在 markdown 渲染范围内，构建时自行替换）。
 

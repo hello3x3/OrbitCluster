@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=32">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=33">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -20,6 +20,8 @@
        普通管理员连入口都不给 —— 后端那 6 条路由也会 403，这里只是不让他点了才发现。 #}
     {% if cur_user.username == 'root' %}
     <a href="{{ url_for('admin_plans') }}"{% if ep and ep.startswith('admin_plan') %} class="active"{% endif %}>资源套餐</a>
+    {# 用字面路径而不是 url_for：本页模板与后端路由并行开发，避免端点改名时整站 BuildError #}
+    <a href="/admin/accounts"{% if ep == 'admin_accounts' %} class="active"{% endif %}>管理账户</a>
     {% endif %}
     <a href="{{ url_for('admin_apply') }}"{% if ep == 'admin_apply' %} class="active"{% endif %}>代申请资源</a>
     {% endif %}
@@ -80,7 +82,7 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}?v=32"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=33"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

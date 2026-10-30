@@ -1,7 +1,7 @@
 # 实验室 GPU 集群全量部署手册（All-in-One）
 
 > **范围**：本手册把三份文档合并为一份，按顺序可在**新机器**上从零手动部署并验收通过：
-> NFS 共享盘 → Slurm 26.05.1（源码编译，**一步到位带会计插件**）→ enroot + pyxis 容器 → Prometheus+Grafana 监控 → 多用户（磁盘配额 + slurmdbd 会计 + 建号/扩容脚本 + fairshare）。
+> NFS 共享盘 → Slurm 26.05.1（源码编译，**一步到位带会计插件**）→ enroot + pyxis 容器 → Prometheus+Grafana 监控 → 多用户（磁盘配额 + slurmdbd 会计 + 多账户/QoS 优先级与额度 + 建号/扩容脚本）。
 
 ---
 
@@ -36,15 +36,23 @@
 |---|---|---|
 | 管理节点主机名/IP | `<ADMIN>` / `<ADMIN_IP>` | 换成你的实际值 |
 | GPU 节点主机名/IP | `<GPU01>`、`<GPU02>` / `<GPU01_IP>`、`<GPU02_IP>` | 加节点按同格式追加 |
-| 集群名 ClusterName | `lab` | slurm.conf 与 sacctmgr 必须同名 |
-| 默认账户名 | `lab` | sacctmgr account 与用户关联 |
+| 集群名 ClusterName | `<CLUSTER_NAME>` | slurm.conf 的 `ClusterName` 与 sacctmgr 的 cluster 必须同名 |
+| 会计账户 | `<ACCOUNTS>`（默认账户 `<DEFAULT_ACCOUNT>`） | 逗号分隔的 Slurm 账户清单；示例站点 ZJU-CV 为 `phd,ms,be,ra`，默认 `phd` |
 | 数据盘 | `/dev/sda` | ⚠️ 先 `lsblk` 确认不是系统盘（第 2.1 节） |
-| 用户 | `lab`，UID=1000 | 所有节点 UID 必须一致 |
+| 运维用户 OS USER | `<USER>`，UID=1000 | 所有节点 UID 必须一致。**它只是 OS 用户，不是 Slurm 账户名** |
 | NFS 共享 | 只导出 `/share` 一块 | 家目录 `/share/home/<user>` |
 | Slurm 版本 | 26.05.1 | 源码编译（本手册唯一主路径） |
 | enroot / pyxis | 4.2.1 / v0.24.0 | enroot 官方只发 GitHub .deb |
 | Grafana 密码 | `<GRAFANA_PASSWORD>` | 文档不落明文，自设 |
 | slurmdbd DB 密码 | `<SLURMDB_PASSWORD>` | 随机生成存 `/root/.slurmdb.pass`(600) |
+
+> **三个名字不要混**（本手册与门户文档都按这个口径）：
+> - **集群名 `ClusterName`** = `<CLUSTER_NAME>`：`slurm.conf` 与 sacctmgr 的 cluster 名，一套集群一个；
+> - **会计账户 `ACCOUNT`** = `<ACCOUNTS>`（默认账户 `<DEFAULT_ACCOUNT>`）：Slurm 的计费/优先级单位，
+>   **可以多个**，用户可同时属于多个账户（多账户额度叠加，见 7.6）；
+> - **OS 用户 `USER`** = `<USER>`：Linux 账号（运维/示例用户），与 Slurm 账户是两回事。
+>
+> 三者互相独立；文档里的占位符渲染后就是本站点的值（示例站点：集群 `ZJU-CV`、账户 `phd,ms,be,ra`、默认 `phd`）。
 
 ### 0.3 端口总表
 
@@ -183,8 +191,8 @@ EOF
 sshd -t && systemctl reload ssh
 sshd -T | grep -iE '^allowusers|^permitrootlogin'
 ```
-> * 若还有别的运维账号（例如手册 2.5 的 `lab`）确实需要登录宿主机，写成
->   `AllowUsers root lab`。**但绝不要把普通科研用户写进去。**
+> * 若还有别的运维账号（例如手册 2.5 的 OS 用户 `<USER>`）确实需要登录宿主机，写成
+>   `AllowUsers root <USER>`。**但绝不要把普通科研用户写进去。**
 > * `systemd-*`、`sshd`、`mysql` 等系统账号不必列 —— 它们本来就没有可用 shell。
 
 **验收（[全部节点]）**
@@ -297,35 +305,37 @@ fstab 挂载参数说明：
 | `hard,intr` | 服务端不可达时挂起等待而不是报错 | 数据安全 |
 | `actimeo=60` | 属性缓存 60s，目录列表即时性好 | 可调 |
 
-### 2.5 统一用户 lab（UID 全集群一致，家目录在 NFS）
+### 2.5 统一运维用户 <USER>（UID 全集群一致，家目录在 NFS）
 > ⚠️ 顺序：必须先有 `/share`（2.1/2.2），再建用户，否则 `useradd -m` 失败。
+> 这里的 `<USER>` 是 **OS 用户**（运维/示例账号），与 Slurm 会计账户（7.4 的 `<ACCOUNTS>`）无关；
+> 名字由 `cluster.conf` 的 `USER` 键决定，渲染后就是本站点的实际账号名（示例站点为 `zju`）。
 
 ```bash
-# [<ADMIN>] 建家目录 + 账号 + 免密 sudo（lab 是“管理员操作账号”；普通科研用户不加 sudo，建号脚本见 7.5）
+# [<ADMIN>] 建家目录 + 账号 + 免密 sudo（<USER> 是“管理员操作账号”；普通科研用户不加 sudo，建号脚本见 7.5）
 mkdir -p /share/home
-useradd -m -d /share/home/lab -u 1000 -s /bin/bash lab    # 已存在则跳过
-chown -R lab:lab /share/home/lab
-echo 'lab ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lab
+useradd -m -d /share/home/<USER> -u 1000 -s /bin/bash <USER>    # 已存在则跳过
+chown -R <USER>:<USER> /share/home/<USER>
+echo '<USER> ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/<USER>
 
 # [<GPU01>/<GPU02>] 只登记账号，不建家目录（-M；家目录经 NFS 自动可见）
-useradd -u 1000 -d /share/home/lab -s /bin/bash -M lab    # 已存在则跳过
-echo 'lab ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lab
+useradd -u 1000 -d /share/home/<USER> -s /bin/bash -M <USER>    # 已存在则跳过
+echo '<USER> ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/<USER>
 
 # [全部节点] 统一密码
-passwd lab
+passwd <USER>
 ```
 
 ### 2.6 第 2 章验收
 ```bash
-# [<GPU01>/<GPU02>] 普通用户写自家目录（属主应为 lab，不是 nobody）
-runuser -u lab -- touch /share/home/lab/$(hostname).test && ls -l /share/home/lab/
+# [<GPU01>/<GPU02>] 普通用户写自家目录（属主应为 <USER>，不是 nobody）
+runuser -u <USER> -- touch /share/home/<USER>/$(hostname).test && ls -l /share/home/<USER>/
 # [<GPU01>/<GPU02>] 1G 大文件写测试（oflag=direct 绕过客户端缓存，落到 datasets；测完删除）
-time runuser -u lab -- dd if=/dev/zero of=/share/datasets/nfs-write-test bs=1M count=1024 oflag=direct status=progress
+time runuser -u <USER> -- dd if=/dev/zero of=/share/datasets/nfs-write-test bs=1M count=1024 oflag=direct status=progress
 rm -f /share/datasets/nfs-write-test
-# [<ADMIN>] 在服务端确认文件属主是 lab 而不是 nobody（root_squash 未误伤普通用户）
-ls -l /share/home/lab/
+# [<ADMIN>] 在服务端确认文件属主是 <USER> 而不是 nobody（root_squash 未误伤普通用户）
+ls -l /share/home/<USER>/
 ```
-> 若文件属主是 `nobody`：说明你以 root 在建/写文件（root_squash 预期行为），改用 lab 身份即可。
+> 若文件属主是 `nobody`：说明你以 root 在建/写文件（root_squash 预期行为），改用 <USER> 身份即可。
 ---
 
 ## 3. 编译安装 Slurm 26.05.1（[全部节点]，每台各编一次）
@@ -450,7 +460,7 @@ munge -n | unmunge          # 本机自检：能解出自己即 OK
 ```bash
 mkdir -p /etc/slurm
 cat > /etc/slurm/slurm.conf <<'EOF'
-ClusterName=lab
+ClusterName=<CLUSTER_NAME>
 SlurmctldHost=<ADMIN>
 
 AuthType=auth/munge
@@ -684,7 +694,7 @@ mkdir -p /run/enroot && chmod 1777 /run/enroot      # /run 是 tmpfs，重启即
 echo 'd /run/enroot 1777 root root -' > /etc/tmpfiles.d/enroot.conf
 systemd-tmpfiles --create
 # NFS 缓存组目录预建（组共享前提：enroot 自动 mkdir 是 0700 只归第一人；预建 1777 后 mkdir -p 不改权限）
-# 每个需要共享的组补一条；gid 用 id -g <用户名> 查（别拿 UID 当 gid）。例 lab 组：
+# 每个需要共享的组补一条；gid 用 id -g <用户名> 查（别拿 UID 当 gid）。例 <USER> 组：
 mkdir -p /share/enroot-cache/group-1000 && chmod 1777 /share/enroot-cache/group-1000
 ```
 
@@ -801,11 +811,11 @@ srun --gres=gpu:1 --container-image=nvcr.io/nvidia/pytorch:24.03-py3 \
 srun --gres=gpu:1 --container-image=<IMAGES_MOUNT>/<你的镜像>.sqsh \
      --container-mounts=/share:/share python -c "import torch;print(torch.cuda.device_count())"
 
-# ③【普通用户】（多用户化的核心验证；lab 已建）
-runuser -u lab -- srun -D /tmp -N1 -w <GPU01> -o /tmp/lab-ct-%j.out \
+# ③【普通用户】（多用户化的核心验证；<USER> 已建）
+runuser -u <USER> -- srun -D /tmp -N1 -w <GPU01> -o /tmp/<USER>-ct-%j.out \
     --container-image=<IMAGES_MOUNT>/ubuntu-22.04.sqsh cat /etc/os-release ; echo EXIT=$?
 #    ↑ CPU 容器：应 EXIT=0（钩子末行漏了 exit 0 就会 exit 1）
-runuser -u lab -- srun -D /tmp -N1 -w <GPU01> --gres=gpu:1 -o /tmp/lab-ct-%j.out \
+runuser -u <USER> -- srun -D /tmp -N1 -w <GPU01> --gres=gpu:1 -o /tmp/<USER>-ct-%j.out \
     --container-image=<IMAGES_MOUNT>/pytorch-2.12.1-cuda13.0-cudnn9-devel.sqsh \
     python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 #    期望：True NVIDIA GeForce RTX 3060
@@ -1169,8 +1179,8 @@ squeue -o "%.8i %.12u %.14j %.3t %N"
 | 维度 | 管什么 | 由谁实现 | 本章位置 |
 |---|---|---|---|
 | 磁盘配额 | 每人在 /share 上的存储量（500G） | **ext4 usrquota**（与 Slurm 无关） | 7.2 |
-| 调度优先级 | 谁先跑（fairshare 动态公平） | slurmdbd + priority/multifactor | 7.6（默认 FIFO） |
-| 作业级限制 | 并发作业数/时长/GPU 卡时上限 | sacctmgr QoS / 关联限额 | 7.6（可选） |
+| 调度优先级 | 谁先跑（静态优先级，按账户） | slurmdbd + priority/multifactor + 账户 QoS | 7.6（默认 FIFO） |
+| 作业级限制 | 并发作业数/时长/**每账户每用户 GPU 卡数** | **账户 QoS**（`MaxTRESPerUser` 等） | 7.6（初始不限） |
 
 > ⚠️ ext4 只有按 UID 的配额、**没有按目录的配额**。500G 统计的是该用户在整个 /share 上的全部文件
 > （家目录 + 数据集 + enroot 缓存）。想“家目录与数据集分开设限”需要 XFS(pquota) 或独立盘，另议。
@@ -1322,15 +1332,46 @@ sacct -X -n -o JobID,User,State   # 三节点都应能出记录（不再 disable
 ```
 
 **⑥ sacctmgr 建 cluster/account/user 关联 [<ADMIN>]**
+
+会计模型是「集群 → 多个会计账户 → 用户关联」：<CLUSTER_NAME> 下先建站点配置
+`ACCOUNTS` 里的账户（示例站点 `ZJU-CV` 为 `phd` / `ms` / `be` / `ra`，默认账户 `phd`），
+**每个账户配一个同名 QoS `acct-<账户名>`**；用户通过关联同时属于一个或多个账户，
+并用 `defaultaccount` 指定默认账户。**不是“一个集群只有一个默认账户”。**
+
 ```bash
-sacctmgr -i add cluster lab                       # 若提示已存在则忽略（slurmctld 首次连上会自建）
-sacctmgr -i add account lab Organization=lab Description="默认账户"
-sacctmgr -i add user root account=lab adminlevel=Administrator
-sacctmgr -i add user lab account=lab
-sacctmgr show assoc format=Cluster,Account,User,AdminLevel
+# 集群（若提示已存在则忽略：slurmctld 首次连上会自建）
+sacctmgr -i add cluster <CLUSTER_NAME>
+
+# 初始账户：从站点配置 ACCOUNTS 读（逗号分隔）；每个账户一个 QoS，priority=5、每用户卡数不限
+IFS=',' read -ra ACCTS <<< "<ACCOUNTS>"
+for a in "${ACCTS[@]}"; do
+  a="${a// /}"                                        # 去掉逗号后的空格
+  sacctmgr -i add account "$a" Organization="<CLUSTER_NAME>" Description="会计账户 $a"
+  sacctmgr -i add qos "acct-$a" priority=5          # 每用户卡数上限默认不限（管理页再设）
+done
+
+# 管理员与运维用户挂默认账户；成员的 qos/defaultqos 指向该账户的 QoS
+sacctmgr -i add user root account="<DEFAULT_ACCOUNT>" adminlevel=Administrator
+sacctmgr -i add user "<USER>" account="<DEFAULT_ACCOUNT>" \
+  qos="acct-<DEFAULT_ACCOUNT>" defaultqos="acct-<DEFAULT_ACCOUNT>"
+sacctmgr -i modify user "<USER>" set defaultaccount="<DEFAULT_ACCOUNT>"
+
+# 查看：账户、QoS、关联与各自默认账户
+sacctmgr show account format=Account,Organization
+sacctmgr show qos format=Name,Priority,MaxTRESPU,Preempt
+sacctmgr show assoc format=Cluster,Account,User,QOS
+sacctmgr show user format=Name,DefaultAccount
 ```
+
+> **账户/QoS 的日常维护不用手工敲**：门户部署后由 `portal-ctl accounts-init`
+> （幂等补齐 `ACCOUNTS` 里的账户与 QoS）与 root 的【管理账户】页维护；
+> 建号脚本 `add-user.sh --account a --account b --default-account a` 负责把用户关联到多个账户。
+> 详见 7.6 与 `oa/02-管理手册.md`「管理账户」。
+>
+> **账户本身不设总额度**（不使用 account 级 `GrpTRES`）；“每人同时最多 N 卡”写在账户 QoS 的
+> `MaxTRESPerUser` 上，多账户额度可叠加（见 7.6）。
 > 会计刚开时 `AccountingStorageEnforce` 默认为 none（不做强制），没有关联的用户也能提交；
-> 关联的意义在于 fairshare 份额与 sacctmgr 限额（7.6）。历史从启用当天起累积。
+> 关联的意义在于优先级、额度与 `defaultaccount`。历史从启用当天起累积。
 
 ### 7.5 管理脚本（建号 + 配额，[<ADMIN>] 一次性安装）
 
@@ -1349,14 +1390,20 @@ done
 
 **新用户上线流程**：
 ```bash
-# ① <ADMIN>
-/opt/cluster-admin/add-user.sh <新建用户名> 500G
+# ① <ADMIN>（显式挂站点默认账户；多账户再追加 --account）
+/opt/cluster-admin/add-user.sh <新建用户名> 500G --account <DEFAULT_ACCOUNT>
+#    需要同时挂多个账户时显式传（--account 可重复），并指定默认账户：
+#    /opt/cluster-admin/add-user.sh <新建用户名> 500G \
+#        --account <DEFAULT_ACCOUNT> --account <其他账户> --default-account <DEFAULT_ACCOUNT>
 # ② <GPU01>、<GPU02>（UID 不一致时加 -u <管理节点上的 UID>）
 /opt/cluster-admin/add-user.sh <新建用户名>
 # ③ <ADMIN> 设初始密码
 passwd <新建用户名>
-# ④ 会计关联：① 已由 add-user.sh 自动完成(qos=normal)；手工补做时的等价命令:
-#    sacctmgr -i add user <新建用户名> account=lab qos=normal
+# ④ 会计关联：① 已由 add-user.sh 按 --account/--default-account 自动完成；
+#    手工补做时的等价命令（每个账户建一条关联，并设默认账户）：
+#    sacctmgr -i add user <新建用户名> account=<DEFAULT_ACCOUNT> \
+#        qos=acct-<DEFAULT_ACCOUNT> defaultqos=acct-<DEFAULT_ACCOUNT>
+#    sacctmgr -i modify user <新建用户名> set defaultaccount=<DEFAULT_ACCOUNT>
 # ⑤ skel 使用须知（可选，新家目录自动带；内容见下 CLUSTER-README.txt 段落）
 ```
 
@@ -1370,11 +1417,16 @@ passwd <新建用户名>
         squeue / scancel <jobid> / sacct
 ```
 
-### 7.6 每用户静态优先级 + 作业配额（不用 fairshare）
+### 7.6 账户级静态优先级 + 每账户单用户卡数上限（不用 fairshare）
 
-> 设计：管理员**人为调控**的静态优先级，不用 fairshare 的自动动态公平。每个用户挂一个 QoS，
-> QoS 承载"该用户优先级 + 作业级限制"；所有人默认同档 `normal`（中等、不限），需要时单独给某人
-> 建高档 QoS 即可。磁盘配额（ext4）与它无关，见 7.2。
+> 设计：管理员**人为调控**的静态优先级，不用 fairshare 的自动动态公平。优先级与额度都挂在
+> **会计账户**上：每个账户配一个 QoS `acct-<账户名>`，QoS 承载"该账户的优先级 + **该账户下
+> 每个用户**同时最多 N 卡"。用户可同时属于多个账户（如 `phd` + 临时项目 `proj`），每个账户的
+> 额度**分别计算、可叠加**；账户本身不设总额度。磁盘配额（ext4）与它无关，见 7.2。
+>
+> 账户/成员/QoS 的日常维护走门户【管理账户】（仅 root）或 root 助手
+> `portal-ctl accounts` / `accounts-init` / `accounts-sync` 等命令；下面的 `sacctmgr` 是等价手工
+> 命令，用来理解底层与排障。
 
 **已生效的配置（照抄即可）：**
 
@@ -1383,57 +1435,137 @@ passwd <新建用户名>
 cat >> /etc/slurm/slurm.conf <<'CONF'
 
 # ---- 静态优先级(管理员调控) + 强制关联 ----
-PriorityWeightQOS=1        # 权重=1 → 作业优先级显示值 = QoS.Priority（1~10 整数档）
+PriorityWeightQOS=1        # 权重=1 → 作业优先级显示值 = 所选账户 QoS.Priority（1~10 整数档）
 PriorityFlags=NO_NORMAL_QOS
 AccountingStorageEnforce=associations,limits
+
+# ---- 抢占：高优先级账户 QoS 可抢占低优先级账户 QoS 的运行中作业 ----
+PreemptType=preempt/qos    # 按 QoS 的 Preempt 列表决定谁能抢谁
+PreemptMode=CANCEL         # CANCEL=直接 kill；REQUEUE=杀掉后重新排队
+# PreemptExemptTime=00:05:00   # 可选：刚启动的作业在此时长内免于被抢占
 CONF
 # 同步 slurm.conf 到 <GPU01>/<GPU02> 后重启 slurmctld
-
-# QoS 默认档：normal = 中等优先级(5) / 作业限制不限；已执行
-sacctmgr -i modify qos normal set priority=5
 ```
+
+> 账户与 QoS 由 `accounts-init` / 【管理账户】维护：初始账户（站点示例 ZJU-CV：`phd/ms/be/ra`）
+> 都是 `priority=5`、`MaxTRESPerUser=0`（不限）。**不再给每个用户建专属 QoS**；用户提交时
+> `--account=<账户>` 选中哪个账户，作业就用哪个账户的 QoS。
 
 **参数作用表：**
 
 | 参数/字段 | 作用 | 当前值 |
 |---|---|---|
-| `PriorityWeightQOS` | QOS 因子权重；唯一非零且 =1 → **作业优先级 = QoS.Priority**（直接显示 1~10 整数） | 1 |
+| `PriorityWeightQOS` | QOS 因子权重；唯一非零且 =1 → **作业优先级 = 所选账户 QoS.Priority**（直接显示 1~10 整数） | 1 |
 | `PriorityFlags=NO_NORMAL_QOS` | **关键**：让 QOS 因子用你设定的 QoS.Priority，而非"按用量归一化"的值（默认会随用量波动，等于隐形 fairshare） | NO_NORMAL_QOS |
 | `PriorityWeightFairShare` 等 | 其它因子权重 | 0（fairshare 永久关闭，无自动升降） |
 | `AccountingStorageEnforce` | `associations`=无关联拒提交；`limits`=限制真正执行 | associations,limits |
-| QoS `Priority` | 该档静态优先级（**整数 1~10**，越大越先跑；同值按提交先后 FIFO） | normal=5 |
-| QoS `MaxJobsPerUser` / `MaxSubmitJobsPerUser` / `MaxWallDurationPerJob` / `MaxTRES` / `MaxTRESMins` | 该用户的作业级限制（并发/累计/时长/单作业资源/累计卡时）；空=不限 | 空（不限） |
-| QoS `Grp*` | **账户级**共享总额（同 account 用户共享）——要"每人独立"用 `Max*` | 空 |
+| QoS `Priority` | **账户优先级**（**整数 1~10**，越大越先跑；同值按提交先后 FIFO） | 初始账户=5 |
+| QoS `MaxTRESPerUser` | **该账户下每个用户同时最多 N 卡**（0=不限）；多账户分别计算、可叠加 | 初始 0（不限） |
+| QoS `MaxTRES`（可选） | 该账户下**单个作业**的资源上限（如单作业 ≤4 卡） | 空（不限） |
+| QoS `Preempt` | 该账户 QoS 可抢占哪些 QoS 的运行中作业；由“可抢占”开关驱动、helper 按优先级全量重算 | 空（不可抢） |
+| QoS `Grp*` / account 级 `GrpTRES` | **不使用**：账户不设总额度，避免“整个账户共享一个总额度”的口径 | 空 |
+| `PreemptType` | 抢占依据：`preempt/qos` = 由 QoS 的 `Preempt` 列表决定谁能抢谁 | preempt/qos |
+| `PreemptMode` | 抢占动作：`CANCEL` = 直接 kill；`REQUEUE` = 杀掉后重新排队 | CANCEL |
 
 > 查看真实优先级用整数列：`squeue -o "%.8i %.10u %.9Q %.3t"`（%Q 为整数值；%p 是 0-1 浮点显示会像 0.000000，别看它）。
+> 查看账户/QoS：`sacctmgr show account format=Account,Organization`、`sacctmgr show qos format=Name,Priority,MaxTRESPU,Preempt`。
 
-**日常使用（管理员调控）：**
+**日常使用（建账户 / 调额度 / 加成员）：**
 
 ```bash
 # 看当前排队与优先级
 squeue -o "%.8i %.10u %.9Q %.3t %R"
 
-# 给某人"单独调高优先级/单独限量"：建专属 QoS（优先级与限制都独立），再指派给他
-sacctmgr -i add qos vip-alice priority=8                    # 高档（1~10 里取 8）
-sacctmgr -i add qos limit-bob priority=5 maxjobsperuser=2 maxwallduration=48:00:00
-sacctmgr -i modify user alice account=lab set qos=normal,vip-alice defaultqos=vip-alice
-sacctmgr -i modify user bob   account=lab set qos=normal,limit-bob defaultqos=limit-bob
-# ⚠️ ① qos 列表必须保留 normal（account=lab 的默认 QoS 要求有权访问它），defaultqos= 决定作业实际用哪档
-#    ② 改完必须 systemctl restart slurmctld 才会刷新关联/QoS 缓存
-# 还原某用户
-sacctmgr -i modify user alice account=lab set qos=normal defaultqos=normal
-# 删除临时档
-sacctmgr -i delete qos name=vip-alice
+# 新建账户 + 它的 QoS（等价于门户【管理账户】的新建；账户名规则 ^[a-z][a-z0-9_-]{0,31}$）
+sacctmgr -i add account proj Organization=<CLUSTER_NAME> Description="临时高优项目"
+sacctmgr -i add qos acct-proj priority=8 MaxTRESPerUser=gres/gpu=16
+
+# 调账户优先级 / 调“每用户最多 N 卡”（0 = 不限）
+sacctmgr -i modify qos acct-proj set priority=8
+sacctmgr -i modify qos acct-phd  set MaxTRESPerUser=gres/gpu=8
+
+# 把用户加进账户；成员的 qos/defaultqos 指向该账户 QoS，并用 defaultaccount 指定默认账户
+sacctmgr -i add user alice account=proj qos=acct-proj defaultqos=acct-proj
+sacctmgr -i modify user alice set defaultaccount=phd
+
+# 查看某人属于哪些账户、QoS 与默认账户
+sacctmgr -n -P show assoc user=alice format=Account,QOS
+sacctmgr -n -P show user alice format=Name,DefaultAccount
 ```
+
+> ⚠️ ① 每个账户都要有自己的 `acct-<账户名>` QoS，成员的 `qos=` 列表里要包含它，
+> `defaultqos=` 也指向它；② 改完 `systemctl restart slurmctld` 才会刷新关联/QoS 缓存；
+> ③ 删除账户前先移除成员、停掉其作业——门户会拒绝删除仍有成员/运行中作业的账户，
+> 默认账户 `<DEFAULT_ACCOUNT>` 永远不允许删除。
 
 > fairshare 说明：本方案**刻意不用** fairshare（`PriorityWeightFairShare=0` 且不设份额）；
 > 若要日后切回动态公平，去掉 `NO_NORMAL_QOS` 并把权重改成 fairshare 即可。
 
-- 本集群**未配置抢占**（slurm.conf 无 `PreemptType`/`PreemptMode`，QoS 也无 `Preempt` 字段）。
-- 因此优先级只影响两件事：① 排队时谁在前；② 资源空出后谁先被调度。**正在运行的低优先级作业不会被高优先级打断**。
-- 实测：3 个 prio=5 作业跑满 3 卡时，prio=10 的作业持续 `PD` 等待，运行中的 5 一直 `R` 到自然结束；空出 GPU 后 prio=10 才被调度（且排在任何新普通 pending 之前）。排队视图用整数列：`squeue -o "%.8i %.10u %.9Q %.3t"`。
-- QoS.Priority 合法范围 0~2³²−1，本方案只用 **1~10** 整数档（0=最低不参与调度加分，正常档 normal=5）。
-- 若将来需要"高优先级抢占运行中任务"，必须显式配置 `PreemptType=preempt/qos` + `PreemptMode=CANCEL|REQUEUE` 并给 QoS 配 `Preempt`/`PreemptMode`——会中途杀作业/重排，本方案刻意不用。
+**多账户额度叠加（重点）**
+
+- 额度口径是「**每账户 × 每用户**」：账户 A 的 `MaxTRESPerUser=8` 只管“你在 A 里同时最多 8 卡”，
+  不影响你在账户 B 的额度；
+- 例：`alice` 同时属于 `phd`（上限 8 卡）与临时项目 `proj`（上限 16 卡），
+  则她可并行最多 **8 + 16 = 24 卡**（实际还受物理卡数与分区空闲限制）；
+- 因此**不做全局单用户拦截**，也不给账户设总额度：想给某人更多资源 = 把他加进另一个账户，
+  或调大某个账户的 `MaxTRESPerUser`；
+- 想控制“某账户的总卡数”目前只能靠调度公平性/人工管理；本方案刻意不用账户级 `GrpTRES`。
+
+**临时高优项目（短期附加账户）**
+
+适用场景：某项目需要短期更高的优先级/更大的并发额度，又不影响常规账户。
+
+1. **建账户**：门户【管理账户】→ 新建，账户名如 `proj-2026q4`；设优先级（如 8~10）、
+   “每用户最多 N 卡”（如 16，0=不限）、可选“可抢占”与“到期时间”；
+2. **加成员**：把项目成员加进该账户（可设为成员的默认账户，或让成员申请时自己选）；
+3. **提交**：用户申请资源时在“计费账户”下拉选该账户，作业以 `--account=<该账户>` 提交，
+   用该账户的 QoS 优先级与额度；
+4. **到期**：到期后门户**只禁止新提交**（该账户从可选列表消失、提交被拒），
+   **不会自动杀**已运行作业；要立刻腾资源，管理员手动停机；
+5. **收尾**：项目结束后移除成员 → 删除账户（有成员或运行/排队作业时会被拒绝）。
+
+> 账户的优先级 / 每用户卡数 / 可抢占 / 到期 / 成员都可以在管理页随时改；
+> 优先级只影响排队先后，“可抢占”才影响是否允许打断已在跑的作业（见下）。
+
+**抢占（已开启）**
+
+- 本集群**已配置抢占**：`PreemptType=preempt/qos` + `PreemptMode=CANCEL`（见本节配置块与
+  `provision/templates/slurm.conf.in`）。
+- 规则：只有 QoS 的 `Preempt` 列表里列了对方 QoS 的作业，才能抢占对方。该列表**由账户配置驱动**：
+  账户勾选“可抢占”后，helper 把它全量重算为**所有优先级更低的 `acct-*` QoS**（只抢比它低的账户）；
+  未勾选“可抢占”的账户 `Preempt` 为空，只能被别人抢、不能抢别人。
+- 抢占发生时：运行中的低优先级作业会被**直接 kill**（先 SIGTERM，`GraceTime` 后 SIGKILL），
+  高优先级作业随后被调度；被抢作业在 `sacct` 里是 `PREEMPTED`/`CANCELLED`。若想温和一点，
+  把 `PreemptMode` 改成 `REQUEUE`（杀掉后重新排队，但容器内状态同样不保留）。
+- **门户影响（重要）**：门户只在「到期/手动停机」时自动保存镜像；被 Slurm 抢占**不会**触发保存，
+  用户容器里的改动会直接丢失。给账户开“可抢占”前请确认这个代价。
+- QoS.Priority 合法范围 0~2³²−1，本方案只用 **1~10** 整数档（0=最低不参与调度加分，初始账户=5）。
+- 验证：两个不同优先级的账户各一个用户，各提交一个占满 GPU 的长作业；高优账户的作业应把低优作业挤掉并开始运行。
+
+**单用户卡数上限 / 单作业上限（例：每人在该账户最多 8 卡、单作业最多 4 卡）**
+
+> 这是 **Slurm 会计额度**，不是磁盘配额（磁盘配额见 7.2，门户的「改配额」也只改磁盘）。
+> 需要 `AccountingStorageEnforce=associations,limits`（本节已含）才会真正生效；改完
+> `systemctl restart slurmctld`。门户「我的资源 → 我的配额/额度」会按账户**只读**展示这些值。
+
+1. **门户【管理账户】（仅 root，推荐）**：编辑账户的“每用户最多卡数”，保存时由 helper 同步到 Slurm；
+2. `portal-ctl accounts-sync`（root，stdin JSON）：脚本化批量同步，helper 做参数校验并重算 Preempt；
+3. 手工 `sacctmgr`（等价）：
+
+```bash
+# 每用户在该账户同时最多 8 卡（写在账户 QoS 上，只影响该账户；留空/清除=不限）
+sacctmgr -i modify qos acct-phd set MaxTRESPerUser=gres/gpu=8
+# 单作业最多 4 卡（可选，挂在 QoS 上同样只影响该账户）
+sacctmgr -i modify qos acct-phd set MaxTRES=gres/gpu=4
+# 查看与清除（TRES 类限值清除用 -1；以 sacctmgr show 为准）
+sacctmgr -n -P show qos format=Name,Priority,MaxTRESPU,MaxTRES,Preempt
+sacctmgr -i modify qos acct-phd set MaxTRESPerUser=gres/gpu=-1
+```
+
+> 说明：`MaxTRESPerUser` 是 QoS 维度的“每用户上限”。因为**一个账户 = 一个 QoS**，
+> 所以它就是“该账户下每个用户同时最多 N 卡”；用户属于多个账户时按账户各自计算、可叠加。
+> 本方案**不使用 account 级 `GrpTRES`**（那会变成“整个账户共享一个总额度”，与“每人 N 卡”口径冲突）；
+> 要限制单作业资源用 QoS `MaxTRES`，要限制并发作业数/时长用 QoS `MaxJobsPerUser` / `MaxWallDurationPerJob`。
 
 ### 7.7 第 7 章验收
 ```bash
@@ -1441,17 +1573,24 @@ sacctmgr -i delete qos name=vip-alice
 quotaon -p /share                          # user quota on
 repquota -u /share                         # 能看到各用户用量与 500G 上限
 # 从计算节点自查询（quotarpc + 客户端 quota）
-#   [<GPU01>] quota -u lab                    # 能显示 <ADMIN>:/share 的行
-# 会计
+#   [<GPU01>] quota -u <USER>                  # 能显示 <ADMIN>:/share 的行
+# 会计与账户
 sacct                                   # <ADMIN> 出表
 #   [<GPU01>] sacct                        # 计算节点也能出记录（slurm.conf 已同步）
-sacctmgr show assoc format=Cluster,Account,User,AdminLevel
-# 容器多用户（lab 身份 CPU/GPU 各一次，见 5.8 ③，期望 EXIT=0 与 torch True）
+sacctmgr show account format=Account,Organization,Description
+sacctmgr show qos format=Name,Priority,MaxTRESPU,Preempt
+sacctmgr show assoc format=Cluster,Account,User,QOS
+sacctmgr show user format=Name,DefaultAccount
+#   期望：站点 ACCOUNTS 各账户都在；每账户有 acct-<名> QoS（初始 priority=5、MaxTRESPU 空/0）；
+#         成员关联到正确账户、defaultaccount 是站点默认账户
+# 容器多用户（<USER> 身份 CPU/GPU 各一次，见 5.8 ③，期望 EXIT=0 与 torch True）
 # 建号验证（新建一个用户后）
 id <新建用户名>                                # 三节点 uid 一致
 ls -ld /share/home/<新建用户名>                # NFS 家目录
 quota -u <新建用户名>                          # 500G 可见
 sacct -u <新建用户名>                          # 有作业记录
+sacctmgr show assoc user=<新建用户名> format=Account,QOS   # 账户关联
+sacctmgr show user <新建用户名> format=Name,DefaultAccount  # 默认账户
 ```
 ---
 
@@ -1462,15 +1601,15 @@ sacct -u <新建用户名>                          # 有作业记录
 | # | 项 | 命令（在标注机器） | 期望 |
 |---|---|---|---|
 | 1 | 时钟 | `[全部] chronyc tracking` | Stratum 正常、无大漂移 |
-| 2 | NFS | `[<GPU01>] df -h /share`；`runuser -u lab -- touch /share/home/lab/t` | 挂载正常、属主 lab |
+| 2 | NFS | `[<GPU01>] df -h /share`；`runuser -u <USER> -- touch /share/home/<USER>/t` | 挂载正常、属主 <USER> |
 | 3 | 集群 | `[<ADMIN>] scontrol ping`；`sinfo` | UP；三节点 idle |
 | 4 | GPU 调度 | `[<ADMIN>] srun --gres=gpu:1 nvidia-smi` | 显示被分配的卡 |
-| 5 | 容器 CPU | `[<ADMIN>] runuser -u lab -- srun ... ubuntu .sqsh cat /etc/os-release` | EXIT=0 |
-| 6 | 容器 GPU | `[<ADMIN>] runuser -u lab -- srun --gres=gpu:1 ... pytorch .sqsh python3 -c "import torch;print(torch.cuda.is_available())"` | True |
+| 5 | 容器 CPU | `[<ADMIN>] runuser -u <USER> -- srun ... ubuntu .sqsh cat /etc/os-release` | EXIT=0 |
+| 6 | 容器 GPU | `[<ADMIN>] runuser -u <USER> -- srun --gres=gpu:1 ... pytorch .sqsh python3 -c "import torch;print(torch.cuda.is_available())"` | True |
 | 7 | 监控抓取 | `[<ADMIN>] curl -s localhost:9090/api/v1/targets` | 10 个 up |
 | 8 | 监控计数 | `[<ADMIN>]` 查 `count(slurm_node_state{state="idle"}) or on() vector(0)` | 3 |
 | 9 | 配额 | `[<ADMIN>] quotaon -p /share`；`repquota -u /share` | user quota on；有上限 |
-| 10 | 配额自查询 | `[<GPU01>] quota -u lab` | 能显示 <ADMIN>:/share 行 |
+| 10 | 配额自查询 | `[<GPU01>] quota -u <USER>` | 能显示 <ADMIN>:/share 行 |
 | 11 | 会计 | `[<ADMIN>] sacct`；`[<GPU01>] sacct` | 两处都出表 |
 | 12 | 建号链路 | 按 7.5 建一个测试用户并提交 | id/家目录/quota/sacct 全通 |
 

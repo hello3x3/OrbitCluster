@@ -12,13 +12,17 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   sinfo               节点状态(含 IP / 内存 / gres / 分区)
   extra-mounts        EXTRA_MOUNTS 的解析结果 + 各节点源目录是否存在
                       (只读；NAS/数据集透传的排障与验收用)
-  provision-user <u> <quota> [--skip-os] [--uid N]
+  provision-user <u> <quota> [--skip-os] [--uid N] [--accounts a,b] [--default-account a]
                                            开通集群账号(admin+计算节点)或仅初始化；
+                                           --accounts 指定要加入的会计账户（逗号分隔，缺省=
+                                           site.conf 的默认账户）；--default-account 设默认账户；
                                            --uid 可把账号钉在指定 UID（测试/CI 用
                                            保留号段 59000-59999，避免占用真实用户号段）
   unprovision-user <u>                     注销集群账号(危险，仅测试/清理用)
-  init-user <u>                            仅初始化已有 OS 用户的 .ssh/.portal 目录
-  ensure-assoc <u>                         确保该用户在会计里有账户关联(幂等；缺关联会
+  init-user <u> [--accounts a,b] [--default-account a]
+                                           仅初始化已有 OS 用户的 .ssh/.portal 目录并确保关联
+  ensure-assoc <u> [--accounts a,b] [--default-account a]
+                                           确保该用户在会计里有账户关联(幂等；缺关联会
                                            导致 sbatch 报 Invalid account...)
   user-status <u>                          查看账号在管理节点/各节点的状态(逐节点 ssh，
                                            慢，仅供排障/验收用)
@@ -51,6 +55,17 @@ portal-ctl —— 集群门户特权助手（root 执行，被 web 服务通过 
   set-quota <u> <大小|不限>                设置 /share 配额(实际 OS 值, 软=硬;
                                            「不限」= 清除限额)
   slurm-info <u>                           读取 slurm 关联/QoS/优先级/限额(经 sacctmgr)
+                                           + 该用户的默认账户与各账户的 acct-* QoS
+  accounts                                 列出全部 Slurm 账户(+acct-* QoS 的优先级/
+                                           单用户卡数上限/Preempt/成员数)
+  accounts-init                            按 site.conf 的 ACCOUNTS 幂等建账户与 acct-* QoS
+  accounts-sync                            (stdin JSON) 按门户 DB 全量同步账户优先级/卡数上限/
+                                           抢占，并全量重算所有 acct-* QoS 的 Preempt
+  account-delete <name>                    删除账户(有成员或运行/排队作业时拒绝)
+  account-users <name>                     列出账户成员及是否默认账户
+  account-add-user <name> <user> [--default]  把用户加入账户(可顺带设为默认账户)
+  account-remove-user <name> <user>        把用户移出账户(默认账户且还有其他账户时拒绝)
+  user-accounts <user>                     该用户实际关联的账户(含默认账户与 QoS 信息)
 """
 import json
 import os
@@ -65,6 +80,13 @@ import tempfile
 # 与 portalapp/app.py 的 USERNAME_RE 必须保持一致：门户能建出来的名字，
 # 这里的 valid_user()/name_ok() 就必须认，否则账号建出来却每条命令都被判"非法用户名"。
 USER_RE = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
+# 账户名规则（契约 §0/§3）：小写字母开头，仅小写字母/数字/下划线/横线，最长 32 位。
+# 与 portalapp/db.py / app.py 两端的校验必须一字不差 —— 否则门户建得出、助手不认（或反之）。
+ACCOUNT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+# 每个账户对应一个 QoS：acct-<账户名>。账户的优先级/每用户卡数上限/抢占都挂在这个 QoS 上。
+ACCOUNT_QOS_PREFIX = "acct-"
+QOS_PRIORITY_MIN, QOS_PRIORITY_MAX = 1, 10
+GPU_CAP_MAX = 64
 QUOTA_RE = re.compile(r"^[1-9][0-9]{0,2}[GgTtMm]$")
 # 「不限配额」的规范写法；另接受 0 / UNLIMITED 作为输入别名
 QUOTA_UNLIMITED = "不限"
@@ -688,11 +710,16 @@ def _copy_scripts_to_nodes(nodes):
     return True, ""
 
 
-def cmd_provision_user(username, quota, skip_os, uid=None):
+def cmd_provision_user(username, quota, skip_os, uid=None,
+                       accounts=None, default_account=None):
     if not valid_user(username):
         die("非法用户名")
     if not quota_valid(quota):
         die("非法配额值: %s（例 500G / 1T，或「不限」）" % quota)
+    # 先规范化账户参数（非法/不一致直接失败，别等 OS 账号建出来才发现账户名写错）
+    acct_names, acct_default, aerr = _resolve_accounts(accounts, default_account)
+    if aerr:
+        die(aerr)
     if uid is not None:
         # 允许调用方（测试/CI）把账号钉在指定 UID，例如保留号段 59000-59999，
         # 这样测试账号永远不会占用真实用户的 1000+ 号段
@@ -736,10 +763,13 @@ def cmd_provision_user(username, quota, skip_os, uid=None):
                 gid_warn.append("%s(GID %s≠%s)" % (n, gid_n, gid))
         _init_user_dirs(username, uid)
         # 「OS 账号已存在」这条路不会走 add-user.sh，必须在这里补会计关联，
-        # 否则用户能申请但一提交就报 Invalid account or account/partition combination
-        assoc_ok, assoc_err = _ensure_assoc(username)
+        # 否则用户能申请但一提交就报 Invalid account or account/partition combination。
+        # 只加入命令参数里明确列出的账户（绝不扩展到未列出的账户）。
+        assoc_ok, assoc_err, ensured = _ensure_assocs(username, acct_names, acct_default)
         res = {"ok": True, "mode": "existing", "username": username, "uid": int(uid),
-               "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err}
+               "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err,
+               "accounts": ensured if assoc_ok else acct_names,
+               "default_account": acct_default}
         if gid.isdigit():
             res["gid"] = int(gid)
         if gid_warn:
@@ -753,10 +783,22 @@ def cmd_provision_user(username, quota, skip_os, uid=None):
     if not ok:
         die(err)
 
-    # 1) admin 建号（建家目录 + 配额 + sacctmgr）
+    # 账户与 acct-<名> QoS 先确保存在（懒创建：默认 priority=5、卡数不限）。
+    # 然后才交给 add-user.sh 建成员关联 —— 脚本本身不再猜账户，账户缺失会直接失败。
+    for a in acct_names:
+        aok, aerr = _account_ensure(a)
+        if not aok:
+            die(aerr)
+
+    # 1) admin 建号（建家目录 + 配额 + sacctmgr）。
+    #    账户**显式**传给 add-user.sh（--accounts/--default-account）：不再依赖脚本里
+    #    写死的默认账户 lab —— 站点默认账户可能是 phd，靠默认值会建出错误关联。
     build_argv = [os.path.join(CLUSTER_ADMIN_DIR, "add-user.sh"), username, quota]
     if uid:
         build_argv += ["-u", uid]
+    build_argv += ["--accounts", ",".join(acct_names)]
+    if acct_default:
+        build_argv += ["--default-account", acct_default]
     r = run(build_argv, timeout=120)
     if r.returncode != 0:
         die("管理节点 %s 建号失败: %s" % (node_hostname(), r.stderr.strip()[:400] or r.stdout.strip()[:400]))
@@ -790,38 +832,17 @@ def cmd_provision_user(username, quota, skip_os, uid=None):
             die("计算节点 %s 建号失败: %s" % (n, rr.stderr.strip()[:400] or rr.stdout.strip()[:400]))
 
     _init_user_dirs(username, uid)
-    # add-user.sh 已经建过关联；这里幂等再确认一次，避免脚本被改动后静默退化
-    _ensure_assoc(username)
+    # add-user.sh 已经建过关联；这里幂等再确认一次，避免脚本被改动后静默退化。
+    # 失败即失败（fail closed）：否则用户能登录却一提交就被 Slurm 拒掉。
+    assoc_ok, assoc_err, ensured = _ensure_assocs(username, acct_names, acct_default)
+    if not assoc_ok:
+        die("账号已创建，但会计关联失败: %s（可修复后执行 portal-ctl ensure-assoc %s "
+            "--accounts %s --default-account %s）"
+            % (assoc_err, username, ",".join(acct_names), acct_default))
     out({"ok": True, "mode": "new", "username": username, "uid": int(uid),
          "gid": int(gid) if gid.isdigit() else None,
-         "quota": quota, "nodes": nodes})
-
-
-def _ensure_assoc(username):
-    """确保该用户在会计（sacctmgr）里有账户关联。**幂等**，返回 (ok, err)。
-
-    为什么需要：集群开着 `AccountingStorageEnforce=associations` 时，没有关联的用户
-    sbatch 会被直接拒掉，报
-        Invalid account or account/partition combination specified
-    经 `add-user.sh` 建号的用户会自动带上关联（脚本里有 `sacctmgr add user ... account=lab`），
-    但**「OS 账号已存在」这条开通路径不走 add-user.sh**，历史上就漏了这一步 ——
-    表现为"能登录门户、能点申请，但一提交就报上面那个错"。
-
-    这里统一兜住：开通 / 初始化 / 提交前各确保一次。
-    账户名取站点配置的 ACCOUNT（缺省 lab），与 add-user.sh 的 CLUSTER_ACCOUNT 对齐。
-    """
-    acct = SITE.get("ACCOUNT") or os.environ.get("CLUSTER_ACCOUNT") or "lab"
-    r = run(["sacctmgr", "-n", "-P", "show", "assoc", "user=%s" % username,
-             "format=Account"], timeout=30)
-    if r.returncode != 0:
-        return False, "查询会计关联失败: %s" % (r.stderr.strip() or r.stdout.strip())[:300]
-    if r.stdout.strip():
-        return True, ""
-    rr = run(["sacctmgr", "-i", "add", "user", username,
-              "account=%s" % acct, "qos=normal"], timeout=60)
-    if rr.returncode != 0:
-        return False, "建立会计关联失败: %s" % (rr.stderr.strip() or rr.stdout.strip())[:300]
-    return True, ""
+         "quota": quota, "nodes": nodes,
+         "accounts": ensured, "default_account": acct_default})
 
 
 def _init_user_dirs(username, uid):
@@ -859,17 +880,36 @@ def _init_user_dirs(username, uid):
     return True
 
 
-def cmd_init_user(username):
+def cmd_init_user(username, accounts=None, default_account=None):
     if not valid_user(username):
         die("非法用户名")
+    acct_names, acct_default, aerr = _resolve_accounts(accounts, default_account)
+    if aerr:
+        die(aerr)
     r = run(["id", "-u", username])
     if r.returncode != 0:
         die("OS 账号 %s 在 %s 不存在" % (username, node_hostname()))
     uid = r.stdout.strip()
     _init_user_dirs(username, uid)
-    assoc_ok, assoc_err = _ensure_assoc(username)
+    assoc_ok, assoc_err, ensured = _ensure_assocs(username, acct_names, acct_default)
     out({"ok": True, "username": username, "uid": int(uid),
-         "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err})
+         "assoc": "ok" if assoc_ok else "warning: %s" % assoc_err,
+         "accounts": ensured if assoc_ok else acct_names,
+         "default_account": acct_default})
+
+
+def cmd_ensure_assoc(username, accounts=None, default_account=None):
+    """确保用户的会计关联（幂等）：无 --accounts 时沿用 site.conf 默认账户单个。"""
+    if not valid_user(username):
+        die("非法用户名或系统保留账号: %s" % username)
+    acct_names, acct_default, aerr = _resolve_accounts(accounts, default_account)
+    if aerr:
+        die(aerr)
+    ok, err, ensured = _ensure_assocs(username, acct_names, acct_default)
+    if not ok:
+        die(err)
+    out({"ok": True, "user": username, "assoc": "ok",
+         "accounts": ensured, "default_account": acct_default})
 
 
 def cmd_unprovision_user(username):
@@ -1020,6 +1060,22 @@ def cmd_submit():
     if run(["id", "-u", user]).returncode != 0:
         die("OS 账号 %s 不存在" % user)
 
+    # 可选 account（多账户）：门户只是 UX 校验，**最终校验在这里**。
+    # 空/缺失 = 不传 --account，交给 Slurm 用该用户的 defaultaccount（旧行为）。
+    # 传了就必须确实是该用户的关联账户 —— 助手绝不会自动给用户新增关联
+    # （否则门户被攻破后可以自己开账户绕开配额/优先级）。
+    acct = spec.get("account")
+    acct = str(acct).strip() if acct is not None else ""
+    if acct:
+        if not valid_account(acct):
+            die("非法账户名: %s（须匹配 %s）" % (acct, ACCOUNT_RE.pattern))
+        user_accts = _user_account_names(user)
+        if user_accts is None:
+            die("查询 %s 的会计关联失败（sacctmgr 不可用？）" % user)
+        if acct not in user_accts:
+            die("用户 %s 不在账户 %s 下，拒绝提交（助手不会自动新增关联；"
+                "当前账户: %s）" % (user, acct, ",".join(user_accts) or "无"))
+
     host = node_hostname()
     nodes = compute_nodes()
     node = str(spec["node"]).strip()   # 空串=由 Slurm 自动调度（不 -w、不按节点预检）
@@ -1099,10 +1155,12 @@ def cmd_submit():
     else:
         _init_user_dirs(user, _uid_of(user))
 
-    # 兜底：确保会计关联存在。缺关联时 sbatch 会以
-    # "Invalid account or account/partition combination specified" 失败；
-    # 这里失败也不中止，交给 sbatch 报出更准确的错误。
-    _ensure_assoc(user)
+    # 旧行为兜底：**没有指定 account** 时，确保站点默认账户的关联存在。
+    # 缺关联时 sbatch 会以 "Invalid account or account/partition combination specified"
+    # 失败；这里失败也不中止（交给 sbatch 报更准确的错误）。
+    # 指定了 account 时**绝不**补关联 —— 上面的成员校验已经明确拒绝未加入的账户。
+    if not acct:
+        _ensure_assocs(user, None, None, set_default=False)
 
     # 额外挂载（NAS/数据集）的源目录必须在**每台节点**上都在，否则作业落到缺挂载的那台
     # 会在容器启动阶段 bind 失败。这里提前拦，给出可执行的提示。
@@ -1112,7 +1170,11 @@ def cmd_submit():
     # 计算节点 ENROOT_DATA_PATH 下普通可读写的目录（而非临时 overlay），门户才能随时把
     # “当前容器状态”导出成 .sqsh 个人镜像（save-image）。--container-writable 保证容器内
     # 修改确实落盘到该 rootfs。作业结束（无论停机/到期）pyxis 会自动清理该目录。
-    argv = ["sbatch", "--parsable", "-p", partition_name(), "-N", "1",
+    argv = ["sbatch", "--parsable", "-p", partition_name(), "-N", "1"]
+    # 多账户：显式 --account=<acct>（必须放在 --wrap 之前，且在 sbatch 选项区）。
+    if acct:
+        argv.append("--account=%s" % acct)
+    argv += [
             "-J", job_name, "-c", str(cpus), "--mem=%dG" % mem_gb,
             "--time=" + walltime, "-o", os.path.join(logdir, "%j.out"),
             # 必须显式指定作业工作目录。不给的话 Slurm 用"提交者进程的 cwd"——
@@ -1512,6 +1574,740 @@ def cmd_set_quota(username, size):
 
 
 # ----------------------------------------------------------------------------
+# 多账户：Slurm account + 每账户 QoS `acct-<name>`（契约 §2/§3）
+#
+# 模型：
+#   account <name>      sacctmgr add account <name> Organization=<cluster> Description=...
+#   QoS acct-<name>     Priority=<1..10>、MaxTRESPerUser=gres/gpu=<n>（0/缺省=不限）
+#                       **绝不设置账户级 GrpTRES**：多账户额度允许叠加，不做全局单用户拦截
+#   成员关联            sacctmgr add user <u> account=<a> qos=acct-<a> defaultqos=acct-<a>
+#                       用户的 DefaultAccount 用 modify user set 单独设置
+#   preempt=true        QoS Preempt = 其它优先级更低的 acct-* QoS 列表（helper 全量重算）
+# 所有写操作以 sacctmgr 返回码为准：失败即 die（fail closed，不静默吞错）。
+# ----------------------------------------------------------------------------
+
+def valid_account(name):
+    """账户名是否合法（与门户 DB/路由两端共用同一条正则）。"""
+    return bool(ACCOUNT_RE.match(name or ""))
+
+
+def acct_qos(name):
+    """账户 -> 对应的 QoS 名（约定 acct-<账户名>，不额外存映射）。"""
+    return ACCOUNT_QOS_PREFIX + name
+
+
+def site_accounts():
+    """site.conf 里的账户列表：ACCOUNTS 优先，缺省回退 ACCOUNT，去重保序。"""
+    items = []
+    raw = (SITE.get("ACCOUNTS") or "").strip()
+    if raw:
+        for x in re.split(r"[,\s]+", raw):
+            x = x.strip()
+            if x and x not in items:
+                items.append(x)
+    if not items:
+        a = (SITE.get("ACCOUNT") or "").strip()
+        if a:
+            items = [a]
+    return items
+
+
+def site_default_account():
+    """site.conf 的默认账户：DEFAULT_ACCOUNT 优先，缺省取第一个账户。"""
+    d = (SITE.get("DEFAULT_ACCOUNT") or "").strip()
+    if d:
+        return d
+    a = site_accounts()
+    return a[0] if a else ""
+
+
+def _cluster_org():
+    """sacctmgr 的 Organization 字段值：优先站点集群名。"""
+    for k in ("CLUSTER_NAME", "CLUSTER"):
+        v = (SITE.get(k) or "").strip()
+        if v:
+            return v
+    return "cluster"
+
+
+def _sacct_show(argv):
+    return run(["sacctmgr", "-n", "-P"] + list(argv), timeout=45)
+
+
+def _accounts_in_slurm():
+    """Slurm 里已存在的账户 -> Description；查询失败返回 None（调用方 fail closed）。"""
+    r = _sacct_show(["show", "account", "format=Account,Description"])
+    if r.returncode != 0:
+        return None
+    got = {}
+    for ln in (r.stdout or "").splitlines():
+        if not ln.strip():
+            continue
+        f = ln.split("|", 1)
+        name = f[0].strip()
+        if name:
+            got[name] = f[1].strip() if len(f) > 1 else ""
+    return got
+
+
+def _gpu_cap_from_tres(raw):
+    """从 `gres/gpu=8`（可能混有其它 TRES）解析每用户卡数上限；无法解析/0 = 不限。"""
+    for item in re.split(r"[,;]", raw or ""):
+        m = re.match(r"\s*gres/gpu=(\d+)\s*$", item, re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return 0
+    return 0
+
+
+def _qos_map():
+    """acct-* QoS -> {priority:int, max_tres_per_user:str, per_user_gpu_cap:int, preempt:str}。
+
+    查询失败返回 None（调用方 fail closed）。注意 sacctmgr 的格式字段名是 **MaxTRESPU**
+    （设置时才是 MaxTRESPerUser），别写反 —— 写反会直接查询失败。
+    """
+    r = _sacct_show(["show", "qos", "format=Name,Priority,MaxTRESPU,Preempt"])
+    if r.returncode != 0:
+        return None
+    got = {}
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        if not f or not f[0].strip():
+            continue
+        name = f[0].strip()
+        if not name.startswith(ACCOUNT_QOS_PREFIX):
+            continue
+        acct = name[len(ACCOUNT_QOS_PREFIX):]
+        if not valid_account(acct):
+            continue          # 不是本门户的账户 QoS（例如手工建的非法名）
+        prio = 0
+        if len(f) > 1 and f[1].strip().isdigit():
+            prio = int(f[1].strip())
+        maxtres = f[2].strip() if len(f) > 2 else ""
+        preempt = f[3].strip() if len(f) > 3 else ""
+        got[name] = {"priority": prio, "max_tres_per_user": maxtres,
+                     "per_user_gpu_cap": _gpu_cap_from_tres(maxtres),
+                     "preempt": preempt}
+    return got
+
+
+def _user_defaults():
+    """用户名 -> DefaultAccount；查询失败返回 None。"""
+    r = _sacct_show(["show", "user", "format=Name,DefaultAccount"])
+    if r.returncode != 0:
+        return None
+    got = {}
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        if f and f[0].strip():
+            got[f[0].strip()] = f[1].strip() if len(f) > 1 else ""
+    return got
+
+
+def _user_account_names(username):
+    """该用户实际关联的账户名列表（去重保序）；查询失败返回 None。"""
+    r = _sacct_show(["show", "assoc", "user=%s" % username, "format=Account"])
+    if r.returncode != 0:
+        return None
+    names = []
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        if not f:
+            continue
+        for a in f[0].split(","):
+            a = a.strip()
+            if a and a not in names:
+                names.append(a)
+    return names
+
+
+def _account_user_rows(name):
+    """账户成员 -> [{username, qos}]（按用户名去重保序）；查询失败返回 None。"""
+    r = _sacct_show(["show", "assoc", "account=%s" % name, "format=User,QOS"])
+    if r.returncode != 0:
+        return None
+    rows = []
+    seen = {}
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        if not f:
+            continue
+        u = f[0].strip()
+        if not u:
+            continue
+        q = f[1].strip() if len(f) > 1 else ""
+        q = q.split(",")[0].strip() if q else ""
+        if u in seen:
+            if q and not seen[u]["qos"]:
+                seen[u]["qos"] = q
+            continue
+        rec = {"username": u, "qos": q}
+        seen[u] = rec
+        rows.append(rec)
+    return rows
+
+
+def _create_account(name):
+    """在 Slurm 会计里创建账户；返回 (ok, err)。"""
+    r = run(["sacctmgr", "-i", "add", "account", name,
+             "Organization=%s" % _cluster_org(),
+             "Description=portal account %s" % name], timeout=60)
+    if r.returncode == 0:
+        return True, ""
+    accts = _accounts_in_slurm()
+    if accts is not None and name in accts:
+        return True, ""          # 并发/重复创建：已存在即视为成功
+    return False, "创建账户 %s 失败: %s" % (name, (r.stderr or r.stdout or "").strip()[:300])
+
+
+def _create_qos(name, priority=5):
+    """创建 acct-<name> QoS（已存在则视为成功；不修改已有 QoS 的参数）。"""
+    qos = acct_qos(name)
+    r = run(["sacctmgr", "-i", "add", "qos", qos, "Priority=%d" % int(priority)],
+            timeout=60)
+    if r.returncode == 0:
+        return True, ""
+    qmap = _qos_map()
+    if qmap is not None and qos in qmap:
+        return True, ""
+    return False, "创建 QoS %s 失败: %s" % (qos, (r.stderr or r.stdout or "").strip()[:300])
+
+
+def _account_ensure(name):
+    """确保账户 + acct-<name> QoS 存在（缺失才建；默认 priority=5、不限卡）。
+
+    已存在的账户/QoS **不覆盖**其参数 —— 优先级/卡数上限的同步由 accounts-sync 负责。
+    用户开通路径用它做懒创建：这样首次部署即使还没跑过 accounts-init 也不会卡住建号。
+    """
+    if not valid_account(name):
+        return False, "非法账户名: %s" % name
+    accts = _accounts_in_slurm()
+    if accts is None:
+        return False, "查询 Slurm 账户失败（slurmdbd 未运行或无权限？）"
+    if name not in accts:
+        ok, err = _create_account(name)
+        if not ok:
+            return False, err
+    qmap = _qos_map()
+    if qmap is None:
+        return False, "查询 Slurm QoS 失败（slurmdbd 未运行或无权限？）"
+    if acct_qos(name) not in qmap:
+        ok, err = _create_qos(name)
+        if not ok:
+            return False, err
+    return True, ""
+
+
+def _qos_apply(name, priority, cap, preempt=None):
+    """设置 acct-<name> QoS：Priority、MaxTRESPerUser、Preempt（None=不改 Preempt）。
+
+    cap<=0 表示“不限/清除限额”。返回 (ok, err)。
+    """
+    qos = acct_qos(name)
+    try:
+        priority = int(priority)
+        cap = int(cap)
+    except (TypeError, ValueError):
+        return False, "QoS %s 的优先级/卡数上限必须是整数" % qos
+    if not (QOS_PRIORITY_MIN <= priority <= QOS_PRIORITY_MAX):
+        return False, "QoS %s 的 Priority 必须在 %d-%d（收到 %s）" % (
+            qos, QOS_PRIORITY_MIN, QOS_PRIORITY_MAX, priority)
+    specs = ["Priority=%d" % priority]
+    if cap > 0:
+        specs.append("MaxTRESPerUser=gres/gpu=%d" % cap)
+    else:
+        specs.append("MaxTRESPerUser=")
+    if preempt is not None:
+        specs.append("Preempt=%s" % (",".join(preempt) if preempt else ""))
+    r = run(["sacctmgr", "-i", "modify", "qos", qos, "set"] + specs, timeout=60)
+    if r.returncode != 0 and cap <= 0:
+        # Slurm 文档约定：清除 TRES 限额用 -1（空值/0 在不同版本里语义不一致）
+        specs2 = [s for s in specs if not s.startswith("MaxTRESPerUser=")]
+        specs2.append("MaxTRESPerUser=gres/gpu=-1")
+        r = run(["sacctmgr", "-i", "modify", "qos", qos, "set"] + specs2, timeout=60)
+    if r.returncode != 0:
+        return False, "设置 QoS %s 失败: %s" % (
+            qos, (r.stderr or r.stdout or "").strip()[:300])
+    return True, ""
+
+
+def _ensure_account_assoc(username, name):
+    """确保用户与账户的关联存在（qos/defaultqos=acct-<name>）；返回 (ok, err)。"""
+    ok, err = _account_ensure(name)
+    if not ok:
+        return False, err
+    names = _user_account_names(username)
+    if names is None:
+        return False, "查询 %s 的会计关联失败（sacctmgr 不可用？）" % username
+    if name in names:
+        return True, ""
+    return _add_user_assoc(username, name)
+
+
+def _add_user_assoc(username, name):
+    """为用户建立到账户的成员关联（qos/defaultqos=acct-<name>）；返回 (ok, err)。
+
+    sacctmgr 不同版本对字段别名的接受度略有差异：先按契约写法（account=/qos=/defaultqos=），
+    失败再按 sacctmgr 帮助里的规范写法（Accounts=/QosLevel=/DefaultQOS=）。
+    两种都失败才报错 —— 但只要复查发现关联已存在，就按幂等成功处理。
+    """
+    qos = acct_qos(name)
+    last = ""
+    for extra in (["account=%s" % name, "qos=%s" % qos, "defaultqos=%s" % qos],
+                  ["Accounts=%s" % name, "QosLevel=%s" % qos, "DefaultQOS=%s" % qos]):
+        r = run(["sacctmgr", "-i", "add", "user", username] + extra, timeout=60)
+        if r.returncode == 0:
+            return True, ""
+        last = (r.stderr or r.stdout or "").strip()[:300]
+        names = _user_account_names(username)
+        if names is not None and name in names:
+            return True, ""          # 并发/重复调用：已存在即幂等成功
+    return False, "建立 %s -> %s 的会计关联失败: %s" % (username, name, last)
+
+
+def _remove_user_assoc(username, name):
+    """删除用户与账户的成员关联（只删这一条，不动用户的其它账户）；返回 (ok, err)。"""
+    last = ""
+    for extra in (["Names=%s" % username, "Accounts=%s" % name],
+                  [username, "account=%s" % name],
+                  ["name=%s" % username, "account=%s" % name]):
+        r = run(["sacctmgr", "-i", "delete", "user"] + extra, timeout=60)
+        if r.returncode == 0:
+            return True, ""
+        last = (r.stderr or r.stdout or "").strip()[:300]
+        names = _user_account_names(username)
+        if names is not None and name not in names:
+            return True, ""
+    return False, "把 %s 移出账户 %s 失败: %s" % (username, name, last)
+
+
+def _set_default_account(username, name):
+    """设置用户的默认账户（DefaultAccount）；返回 (ok, err)。"""
+    r = run(["sacctmgr", "-i", "modify", "user", username,
+             "set", "DefaultAccount=%s" % name], timeout=60)
+    if r.returncode != 0:
+        # 旧版本需要 where 子句限定是哪条关联（帮助里的 where 字段名是 Accounts=）
+        r = run(["sacctmgr", "-i", "modify", "user", username,
+                 "where", "Accounts=%s" % name,
+                 "set", "DefaultAccount=%s" % name], timeout=60)
+    if r.returncode != 0:
+        return False, "设置默认账户 %s 失败: %s" % (
+            name, (r.stderr or r.stdout or "").strip()[:300])
+    defaults = _user_defaults()
+    if defaults is not None and defaults.get(username):
+        if defaults.get(username) != name:
+            return False, "默认账户设置未生效：期望 %s，实际 %s" % (
+                name, defaults.get(username))
+    return True, ""
+
+
+def _resolve_accounts(accounts, default_account):
+    """规范化命令行账户参数。
+
+    accounts=None 表示**没传** → 按旧行为用 site.conf 的默认账户单个；
+    accounts=[]   表示**显式空列表**（管理员角色允许不选账户）→ 不做任何关联。
+    返回 (names, default, err)。
+    """
+    if accounts is None:
+        d = site_default_account()
+        if not d:
+            return [], "", ("site.conf 未配置 DEFAULT_ACCOUNT / ACCOUNT，无法确定账户；"
+                            "请显式传 --accounts")
+        if not valid_account(d):
+            return [], "", "site.conf 的默认账户名非法: %s" % d
+        return [d], d, ""
+    names = []
+    for a in accounts:
+        a = (a or "").strip()
+        if not a or a in names:
+            continue
+        if not valid_account(a):
+            return [], "", "非法账户名: %s（须匹配 %s）" % (a, ACCOUNT_RE.pattern)
+        names.append(a)
+    d = (default_account or "").strip()
+    if not names:
+        if d:
+            return [], "", "指定了默认账户 %s，但账户列表为空" % d
+        return [], "", ""
+    if not d:
+        d = names[0]
+    if not valid_account(d):
+        return [], "", "非法默认账户名: %s" % d
+    if d not in names:
+        return [], "", "默认账户 %s 不在账户列表 %s 中" % (d, ",".join(names))
+    return names, d, ""
+
+
+def _ensure_assocs(username, accounts=None, default_account=None, set_default=True):
+    """确保用户与给定账户列表的关联；返回 (ok, err, ensured_names)。
+
+    绝不把用户加入参数里没列出的账户（契约 §3.2）。set_default=False 用于 submit
+    的旧行为兜底：只补关联，不改用户的默认账户。
+    """
+    names, default, err = _resolve_accounts(accounts, default_account)
+    if err:
+        return False, err, []
+    existing = _user_account_names(username)
+    if existing is None:
+        return False, "查询 %s 的会计关联失败（sacctmgr 不可用？）" % username
+    for a in names:
+        ok, e = _account_ensure(a)
+        if not ok:
+            return False, e, []
+        if a in existing:
+            continue
+        ok, e = _add_user_assoc(username, a)
+        if not ok:
+            return False, e, []
+        existing.append(a)
+    if set_default and default:
+        ok, e = _set_default_account(username, default)
+        if not ok:
+            return False, e, []
+    return True, "", names
+
+
+def _ensure_assoc(username):
+    """兼容旧调用：确保关联到 site.conf 默认账户并设默认账户。返回 (ok, err)。"""
+    ok, err, _ = _ensure_assocs(username, None, None)
+    return ok, err
+
+
+def _user_accounts_info(username):
+    """用户实际关联的账户（供 user-accounts / slurm-info 共用）。
+
+    返回 (default_account, accounts, err)；accounts 每项：
+      {"name","qos","priority","per_user_gpu_cap","is_default","preempt"}
+    """
+    names = _user_account_names(username)
+    if names is None:
+        return "", [], "查询 %s 的会计关联失败（sacctmgr 不可用？）" % username
+    defaults = _user_defaults()
+    if defaults is None:
+        return "", [], "查询用户默认账户失败（sacctmgr 不可用？）"
+    qmap = _qos_map()
+    if qmap is None:
+        return "", [], "查询 Slurm QoS 失败（sacctmgr 不可用？）"
+    default = defaults.get(username, "")
+    accounts = []
+    for n in names:
+        q = acct_qos(n)
+        qi = qmap.get(q, {})
+        accounts.append({
+            "name": n, "qos": q,
+            "priority": int(qi.get("priority", 0)),
+            "per_user_gpu_cap": int(qi.get("per_user_gpu_cap", 0)),
+            "is_default": n == default,
+            "preempt": qi.get("preempt", ""),
+        })
+    accounts.sort(key=lambda a: (not a["is_default"], a["name"]))
+    return default, accounts, ""
+
+
+# ----------------------------------------------------------------------------
+# 账户命令（契约 §3.1）
+# ----------------------------------------------------------------------------
+def cmd_accounts():
+    """全部账户（站点配置 + Slurm 已存在）+ acct-* QoS 参数 + 成员数。"""
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    qmap = _qos_map()
+    if qmap is None:
+        die("查询 Slurm QoS 失败（slurmdbd 未运行或无权限？）")
+    r = _sacct_show(["show", "assoc", "format=Account,User"])
+    if r.returncode != 0:
+        die("查询账户成员失败: %s" % (r.stderr or r.stdout or "").strip()[:300])
+    members = {}
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        acct = f[0].strip() if f else ""
+        user = f[1].strip() if len(f) > 1 else ""
+        if acct and user:
+            members.setdefault(acct, set()).add(user)
+    names = []
+    for n in site_accounts() + sorted(accts):
+        if n and n not in names:
+            names.append(n)
+    rows = []
+    for n in names:
+        q = acct_qos(n)
+        qi = qmap.get(q, {})
+        rows.append({
+            "name": n, "qos": q, "exists": n in accts,
+            "priority": int(qi.get("priority", 0)),
+            "per_user_gpu_cap": int(qi.get("per_user_gpu_cap", 0)),
+            "preempt": qi.get("preempt", ""),
+            "members": len(members.get(n, ())),
+        })
+    out({"ok": True, "accounts": rows})
+
+
+def cmd_accounts_init():
+    """按 site.conf 的 ACCOUNTS 幂等创建账户与 acct-* QoS（priority=5、卡数不限）。"""
+    names = site_accounts()
+    if not names:
+        die("site.conf 未配置 ACCOUNTS / ACCOUNT，无法初始化账户")
+    for n in names:
+        if not valid_account(n):
+            die("site.conf 里的账户名非法: %s（须匹配 %s）" % (n, ACCOUNT_RE.pattern))
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    qmap = _qos_map()
+    if qmap is None:
+        die("查询 Slurm QoS 失败（slurmdbd 未运行或无权限？）")
+    created, existing = [], []
+    for n in names:
+        if n in accts:
+            existing.append(n)
+        else:
+            ok, err = _create_account(n)
+            if not ok:
+                die(err)
+            created.append(n)
+        if acct_qos(n) not in qmap:
+            ok, err = _create_qos(n, priority=5)
+            if not ok:
+                die(err)
+    out({"ok": True, "created": created, "existing": existing})
+
+
+def cmd_accounts_sync():
+    """stdin JSON: {"accounts":[{"name","priority","per_user_gpu_cap","preempt"},...]}
+
+    只创建/更新，**不删除**账户；最后对**所有** acct-* QoS 全量重算 Preempt。
+    """
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        die("stdin 不是合法 JSON")
+    if not isinstance(payload, dict) or not isinstance(payload.get("accounts"), list):
+        die('输入必须是 {"accounts": [...]}')
+    items = []
+    seen = set()
+    for it in payload["accounts"]:
+        if not isinstance(it, dict):
+            die("accounts 的每一项必须是对象")
+        name = str(it.get("name", "")).strip()
+        if not valid_account(name):
+            die("非法账户名: %s（须匹配 %s）" % (name, ACCOUNT_RE.pattern))
+        if name in seen:
+            die("accounts 列表存在重复账户名: %s" % name)
+        seen.add(name)
+        try:
+            priority = int(it.get("priority", 5))
+            cap = int(it.get("per_user_gpu_cap", 0))
+        except (TypeError, ValueError):
+            die("账户 %s 的 priority / per_user_gpu_cap 必须是整数" % name)
+        if not (QOS_PRIORITY_MIN <= priority <= QOS_PRIORITY_MAX):
+            die("账户 %s 的 priority 必须在 %d-%d（收到 %d）"
+                % (name, QOS_PRIORITY_MIN, QOS_PRIORITY_MAX, priority))
+        if not (0 <= cap <= GPU_CAP_MAX):
+            die("账户 %s 的 per_user_gpu_cap 必须在 0-%d（0=不限，收到 %d）"
+                % (name, GPU_CAP_MAX, cap))
+        items.append({"name": name, "priority": priority, "cap": cap,
+                      "preempt": bool(it.get("preempt", False))})
+    # 1) 确保账户 + QoS 都存在（缺失的懒创建，已存在的不动参数）
+    for it in items:
+        ok, err = _account_ensure(it["name"])
+        if not ok:
+            die(err)
+    # 2) 重新读取权威状态，算出每个 acct-* QoS 的最终参数
+    qmap = _qos_map()
+    if qmap is None:
+        die("查询 Slurm QoS 失败（slurmdbd 未运行或无权限？）")
+    desired = {}
+    for q, qi in qmap.items():
+        desired[q] = {"priority": int(qi.get("priority", 0)),
+                      "cap": int(qi.get("per_user_gpu_cap", 0))}
+    preempt_on = set()
+    for it in items:
+        q = acct_qos(it["name"])
+        desired[q] = {"priority": it["priority"], "cap": it["cap"]}
+        if it["preempt"]:
+            preempt_on.add(q)
+    # 3) 全量重算 Preempt：= 所有优先级更低的其它 acct-* QoS（同级不算）
+    qos_names = sorted(desired)
+    for q in qos_names:
+        priority = desired[q]["priority"]
+        lower = [x for x in qos_names
+                 if x != q and desired[x]["priority"] < priority]
+        preempt = lower if q in preempt_on else []
+        ok, err = _qos_apply(q[len(ACCOUNT_QOS_PREFIX):], priority,
+                             desired[q]["cap"], preempt)
+        if not ok:
+            die(err)
+    out({"ok": True, "synced": [it["name"] for it in items]})
+
+
+def cmd_account_delete(name):
+    """删除账户（有成员或运行/排队作业时拒绝；同时删掉 acct-<name> QoS）。"""
+    if not valid_account(name):
+        die("非法账户名: %s（须匹配 %s）" % (name, ACCOUNT_RE.pattern))
+    d = site_default_account()
+    if d and name == d:
+        die("拒绝删除站点默认账户 %s（site.conf DEFAULT_ACCOUNT）" % name)
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    qmap = _qos_map()
+    if qmap is None:
+        die("查询 Slurm QoS 失败（slurmdbd 未运行或无权限？）")
+    qos = acct_qos(name)
+    if name not in accts:
+        # 幂等：账户已不存在；仍尝试清理可能残留的 QoS（失败要报出来，不静默）
+        if qos in qmap:
+            r = run(["sacctmgr", "-i", "delete", "qos", qos], timeout=60)
+            if r.returncode != 0:
+                die("账户 %s 已不存在，但残留 QoS %s 删除失败: %s（请手动 sacctmgr delete qos %s）"
+                    % (name, qos, (r.stderr or r.stdout or "").strip()[:300], qos))
+        out({"ok": True, "deleted": name, "existed": False})
+        return
+    rows = _account_user_rows(name)
+    if rows is None:
+        die("查询账户 %s 的成员失败（sacctmgr 不可用？）" % name)
+    if rows:
+        die("账户 %s 还有 %d 个成员（%s），请先把成员移出该账户再删除"
+            % (name, len(rows), "、".join(r["username"] for r in rows[:10])))
+    r = run(["squeue", "-h", "-a", "-o", "%A|%a"], timeout=30)
+    if r.returncode != 0:
+        die("查询运行/排队作业失败，拒绝删除账户（fail closed）: %s"
+            % (r.stderr or r.stdout or "").strip()[:300])
+    active = []
+    for ln in (r.stdout or "").splitlines():
+        f = ln.split("|")
+        if len(f) >= 2 and f[1].strip() == name:
+            active.append(f[0].strip())
+    if active:
+        die("账户 %s 还有运行/排队作业（%s），请先停掉这些作业再删除"
+            % (name, "、".join(active[:10])))
+    r = run(["sacctmgr", "-i", "delete", "account", name], timeout=60)
+    if r.returncode != 0:
+        again = _accounts_in_slurm()
+        if again is None or name in again:
+            die("删除账户 %s 失败: %s" % (
+                name, (r.stderr or r.stdout or "").strip()[:300]))
+    if qos in qmap:
+        r = run(["sacctmgr", "-i", "delete", "qos", qos], timeout=60)
+        if r.returncode != 0:
+            again = _qos_map()
+            if again is None or qos in again:
+                die("账户 %s 已删除，但 QoS %s 删除失败: %s（请手动 sacctmgr delete qos %s）"
+                    % (name, qos, (r.stderr or r.stdout or "").strip()[:300], qos))
+    out({"ok": True, "deleted": name, "existed": True})
+
+
+def cmd_account_users(name):
+    """账户成员列表（含是否为默认账户、关联 QoS）。"""
+    if not valid_account(name):
+        die("非法账户名: %s（须匹配 %s）" % (name, ACCOUNT_RE.pattern))
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    if name not in accts:
+        die("账户不存在: %s" % name)
+    rows = _account_user_rows(name)
+    if rows is None:
+        die("查询账户 %s 的成员失败（sacctmgr 不可用？）" % name)
+    defaults = _user_defaults()
+    if defaults is None:
+        die("查询用户默认账户失败（sacctmgr 不可用？）")
+    users = []
+    for rec in sorted(rows, key=lambda x: x["username"]):
+        u = rec["username"]
+        users.append({"username": u,
+                      "default": defaults.get(u, "") == name,
+                      "qos": rec["qos"] or acct_qos(name)})
+    out({"ok": True, "account": name, "users": users})
+
+
+def cmd_account_add_user(name, user, make_default=False):
+    """把用户加入账户（幂等）；--default 时同时设为用户的默认账户。"""
+    if not valid_account(name):
+        die("非法账户名: %s（须匹配 %s）" % (name, ACCOUNT_RE.pattern))
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    if name not in accts:
+        die("账户不存在: %s" % name)
+    if run(["id", "-u", user]).returncode != 0:
+        die("OS 账号 %s 不存在，无法加入账户" % user)
+    qos = acct_qos(name)
+    names = _user_account_names(user)
+    if names is None:
+        die("查询 %s 的会计关联失败（sacctmgr 不可用？）" % user)
+    added = False
+    if name not in names:
+        ok, err = _account_ensure(name)
+        if not ok:
+            die(err)
+        ok, err = _add_user_assoc(user, name)
+        if not ok:
+            die(err)
+        added = True
+    default = False
+    if make_default:
+        ok, err = _set_default_account(user, name)
+        if not ok:
+            die(err)
+        default = True
+    else:
+        defaults = _user_defaults()
+        default = bool(defaults is not None and defaults.get(user, "") == name)
+    out({"ok": True, "account": name, "user": user, "qos": qos,
+         "added": added, "default": default})
+
+
+def cmd_account_remove_user(name, user):
+    """把用户移出账户；默认账户且用户还有其他账户时拒绝（先改默认账户）。"""
+    if not valid_account(name):
+        die("非法账户名: %s（须匹配 %s）" % (name, ACCOUNT_RE.pattern))
+    if not valid_user(user):
+        die("非法用户名或系统保留账号: %s" % user)
+    accts = _accounts_in_slurm()
+    if accts is None:
+        die("查询 Slurm 账户失败（slurmdbd 未运行或无权限？）")
+    if name not in accts:
+        die("账户不存在: %s" % name)
+    names = _user_account_names(user)
+    if names is None:
+        die("查询 %s 的会计关联失败（sacctmgr 不可用？）" % user)
+    if name not in names:
+        out({"ok": True, "account": name, "user": user,
+             "removed": False, "was_default": False})
+        return
+    defaults = _user_defaults()
+    if defaults is None:
+        die("查询用户默认账户失败（sacctmgr 不可用？）")
+    is_default = defaults.get(user, "") == name
+    others = [a for a in names if a != name]
+    if is_default and others:
+        die("账户 %s 是用户 %s 的默认账户，请先把默认账户改为 %s 中的其它账户，再移除该关联"
+            % (name, user, "、".join(others)))
+    ok, err = _remove_user_assoc(user, name)
+    if not ok:
+        die(err)
+    out({"ok": True, "account": name, "user": user,
+         "removed": True, "was_default": is_default})
+
+
+def cmd_user_accounts(username):
+    """该用户实际关联的账户（含默认账户与每账户 QoS 信息）。"""
+    if not name_ok(username):
+        die("非法用户名")
+    default, accounts, err = _user_accounts_info(username)
+    if err:
+        die(err)
+    out({"ok": True, "username": username, "default": default,
+         "accounts": accounts})
+
+
+# ----------------------------------------------------------------------------
 # Slurm 关联 / QoS / 优先级 / 限额（经 sacctmgr 读取——slurmdbd 权威数据）
 # ----------------------------------------------------------------------------
 def cmd_slurm_info(username):
@@ -1527,6 +2323,7 @@ def cmd_slurm_info(username):
                  timeout=30)
     assocs = []
     qos_names = []
+    account_names = []
     for ln in raw.splitlines():
         f = ln.split("|")
         if len(f) < 2 or f[1] != username:
@@ -1540,30 +2337,55 @@ def cmd_slurm_info(username):
             "max_jobs": f[11], "max_submit": f[12],
             "max_wall": f[13], "grp_wall": f[14],
         }
+        if rec["account"] and rec["account"] not in account_names:
+            account_names.append(rec["account"])
         if rec["qos"]:
             for q in rec["qos"].split(","):
                 if q and q not in qos_names:
                     qos_names.append(q)
         assocs.append(rec)
-    # QoS 定义（优先级 + 限额）
+    # QoS 定义（优先级 + 限额；新增每用户卡数上限 MaxTRESPU 与 Preempt）
     qos_map = {}
-    if qos_names:
-        raw2 = sh_out(["sacctmgr", "-n", "-P", "show", "qos",
-                       "format=Name,Priority,MaxTRES,GrpTRES,MaxTRESMins,GrpTRESMins,"
-                       "GrpJobs,GrpSubmit,MaxJobs,MaxSubmit,MaxWall,GrpWall"],
-                      timeout=30)
-        for ln in raw2.splitlines():
+    wanted = list(qos_names)
+    for a in account_names:
+        q = acct_qos(a)
+        if q not in wanted:
+            wanted.append(q)
+    if wanted:
+        fmt = ("Name,Priority,MaxTRES,GrpTRES,MaxTRESMins,GrpTRESMins,"
+               "GrpJobs,GrpSubmit,MaxJobs,MaxSubmit,MaxWall,GrpWall,MaxTRESPU,Preempt")
+        r2 = run(["sacctmgr", "-n", "-P", "show", "qos", "format=" + fmt],
+                 timeout=30)
+        if r2.returncode != 0:
+            # 老版本 sacctmgr 没有 MaxTRESPU/Preempt 格式字段：退回旧格式，
+            # 优先级等旧字段照常给出，每用户卡数上限留空（门户按“未知/不限”显示）
+            fmt_old = ("Name,Priority,MaxTRES,GrpTRES,MaxTRESMins,GrpTRESMins,"
+                       "GrpJobs,GrpSubmit,MaxJobs,MaxSubmit,MaxWall,GrpWall")
+            r2 = run(["sacctmgr", "-n", "-P", "show", "qos",
+                      "format=" + fmt_old], timeout=30)
+        for ln in (r2.stdout or "").splitlines():
             f = ln.split("|")
-            if len(f) < 12 or f[0] not in qos_names:
+            if len(f) < 12 or not f[0].strip() or f[0].strip() not in wanted:
                 continue
-            qos_map[f[0]] = {
+            pu = f[12].strip() if len(f) > 12 else ""
+            preempt = f[13].strip() if len(f) > 13 else ""
+            qos_map[f[0].strip()] = {
                 "priority": f[1], "max_tres": f[2], "grp_tres": f[3],
                 "max_tres_mins": f[4], "grp_tres_mins": f[5],
                 "grp_jobs": f[6], "grp_submit": f[7],
                 "max_jobs": f[8], "max_submit": f[9],
                 "max_wall": f[10], "grp_wall": f[11],
+                "max_tres_per_user": pu,
+                "per_user_gpu_cap": _gpu_cap_from_tres(pu),
+                "preempt": preempt,
             }
-    out({"ok": True, "username": username, "assocs": assocs, "qos": qos_map})
+    # 该用户的默认账户 + 实际关联账户（多账户展示/申请页用）
+    default_account, accounts_info, aerr = _user_accounts_info(username)
+    res = {"ok": True, "username": username, "assocs": assocs, "qos": qos_map,
+           "default_account": default_account, "accounts": accounts_info}
+    if aerr:
+        res["accounts_error"] = aerr
+    out(res)
 
 
 def cmd_rm_log(user, job_id):
@@ -1993,6 +2815,39 @@ def _cleanup_partial(target):
 
 
 # ----------------------------------------------------------------------------
+def _parse_account_opts(argv):
+    """解析 --accounts a,b / --default-account x（也接受 KEY=VALUE 写法）。
+
+    返回 (accounts|None, default|None, err)：
+      accounts=None 表示**没传**（旧行为：site.conf 默认账户单个）；
+      accounts=[]   表示**显式传了空列表**（管理员角色允许不选账户）。
+    """
+    accounts = None
+    default = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--accounts":
+            if i + 1 >= len(argv):
+                return None, None, "--accounts 需要一个逗号分隔的账户列表"
+            accounts = [x.strip() for x in argv[i + 1].split(",") if x.strip()]
+            i += 2
+        elif a.startswith("--accounts="):
+            accounts = [x.strip() for x in a.split("=", 1)[1].split(",") if x.strip()]
+            i += 1
+        elif a == "--default-account":
+            if i + 1 >= len(argv):
+                return None, None, "--default-account 需要一个账户名"
+            default = argv[i + 1].strip()
+            i += 2
+        elif a.startswith("--default-account="):
+            default = a.split("=", 1)[1].strip()
+            i += 1
+        else:
+            return None, None, "未知参数: %s" % a
+    return accounts, default, None
+
+
 def main():
     if len(sys.argv) < 2:
         die("用法: %s <command> [...]" % CTL)
@@ -2006,32 +2861,82 @@ def main():
             cmd_extra_mounts()
         elif cmd == "provision-user":
             if len(sys.argv) < 4:
-                die("用法: provision-user <用户名> <配额> [--skip-os] [--uid N]")
+                die("用法: provision-user <用户名> <配额> [--skip-os] [--uid N] "
+                    "[--accounts a,b] [--default-account x]")
             rest = sys.argv[4:]
             uid_opt = None
-            if "--uid" in rest:
-                i = rest.index("--uid")
-                if i + 1 >= len(rest):
-                    die("--uid 需要一个整数值")
-                uid_opt = rest[i + 1]
-            cmd_provision_user(sys.argv[2], sys.argv[3], "--skip-os" in rest, uid_opt)
+            skip_os = False
+            acct_rest = []
+            i = 0
+            while i < len(rest):
+                a = rest[i]
+                if a == "--uid":
+                    if i + 1 >= len(rest):
+                        die("--uid 需要一个整数值")
+                    uid_opt = rest[i + 1]
+                    i += 2
+                elif a == "--skip-os":
+                    skip_os = True
+                    i += 1
+                elif a in ("--accounts", "--default-account"):
+                    if i + 1 >= len(rest):
+                        die("%s 需要一个值" % a)
+                    acct_rest += rest[i:i + 2]
+                    i += 2
+                elif a.startswith("--accounts=") or a.startswith("--default-account="):
+                    acct_rest.append(a)
+                    i += 1
+                else:
+                    die("未知参数: %s" % a)
+            accounts, default_account, err = _parse_account_opts(acct_rest)
+            if err:
+                die(err)
+            cmd_provision_user(sys.argv[2], sys.argv[3], skip_os, uid_opt,
+                               accounts, default_account)
         elif cmd == "unprovision-user":
             if len(sys.argv) < 3:
                 die("用法: unprovision-user <用户名>")
             cmd_unprovision_user(sys.argv[2])
         elif cmd == "init-user":
             if len(sys.argv) < 3:
-                die("用法: init-user <用户名>")
-            cmd_init_user(sys.argv[2])
+                die("用法: init-user <用户名> [--accounts a,b] [--default-account x]")
+            accounts, default_account, err = _parse_account_opts(sys.argv[3:])
+            if err:
+                die(err)
+            cmd_init_user(sys.argv[2], accounts, default_account)
         elif cmd == "ensure-assoc":
             if len(sys.argv) < 3:
-                die("用法: ensure-assoc <用户名>")
-            if not valid_user(sys.argv[2]):
-                die("非法用户名或系统保留账号: %s" % sys.argv[2])
-            ok, err = _ensure_assoc(sys.argv[2])
-            if not ok:
+                die("用法: ensure-assoc <用户名> [--accounts a,b] [--default-account x]")
+            accounts, default_account, err = _parse_account_opts(sys.argv[3:])
+            if err:
                 die(err)
-            out({"ok": True, "user": sys.argv[2], "assoc": "ok"})
+            cmd_ensure_assoc(sys.argv[2], accounts, default_account)
+        elif cmd == "accounts":
+            cmd_accounts()
+        elif cmd == "accounts-init":
+            cmd_accounts_init()
+        elif cmd == "accounts-sync":
+            cmd_accounts_sync()
+        elif cmd == "account-delete":
+            if len(sys.argv) < 3:
+                die("用法: account-delete <账户名>")
+            cmd_account_delete(sys.argv[2])
+        elif cmd == "account-users":
+            if len(sys.argv) < 3:
+                die("用法: account-users <账户名>")
+            cmd_account_users(sys.argv[2])
+        elif cmd == "account-add-user":
+            if len(sys.argv) < 4:
+                die("用法: account-add-user <账户名> <用户名> [--default]")
+            cmd_account_add_user(sys.argv[2], sys.argv[3], "--default" in sys.argv[4:])
+        elif cmd == "account-remove-user":
+            if len(sys.argv) < 4:
+                die("用法: account-remove-user <账户名> <用户名>")
+            cmd_account_remove_user(sys.argv[2], sys.argv[3])
+        elif cmd == "user-accounts":
+            if len(sys.argv) < 3:
+                die("用法: user-accounts <用户名>")
+            cmd_user_accounts(sys.argv[2])
         elif cmd == "ssh-ready":
             if len(sys.argv) < 4:
                 die("用法: ssh-ready <用户名> <jobid>")

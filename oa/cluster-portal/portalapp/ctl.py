@@ -71,10 +71,11 @@ def sinfo():
     return run(["sinfo"], timeout=60)
 
 
-def provision_user(username, quota, skip_os=False):
+def provision_user(username, quota, skip_os=False, accounts=None, default_account=None):
     args = ["provision-user", username, quota]
     if skip_os:
         args.append("--skip-os")
+    _append_accounts_args(args, accounts, default_account)
     return run(args, timeout=180)
 
 
@@ -82,8 +83,23 @@ def unprovision_user(username):
     return run(["unprovision-user", username], timeout=180)
 
 
-def init_user(username):
-    return run(["init-user", username], timeout=60)
+def init_user(username, accounts=None, default_account=None):
+    args = ["init-user", username]
+    _append_accounts_args(args, accounts, default_account)
+    return run(args, timeout=60)
+
+
+def _append_accounts_args(args, accounts, default_account):
+    """给 provision-user / init-user 追加 `--accounts a,b --default-account x`。
+
+    只在显式传入时追加：管理员角色允许不选账户，此时保持助手旧行为
+    （按站点配置的默认账户处理），避免把空列表解释成"移除所有关联"。
+    """
+    names = [a.strip() for a in (accounts or []) if (a or "").strip()]
+    if names:
+        args += ["--accounts", ",".join(names)]
+    if default_account:
+        args += ["--default-account", default_account]
 
 
 def user_exists(username):
@@ -203,8 +219,53 @@ def set_quota(username, size):
 
 
 def slurm_info(username):
-    """读取 Slurm 关联/QoS/优先级/限额（经 sacctmgr）。"""
+    """读取 Slurm 关联/QoS/优先级/限额（经 sacctmgr）。
+
+    新版本助手额外返回 `default_account` 与 `accounts` 列表
+    （每项 name/qos/priority/per_user_gpu_cap/is_default/preempt），
+    以及 QoS 的 `max_tres_per_user` / `per_user_gpu_cap` / `preempt` 字段。
+    """
     return run(["slurm-info", username], timeout=60)
+
+
+# ---- 账户管理（契约第 3/6 节；仅供 root-only 路由与申请页调用）----
+def accounts():
+    """全部 Slurm 账户及其 QoS/成员数。"""
+    return run(["accounts"], timeout=60)
+
+
+def accounts_init():
+    """按站点配置幂等创建初始账户与 acct-* QoS。"""
+    return run(["accounts-init"], timeout=120)
+
+
+def accounts_sync(accounts):
+    """把门户 DB 里的账户优先级/单用户卡数/抢占配置全量同步到 Slurm（不删除）。"""
+    return run(["accounts-sync"], stdin_json={"accounts": accounts}, timeout=180)
+
+
+def account_delete(name):
+    return run(["account-delete", name], timeout=60)
+
+
+def account_users(name):
+    return run(["account-users", name], timeout=60)
+
+
+def account_add_user(name, user, make_default=False):
+    args = ["account-add-user", name, user]
+    if make_default:
+        args.append("--default")
+    return run(args, timeout=60)
+
+
+def account_remove_user(name, user):
+    return run(["account-remove-user", name, user], timeout=60)
+
+
+def user_accounts(user):
+    """该用户在 Slurm 实际关联的账户（含默认账户与每账户 QoS 信息）。"""
+    return run(["user-accounts", user], timeout=60)
 
 
 class NodeCache:

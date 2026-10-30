@@ -9,7 +9,9 @@
   SSH_PORT            节点间 ssh 端口（特权助手连计算节点用）      默认 2180
   GPU_MODEL_MAP       额外的 gres->显示名映射，形如 "3060:RTX 3060,3090:RTX 3090"
   DEFAULT_GPU_MODEL   节点信息不可用时的兜底 GPU 型号              默认 RTX 3060
-  ACCOUNT             Slurm 会计账户名（sacctmgr account）          默认 lab
+  ACCOUNTS            Slurm 会计账户列表（逗号分隔）                默认取 ACCOUNT
+  DEFAULT_ACCOUNT     申请资源时的默认账户                          默认第一个账户
+  ACCOUNT             兼容旧单账户配置：ACCOUNTS 缺省时作为唯一账户  默认 lab
   SEED_PLANS          首次建库时使用的套餐定义 JSON 路径（可选；缺省用内置 5 条）
   IMAGES_MOUNT        镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描）   默认 /share/images
   PARTITION           预留：覆盖分区名（默认按 sinfo 自动探测）
@@ -29,6 +31,8 @@ DEFAULTS = {
     "SSH_PORT": "2180",
     "GPU_MODEL_MAP": "",
     "DEFAULT_GPU_MODEL": "RTX 3060",
+    "ACCOUNTS": "",
+    "DEFAULT_ACCOUNT": "",
     "ACCOUNT": "lab",
     "SEED_PLANS": "",
     "IMAGES_MOUNT": "/share/images",
@@ -89,6 +93,29 @@ SSH_PORT = str(CONF.get("SSH_PORT", "2180"))
 DEFAULT_GPU_MODEL = CONF.get("DEFAULT_GPU_MODEL", "RTX 3060")
 SEED_PLANS = CONF.get("SEED_PLANS", "")
 PARTITION = CONF.get("PARTITION", "")
+
+
+def parse_accounts(text):
+    """'phd, ms ,be' -> ['phd', 'ms', 'be']（去空白/空项/重复，保留出现顺序）。"""
+    out = []
+    for item in (text or "").split(","):
+        name = item.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+# ---- 多账户（契约第 5 节）----
+# ACCOUNT 保留兼容旧单账户站点；ACCOUNTS 缺省时它就是唯一账户
+# （ACCOUNT 也显式配成空时 ACCOUNTS=[]，DEFAULT_ACCOUNT=""）。
+ACCOUNT = CONF.get("ACCOUNT", "lab") or ""
+ACCOUNTS = parse_accounts(CONF.get("ACCOUNTS", ""))
+if not ACCOUNTS and ACCOUNT:
+    ACCOUNTS = [ACCOUNT]
+# DEFAULT_ACCOUNT 缺省取第一个账户；所有配置都空时为空串。
+DEFAULT_ACCOUNT = (CONF.get("DEFAULT_ACCOUNT", "") or "").strip()
+if not DEFAULT_ACCOUNT and ACCOUNTS:
+    DEFAULT_ACCOUNT = ACCOUNTS[0]
 
 
 def pretty_gpu(token):

@@ -103,6 +103,16 @@ else
   echo "  未提供站点目录 → 使用代码内置默认值（ssh 端口 2180、RTX 3060、内置套餐）"
 fi
 
+echo "==> [4d/8] 初始化会计账户（ACCOUNTS，幂等）"
+# 账户/每账户 QoS 必须先在 slurmdbd 里存在，门户建号才能给用户加关联；
+# 基础集群尚未就绪时这里只告警、不阻断安装（之后可手工重跑）。
+if _ACCT_OUT="$("$CTL" accounts-init 2>&1)"; then
+  echo "  $_ACCT_OUT"
+else
+  echo "  [警告] 账户初始化失败（slurmdbd 未就绪？）：$_ACCT_OUT"
+  echo "         基础集群就绪后请重跑: $CTL accounts-init"
+fi
+
 echo "==> [5/8] systemd 单元"
 cat > /etc/systemd/system/$SERVICE.service <<EOF
 [Unit]

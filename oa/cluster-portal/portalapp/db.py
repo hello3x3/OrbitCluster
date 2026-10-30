@@ -225,15 +225,57 @@ class DB:
     def del_plan(self, pid):
         self.exec("DELETE FROM plans WHERE id=?", (pid,))
 
+    # ---- accounts（Slurm 会计账户；成员关系以 Slurm 为准，不落库）----
+    def accounts_all(self):
+        return self.q("SELECT * FROM accounts ORDER BY name")
+
+    def account_by_name(self, name):
+        return self.q1("SELECT * FROM accounts WHERE name=?", (name,))
+
+    def add_account(self, name, description="", priority=5, per_user_gpu_cap=0,
+                    preempt=0, is_temporary=0, expires_at=""):
+        cur = self.exec(
+            "INSERT INTO accounts(name,description,priority,per_user_gpu_cap,preempt,"
+            "is_temporary,expires_at,enabled,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,1,?,?)",
+            (name, description or "", int(priority), int(per_user_gpu_cap),
+             1 if preempt else 0, 1 if is_temporary else 0, expires_at or "",
+             _now(), _now()))
+        return cur.rowcount
+
+    def update_account(self, name, **kw):
+        cols = {"description", "priority", "per_user_gpu_cap", "preempt",
+                "is_temporary", "expires_at", "enabled"}
+        sets = []
+        args = []
+        for k, v in kw.items():
+            if k in cols:
+                if k in ("preempt", "is_temporary", "enabled"):
+                    v = 1 if v else 0
+                sets.append("%s=?" % k)
+                args.append(v)
+        if not sets:
+            return 0
+        args.append(_now())
+        args.append(name)
+        return self.exec("UPDATE accounts SET %s, updated_at=? WHERE name=?" % ",".join(sets),
+                         args).rowcount
+
+    def delete_account(self, name):
+        return self.exec("DELETE FROM accounts WHERE name=?", (name,)).rowcount
+
+    def set_account_enabled(self, name, enabled):
+        return self.update_account(name, enabled=enabled)
+
     # ---- instances ----
     def add_instance(self, uid, plan_id, task_name, node, gpus, cpus, mem_gb, port,
-                     walltime, image, job_id, state, cmd, log_path, ssh_ip):
+                     walltime, image, job_id, state, cmd, log_path, ssh_ip, account=""):
         cur = self.exec(
             "INSERT INTO instances(user_id,plan_id,task_name,node,req_node,gpus,cpus,mem_gb,port,"
-            "walltime,image,job_id,state,cmd,log_path,ssh_ip,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "walltime,image,job_id,state,cmd,log_path,ssh_ip,account,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (uid, plan_id, task_name, node, node, gpus, cpus, mem_gb, port, walltime, image,
-             job_id, state, cmd, log_path, ssh_ip,
+             job_id, state, cmd, log_path, ssh_ip, account or "",
              _now(), _now()))
         return cur.lastrowid
 
@@ -278,7 +320,8 @@ class DB:
         return cur.rowcount > 0
 
     def set_instance_meta(self, iid, **kw):
-        cols = {"job_id", "node", "ssh_ip", "log_path", "cmd", "slurm_state", "last_error"}
+        cols = {"job_id", "node", "ssh_ip", "log_path", "cmd", "slurm_state", "last_error",
+                "account"}
         sets = []
         args = []
         for k, v in kw.items():
@@ -432,6 +475,18 @@ CREATE TABLE IF NOT EXISTS user_ports(
   claimed_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_port ON user_ports(port);
+CREATE TABLE IF NOT EXISTS accounts(
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 5,
+  per_user_gpu_cap INTEGER NOT NULL DEFAULT 0,
+  preempt INTEGER NOT NULL DEFAULT 0,
+  is_temporary INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS instances(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -451,6 +506,7 @@ CREATE TABLE IF NOT EXISTS instances(
   cmd TEXT,
   log_path TEXT,
   ssh_ip TEXT NOT NULL DEFAULT '',
+  account TEXT NOT NULL DEFAULT '',
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -497,6 +553,19 @@ def init_db(db):
         db.set_setting("portal_name", "OrbitCluster 集群门户")
     if db.q1("SELECT COUNT(*) n FROM plans")["n"] == 0:
         _seed_plans(db)
+    _seed_accounts(db)
+
+
+def _seed_accounts(db):
+    """首次建库时按站点配置种子化账户行（只做一次）。
+
+    不能每次启动都补齐：管理员在「管理账户」里删掉一个非默认账户后，重启服务
+    不应该把它复活。账号清单变更走「管理账户」页（或手工 accounts-init + 页面新增）。
+    """
+    if db.q1("SELECT COUNT(*) n FROM accounts")["n"]:
+        return
+    for name in siteconf.ACCOUNTS:
+        db.add_account(name, priority=5)
 
 
 def _migrate(db):
@@ -515,6 +584,9 @@ def _migrate(db):
         # 老库没有 req_node：用当前 node 作为申请意图（自动调度运行后可能已是实际节点，
         # 无法追溯，只能近似；新提交都会写 req_node）
         db.exec("UPDATE instances SET req_node=node WHERE req_node=''")
+    if "account" not in icols:
+        # 老实例没有账户记录：保留空串 = 当时走 Slurm defaultaccount，不猜测。
+        db.exec("ALTER TABLE instances ADD COLUMN account TEXT NOT NULL DEFAULT ''")
     for col, ddl in (("started_at", "ALTER TABLE instances ADD COLUMN started_at TEXT"),
                      ("saving", "ALTER TABLE instances ADD COLUMN saving INTEGER NOT NULL DEFAULT 0"),
                      ("last_save", "ALTER TABLE instances ADD COLUMN last_save TEXT NOT NULL DEFAULT ''"),

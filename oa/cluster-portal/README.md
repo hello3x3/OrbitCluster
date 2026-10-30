@@ -7,32 +7,38 @@ SSH 进容器、看日志、停机。
 - 运行位置：`http://<ADMIN>:8000`（内网 `http://<ADMIN_IP>:8000`）
 - 技术栈：Python 3 + Flask + SQLite(WAL) + waitress；root 特权收敛到白名单助手
   `/usr/local/sbin/portal-ctl`（sudoers 只放行这一个命令给运行账号 `portal`）
+- **多账户**：一套集群可配置多个 Slurm 会计账户（示例站点 `ZJU-CV` 为 `phd/ms/be/ra`，默认 `phd`）。
+  root 在「管理账户」页维护每账户的优先级 / 单用户卡数上限 / 可抢占 / 成员 / 到期；
+  用户申请时选“计费账户”，**多账户额度叠加**（账户与 OS 用户是两回事）。
 
 ## 功能（对照需求）
 
 | 需求 | 实现 |
 |---|---|
-| 登录系统；用户须注册才能使用；**仅管理员可注册新用户** | 无公开注册页；管理员在「用户管理」开通账号（普通用户自动在 `<ADMIN>/<GPU01>/<GPU02>` 建号 + 配额 + sacctmgr 关联，也可对已存在的 OS 账号只开通门户） |
+| 登录系统；用户须注册才能使用；**仅管理员可注册新用户** | 无公开注册页；管理员在「用户管理」开通账号（普通用户自动在 `<ADMIN>/<GPU01>/<GPU02>` 建号 + 配额 + sacctmgr 关联，也可对已存在的 OS 账号只开通门户）。**开通时勾选账户（可多选）并指定默认账户**，账户来自「管理账户」/`site.conf` 的 `ACCOUNTS` |
 | 申请前必须维护个人信息：**SSH 登录密钥**、**想要的端口**（≥10000、避开常用/他人已申请端口） | 「个人资料」页管理多把 SSH 公钥（写入该用户 `~/.ssh/authorized_keys`，门户统一维护）与端口池；未满足“≥1 密钥 且 ≥1 端口”前禁止申请。端口校验：10000–65535、不在保留常用端口表、全门户唯一 |
-| 资源申请界面：镜像分组下拉(公共 `<IMAGES_MOUNT>/*.sqsh` + **个人镜像** `<IMAGES_MOUNT>/<用户名>/`) + **管理员可配置套餐**(名称/CPU/GPU型号/内存/最长时长 maxtime) + 任务名(必填) + 时长(默认12h，**≤套餐maxtime**，超出提示找管理员) + 节点(默认留空=Slurm自动调度) + SSH端口；可**同时申请多个**；申请后可**停机**/看日志；界面**不展示提交命令** | 「申请资源」单页提交真实 `sbatch` 作业；时长超过套餐 maxtime 时提示"需平台管理员协助申请"，管理员用「代申请资源」可代任何人提交（用该用户端口，底层 OS root `runuser`=等价 `sudo -u`，配额归属被代用户）；运行中资源「连接/详情」直接给出 **`ssh -p <端口> 用户名@真实节点IP`** |
+| 资源申请界面：镜像分组下拉(公共 `<IMAGES_MOUNT>/*.sqsh` + **个人镜像** `<IMAGES_MOUNT>/<用户名>/`) + **管理员可配置套餐**(名称/CPU/GPU型号/内存/最长时长 maxtime) + 任务名(必填) + 时长(默认12h，**≤套餐maxtime**，超出提示找管理员) + 节点(默认留空=Slurm自动调度) + SSH端口；可**同时申请多个**；申请后可**停机**/看日志；界面**不展示提交命令** | 「申请资源」单页提交真实 `sbatch` 作业；**“计费账户”下拉只列该用户实际关联的账户**（默认选中默认账户，只有 1 个时不显示下拉），作业以 `--account=<所选账户>` 提交，排队优先级与单用户卡数上限按该账户 QoS 生效；时长超过套餐 maxtime 时提示"需平台管理员协助申请"，管理员用「代申请资源」可代任何人提交（账户下拉随目标用户加载；底层 OS root `runuser`=等价 `sudo -u`，计费归属被代用户）；运行中资源「连接/详情」直接给出 **`ssh -p <端口> 用户名@真实节点IP`** |
 | **镜像保存**：容器启动后，用户在运行中的资源上「保存镜像」把当前容器状态导出为个人镜像（`<IMAGES_MOUNT>/<用户>/<名称>.sqsh`，名称：英文/数字/点/横线/下划线/加号、≤32 位，计入该用户 /share 配额）；资源**到期自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）后自动停机 | 作业以 `--container-name=portal --container-writable` 提交（rootfs 落在计算节点 `ENROOT_DATA_PATH` 下 `pyxis_<jobid>_portal`，作业结束自动清理）；保存 = 以该用户身份 `enroot export` 该运行中容器（分钟级，异步执行并回写该资源行的保存结果）；到期扫描线程按「开始时刻+时长」触发「先自动保存再停机」，Slurm 时长内已含 15 分钟保存余量 |
-| **配额/额度透明**：普通用户在「我的资源」读自己磁盘配额（OS repquota 实读）与 Slurm 关联/QoS/优先级/总额度（sacctmgr 实读）；管理员在「用户管理」**改配额**（软=硬，直写 OS setquota 并回读确认，非门户 DB 记录） | 配额不是门户库存量：展示与修改都以集群 OS/Slurm 为权威；系统保留账号（root/portal…）与无同名 OS 账号的纯平台管理员不可设配额 |
+| **配额/额度透明**：普通用户在「我的资源」读自己磁盘配额（OS repquota 实读）与**按账户的** QoS/优先级/单用户卡数上限（sacctmgr 实读）；管理员在「用户管理」**改配额**（软=硬，直写 OS setquota 并回读确认，非门户 DB 记录） | 配额不是门户库存量：展示与修改都以集群 OS/Slurm 为权威；系统保留账号（root/portal…）与无同名 OS 账号的纯平台管理员不可设配额。GPU 额度不按“用户总额度”展示，而是**按账户**展示（多账户叠加），账户额度在「管理账户」维护 |
+| **多账户管理（root-only）**：新建/编辑账户（优先级 1~10、单用户卡数上限 0=不限、可抢占、临时/到期）、加/移除成员、设默认账户；删除受保护；临时项目到期只禁新提交 | 「管理账户」页 `/admin/accounts`（仅 `root`；普通管理员入口不显示、路由 403）。保存时先把配置写门户库，再经 `portal-ctl accounts-sync`/成员命令同步 Slurm，失败回显并回滚。QoS 为每账户 `acct-<名>`：`Priority` + `MaxTRESPerUser`（**不用 account 级 GrpTRES**）；勾“可抢占”后助手把该 QoS 的 `Preempt` 全量重算为更低优先级 `acct-*`。默认账户不可删，有成员/运行作业的账户由助手拒绝删除 |
 
 ## 目录结构
 
 ```
 cluster-portal/
 ├── deploy/
-│   ├── install.sh        # root 在 <ADMIN> 上执行的一键安装
+│   ├── install.sh        # root 在 <ADMIN> 上执行的一键安装（含 accounts-init 账户初始化）
 │   ├── portal-ctl        # root 特权助手（提交/建号/停机/日志/公钥/sinfo/配额/slurm-info/
-│   │                     #   save-image/images/rm-log），web 经 sudo 调用
+│   │                     #   save-image/images/rm-log；账户：accounts/accounts-init/accounts-sync/
+│   │                     #   account-delete/account-users/account-add-user/account-remove-user/
+│   │                     #   user-accounts），web 经 sudo 调用
 │   └── install.sh 内联   # systemd 单元、sudoers 片段
 ├── portalapp/            # Flask 应用
-│   ├── app.py            # 路由/页面/权限/CSRF
-│   ├── db.py             # SQLite 模型、种子套餐与常用端口表、实例并发约束
+│   ├── app.py            # 路由/页面/权限/CSRF（含 root-only 的「管理账户」）
+│   ├── db.py             # SQLite 模型、accounts 表、实例 account 列、种子套餐与常用端口表
 │   ├── auth.py           # PBKDF2 口令哈希、公钥格式校验、CSRF
 │   ├── ctl.py            # portal-ctl 客户端（sudo -n）＋节点状态缓存
-│   ├── templates/ static/# 中文界面（Jinja2 + 原生 JS/CSS）
+│   ├── templates/ static/# 中文界面（Jinja2 + 原生 JS/CSS）；admin_accounts.html 为管理账户页
 │   │                     #   base.html 内置通用输入/确认弹窗（#dlg-mask），
 │   │                     #   app.js 的 askText()/askConfirm() 替代 window.prompt/confirm
 ├── run.py                # waitress 生产入口
@@ -67,15 +73,30 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
    配额、初始门户密码（留空自动生成，**只显示一次**）。
    - 方式「自动建号」：三节点同步建号（UID 一致）+ `/share` 配额 + sacctmgr 关联。
    - 方式「OS 账号已存在」：跳过建号，仅初始化门户目录。
+   - **两种方式都要勾选账户（可多选）并选默认账户**（普通用户 ≥1 个，默认账户必须在所选内）；
+     账户来自 `site.conf` 的 `ACCOUNTS`（安装时 `accounts-init` 已建好）与「管理账户」页。
 2. 「资源套餐」维护预设的 CPU/内存/GPU 组合（启用/停用/增删；镜像由 `<IMAGES_MOUNT>` 自动发现，无需登记）。
    **仅 `root`**：套餐决定所有人能选什么资源，与同样是 root-only 的「授予/撤销管理员」同级 ——
    普通管理员看不到导航入口，直接访问 6 条套餐路由（页面/增/改/启停/删除/数据）一律 403。
    普通管理员在「代申请资源」里照样能选套餐，只是不能改。
-3. 可停用/启用、重置密码（随机生成，仅显示一次）、**删除用户**、**改配额**。
+3. **「管理账户」（仅 root）**：账户是 Slurm 的计费/优先级/额度单位，一个账户=一个 QoS `acct-<名>`。
+   - 新建/编辑：账户名（`^[a-z][a-z0-9_-]{0,31}$`，创建后不可改名）、说明、优先级（1~10）、
+     **单用户卡数上限**（QoS `MaxTRESPerUser`，0=不限，只管该账户下每个用户）、可抢占、临时项目/到期；
+   - 成员：加/移除成员、设默认账户；**不能移除用户的默认账户**（先改默认账户）；
+   - **删除保护**：站点默认账户不可删；有成员或运行/排队作业的账户由助手拒绝删除；
+   - **临时项目到期**：只禁止**新提交**（页面下拉消失、提交被拒），**不会**自动杀运行中作业；
+   - 多账户额度**叠加**（如 `phd` 8 + 临时项目 16 = 同时最多 24 卡，受物理卡数限制）；
+     账户**不设总额度**（不使用 account 级 `GrpTRES`）；账户变更写审计日志。
+4. 可停用/启用、重置密码（随机生成，仅显示一次）、**删除用户**、**改配额**。
    - 「改配额」：输入如 `200G / 500G / 1T`，门户以 root 执行 `set-quota.sh` 直写 OS
      `/share` 配额（软=硬即时生效），并回读 `repquota` 确认；「配额（OS 实读）」列显示
      「已用 / 硬上限」。普通用户行任何管理员可改；管理员行仅 root 或本人可改；
      系统保留账号与无同名 OS 账号者不能设配额。
+   - **GPU 额度不在这里改**：「改配额」只改 `/share` 磁盘配额；每账户“单用户最多 N 卡”在
+     「管理账户」里改（写 QoS `MaxTRESPerUser`），申请时选的账户决定作业优先级与额度。
+   - **抢占**：集群已开启 `PreemptType=preempt/qos` + `PreemptMode=CANCEL`；在「管理账户」给某账户
+     勾“可抢占”后，它可抢占**更低优先级账户**的运行中作业（直接 kill；门户**不会**自动保存容器状态，
+     被抢作业只显示为「被抢占/已取消」）。
    - 「删除」：对门户代建号的普通用户会先注销集群账号（终止其全部作业，删除
      `<ADMIN>/<GPU01>/<GPU02>` 上的账号、sacctmgr 关联与 NFS 家目录数据）再删门户记录；
      对管理员或以“existing”方式开通的用户只删门户记录、保留其 OS 账号与数据。
@@ -85,10 +106,13 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
 用户：
 1. 用管理员给的账号密码登录 →「个人资料」粘贴 **SSH 公钥**（`ssh-keygen -t ed25519`
    生成的 `.pub` 内容）并登记 **端口**（如 28771，可登记多个）。
-2. 「申请资源」→ 选镜像（公共/我的 两组）与套餐 → 任务名/时长/节点/端口 → 提交。
+2. 「申请资源」→ 若属于多个账户，在**“计费账户”**下拉里选一个（默认选中你的默认账户；
+   只有 1 个账户时不显示）→ 选镜像（公共/我的 两组）与套餐 → 任务名/时长/节点/端口 → 提交。
+   作业的优先级/单用户卡数上限按**所选账户**计算；临时项目到期后不能再选该账户。
 3. 「我的资源」：顶部「我的配额/额度」展示你的磁盘配额（OS 实读已用/硬上限）与
-   Slurm 关联账号/QoS/优先级/总额度（sacctmgr 实读，未设限制显示“不限”）；下方为
-   实例列表：运行中点「连接/详情」会给出 **`ssh -p <端口> 用户名@真实节点IP`** 命令
+   **按账户的额度卡**（账户名/是否默认/QoS/优先级/单用户最多 N 卡；多账户可叠加，
+   额度由管理员在「管理账户」维护，门户只读）；实例列表新增**账户**列（重新启动沿用所选账户），
+   运行中点「连接/详情」会给出 **`ssh -p <端口> 用户名@真实节点IP`** 命令
    （直接给 IP，非节点名），用登记公钥对应的私钥即可登录容器；可「停机」/「日志」；
    **运行中的资源可「保存镜像」**（把容器当前状态导出为个人镜像，保存结果显示在行下方；
    个人镜像计入你的 /share 配额）；资源**到期时门户自动保存一次**（`auto_<任务名>_<时间戳>.sqsh`）再停机；
@@ -153,8 +177,15 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   一律显式 `mkdir`、校验非软链后再 `chown`/`chmod`。
   回归测试：`tests/test_ctl_security.py`。
 - **保留账号（root/portal/slurm/sshd…）在一切"以它身份执行/写它的文件/注销它"的命令上都被拒绝**；
-  `root`/`lab` 的宿主机密钥**不由门户托管**（`_os_ok` 对这些账号返回假），
+  `root`/OS 运维用户（`<USER>`）的宿主机密钥**不由门户托管**（`_os_ok` 对这些账号返回假），
   保留账号也不能建门户账号。
+- **「管理账户」只对 root 开放**（导航不显示 + `/admin/accounts*` 全部路由 403），但这只是**页面权限**：
+  门户进程本身能以 root 调 sudoers 白名单里的 `portal-ctl`（含 `accounts-init` / `accounts-sync` /
+  `account-add-user` 等），这是既有威胁模型下保留的特权面。安全边界靠**助手侧规则**而不是页面权限：
+  账户名 `^[a-z][a-z0-9_-]{0,31}$`、默认账户不可删、有成员/运行作业的账户删除被拒、
+  `submit` 的 account 必须由 helper 用 `sacctmgr` 校验属于该用户且**绝不自动新增关联**
+  （防门户被攻破后自己开账户）、`accounts-sync` 全量重算 Preempt 后 fail closed。
+  因此不要把“root-only 管理页”当成“门户被攻破也改不了账户”的保证 —— 页面权限是 UX，防越权动作靠助手。
 - **应用代码归 root**（`portalapp/` 不允许 `portal` 可写）：`verify-install.sh` / `bootstrap.py`
   以 root 运行并导入这些模块，若 `portal` 可写，门户被攻破就能换来 root RCE。
   自检脚本自身不以 root 导入应用代码，用标准库 `sqlite3` 直接读库。
@@ -191,10 +222,12 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
     （如 `from="..."`、`command="..."` 前缀）因为不被识别为公钥，会在下次经门户
     增删公钥时被静默丢弃。
 - **作业能登录门户但一提交就报 `Invalid account or account/partition combination specified`**：
-  该用户在 Slurm 会计里没有账户关联，而集群开着 `AccountingStorageEnforce=associations`。
-  一条命令补：`portal-ctl ensure-assoc <用户>`。根因是**「OS 账号已存在」这条开通路径不经过
+  该用户在 Slurm 会计里没有该账户关联，而集群开着 `AccountingStorageEnforce=associations`。
+  一条命令补：`portal-ctl ensure-assoc <用户> --accounts a,b --default-account a`；或到
+  「管理账户 → 成员」把该用户加进账户。根因是**「OS 账号已存在」这条开通路径不经过
   `add-user.sh`**（只有 `add-user.sh` 会建关联），所以 `portal-ctl` 在
-  **开通 / 初始化 / 提交前**都会幂等补齐（见 `_ensure_assoc`），账户名取站点配置的 `ACCOUNT`（默认 `lab`）。
+  **开通 / 初始化 / 提交前**都会幂等补齐（见 `_ensure_assoc`），账户清单取站点配置的
+  `ACCOUNTS`（默认账户取 `DEFAULT_ACCOUNT`；旧站点只配 `ACCOUNT` 时回退为单账户）。
 - **作业日志里出现 `couldn't chdir to '/opt/cluster-portal': No such file or directory`**：
   门户服务的工作目录是 `/opt/cluster-portal`（systemd `WorkingDirectory`），而 `sbatch` 默认让
   作业在**提交者进程的 cwd** 下启动 —— 该目录只存在于管理节点，作业落到计算节点就会 chdir 失败
@@ -237,8 +270,9 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
   `portal-ctl unprovision-user`（root）。
 - **平台管理员权限由 root 账号管理**：只有门户账号 `root` 可在用户管理里给其它用户
   「设为管理员 / 取消管理员」；其它管理员不能互相授予/撤销（见「管理员，由 root 管理」）。
-- 管理员可用「代申请资源」帮任意有 OS 账号的普通用户提交（选目标用户→用其端口池端口；
-  底层 portal-ctl 以 OS root 执行 `runuser`，即等价 `sudo -u <用户>`，配额/计费归属被代用户）。
+- 管理员可用「代申请资源」帮任意有 OS 账号的普通用户提交（选目标用户→**按要求加载该用户的计费账户**
+  （不选则用其默认账户）→用其端口池端口；底层 portal-ctl 以 OS root 执行 `runuser`，
+  即等价 `sudo -u <用户>`，配额/计费归属被代用户）。
 
 ## 测试
 
@@ -246,10 +280,14 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 # 本地冒烟（无需集群/root，假 ctl）：
 python3 -m venv .venv-test && .venv-test/bin/pip install -r requirements.txt requests
 .venv-test/bin/python tests/smoke_local.py
+# 覆盖（多账户新增）：root-only 403、管理账户新增/编辑/删除、成员增删、开通用户选账户、
+#   申请选账户/默认账户、非法账户名/越权账户拒绝、多账户额度展示、实例 account 与重启沿用
 
 # root 助手（portal-ctl）安全回归：保留账号守卫 / 软链拒绝 / 命令入口。
 # 同样不需要 root 与集群，全部在临时目录里跑，成功打印 CTL_SECURITY_OK：
 python3 tests/test_ctl_security.py
+# 覆盖（多账户新增）：账户名正则、submit 的 account 成员校验（绝不自动新增关联）、
+#   默认账户/有成员账户删除保护
 
 # 真机验收（需 portal 已部署、本机可 ssh root@<ADMIN>）：
 #   默认以 root（默认管理员）执行；不传 E2E_ADMIN_PWD 时自动读取 <ADMIN> 节点

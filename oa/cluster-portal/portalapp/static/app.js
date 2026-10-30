@@ -324,6 +324,7 @@
       <td><b>${esc(i.res_name)}</b>${sub ? `<div class="small muted">${esc(sub)}</div>` : ""}${saveLine}${errLine}</td>
       <td><span class="st st-${esc(i.state_key || String(i.state).toLowerCase())}">${esc(i.state_cn)}</span></td>
       <td class="mono">${esc(i.node_cn)}</td>
+      <td class="mono small">${i.account ? esc(i.account) : "—"}</td>
       <td class="mono">${esc(i.port)}</td>
       <td class="small">${i.gpus}×GPU · ${i.cpus}核 · ${i.mem_gb}G</td>
       <td class="mono small">${esc(i.hours)}</td>
@@ -571,10 +572,13 @@
     const ahint = f.querySelector("#ahours-hint");
     const task = f.querySelector("#atask"), th = f.querySelector("#atask-hint");
     const planSel = f.querySelector("#plan-sel");
+    const acctSel = f.querySelector("#account-sel");
+    const acctHint = f.querySelector("#account-hint");
     const btn = f.querySelector("#btn-admin-submit");
     let targets = [];
     let portReady = false;
     let imgReady = false;
+    let accountReady = false;
     function overInfoAdmin() {
       const mx = maxtimeOf(f);
       const v = parseInt(ahours.value || "0", 10);
@@ -584,7 +588,7 @@
       } else ahint.hidden = true;
     }
     function upd() {
-      btn.disabled = !(portReady && imgReady && checkTask(task, th));
+      btn.disabled = !(portReady && imgReady && accountReady && checkTask(task, th));
     }
     async function loadTargets() {
       try {
@@ -626,6 +630,52 @@
       }
       upd();
     }
+    /* 选中目标用户后拉取其实际关联的账户（/api/user-accounts/<uid>），
+       填入账户下拉并随表单提交 account。没有账户时不指定 account（Slurm 用默认账户）。 */
+    async function loadAccounts() {
+      const uid = parseInt(tsel.value || "0", 10);
+      accountReady = false;
+      acctSel.disabled = true;
+      acctSel.innerHTML = '<option value="">加载账户中…</option>';
+      acctHint.hidden = true;
+      upd();
+      if (!uid) {
+        acctSel.innerHTML = '<option value="">先选择用户…</option>';
+        acctHint.hidden = false;
+        acctHint.textContent = "先选择用户，再选择该用户的计费账户";
+        return;
+      }
+      try {
+        const d = await get("/api/user-accounts/" + uid);
+        if (parseInt(tsel.value || "0", 10) !== uid) return;   // 用户已再次切换，丢弃旧响应
+        if (!d || d.ok === false) throw new Error((d && d.error) || "读取账户失败");
+        const list = (d && d.accounts) || [];
+        acctSel.innerHTML = "";
+        if (!list.length) {
+          acctSel.innerHTML = '<option value="">（无关联账户，按用户默认账户提交）</option>';
+          acctHint.hidden = false;
+          acctHint.textContent = "该用户没有可选的账户关联；提交时不指定 --account，由 Slurm 使用其默认账户";
+        } else {
+          const def = (d && d.default) || ((list.find(a => a.is_default) || {}).name) || list[0].name;
+          acctSel.innerHTML = list.map(a => {
+            const cap = a.per_user_gpu_cap ? (a.per_user_gpu_cap + " 卡") : "不限";
+            const prio = (a.priority === 0 || a.priority) ? a.priority : "-";
+            return `<option value="${esc(a.name)}"${a.name === def ? " selected" : ""}>`
+              + `${esc(a.name)}（优先级 ${esc(prio)}，单用户最多 ${esc(cap)}）</option>`;
+          }).join("");
+          acctHint.hidden = true;
+        }
+        acctSel.disabled = false;
+        accountReady = true;
+      } catch (e) {
+        // 读取失败不阻断代申请：后端允许不传 account（Slurm 用默认账户），但要把情况说清楚
+        acctSel.innerHTML = '<option value="">（账户读取失败，按默认账户提交）</option>';
+        acctHint.hidden = false;
+        acctHint.textContent = "读取用户账户失败：" + (e.message || "网络错误") + "；仍可提交，将使用该用户默认账户";
+        accountReady = true;
+      }
+      upd();
+    }
     function refreshPorts() {
       const uid = parseInt(tsel.value || "0", 10);
       const t = targets.find(x => x.id === uid);
@@ -643,6 +693,7 @@
         portReady = t.ports.some(p => !p.busy);
       }
       loadImages();
+      loadAccounts();
       upd();
     }
     tsel.addEventListener("change", refreshPorts);
@@ -864,6 +915,212 @@
     });
   }
 
+  /* ---------- 管理账户页（root）：新建/编辑校验、删除、成员弹窗 ----------
+     add/edit 走普通表单（服务端 flash + redirect 回本页）；delete 与成员增删走 fetch JSON。
+     这样即使 helper 失败，也是由后端负责回滚/提示，前端只显示错误，不静默成功。 */
+  function wireAdminAccounts() {
+    const dataEl = $("#acct-page-data");
+    if (!dataEl) return;
+    const table = $("#acct-table");
+    const ACCT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+    let data = { accounts: [], default: "" };
+    try { data = JSON.parse(dataEl.textContent || "{}") || data; } catch (e) { /* ignore */ }
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    let curAccount = "";
+
+    function findAcct(name) { return accounts.find(a => a.name === name) || null; }
+
+    async function acctPost(url, fd) {
+      fd.append("_csrf", csrfToken());
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken() },
+        body: fd,
+      });
+      const ct = (r.headers.get("content-type") || "").toLowerCase();
+      if (ct.indexOf("application/json") >= 0) {
+        let d = null;
+        try { d = await r.json(); } catch (e) { /* ignore */ }
+        if (d && d.ok === false) throw new Error(d.error || "操作失败");
+        if (d) return d;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return { ok: true };
+    }
+
+    $$(".acct-form").forEach(f => {
+      f.addEventListener("submit", ev => {
+        const nameEl = f.querySelector('input[name="name"]');
+        const name = ((nameEl && nameEl.value) || "").trim();
+        if (!ACCT_RE.test(name)) {
+          ev.preventDefault();
+          toast("账户名不合法：小写字母开头，只能包含小写字母、数字、下划线、横线（1-32 位）", "err");
+          if (nameEl && !nameEl.disabled) nameEl.focus();
+          return;
+        }
+        const p = f.querySelector('input[name="priority"]');
+        const prio = p ? parseInt(p.value || "0", 10) : NaN;
+        if (!(prio >= 1 && prio <= 10)) {
+          ev.preventDefault(); toast("优先级须在 1-10 之间", "err"); if (p) p.focus(); return;
+        }
+        const c = f.querySelector('input[name="per_user_gpu_cap"]');
+        const cap = c ? parseInt(c.value || "0", 10) : NaN;
+        if (!(cap >= 0 && cap <= 64)) {
+          ev.preventDefault(); toast("单用户卡数上限须在 0-64 之间（0 = 不限）", "err"); if (c) c.focus(); return;
+        }
+      });
+    });
+
+    if (table) table.addEventListener("click", async ev => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      if (b.classList.contains("act-acct-edit")) {
+        const row = document.getElementById(b.dataset.target || "");
+        if (row) row.hidden = !row.hidden;
+        return;
+      }
+      if (b.classList.contains("act-acct-members")) { openMembers(b.dataset.account || ""); return; }
+      if (!b.classList.contains("act-acct-del")) return;
+      const go = await askConfirm({
+        title: "删除账户", text: b.dataset.msg || "确定删除该账户？", okText: "删除", danger: true,
+      });
+      if (!go) return;
+      b.disabled = true;
+      try {
+        const d = await acctPost(b.dataset.url, new FormData());
+        toast((d && d.msg) || "账户已删除", "ok");
+        setTimeout(() => location.reload(), 700);
+      } catch (e) { toast(e.message || "删除失败", "err"); b.disabled = false; }
+    });
+
+    const mmask = $("#members-modal");
+    const mlist = $("#members-list");
+    const memberUserSel = $("#member-user");
+    const addBtn = $("#member-add-btn");
+    const addHint = $("#member-add-hint");
+    if (!mmask || !mlist || !memberUserSel || !addBtn || !addHint) return;
+
+    function refreshMemberSelect(members) {
+      const taken = new Set(members.map(m => m.username));
+      let first = "";
+      Array.from(memberUserSel.options).forEach(o => {
+        o.disabled = taken.has(o.dataset.username || "");
+        if (!o.disabled && !first) first = o.value;
+      });
+      if (first) memberUserSel.value = first;
+      const any = Array.from(memberUserSel.options).some(o => !o.disabled);
+      addBtn.disabled = !any;
+      addHint.hidden = any;
+      if (!any) addHint.textContent = "所有门户用户都已是该账户成员";
+    }
+
+    function openMembers(name) {
+      const a = findAcct(name);
+      curAccount = name;
+      const title = $("#members-title");
+      if (title) title.textContent = "账户「" + name + "」成员" + (a ? "（" + a.member_count + "）" : "");
+      const members = (a && a.members) || [];
+      mlist.innerHTML = members.map(m => {
+        const canRemove = !!(m.id && m.id > 0);
+        const display = (m.display_name && m.display_name !== m.username)
+          ? `<span class="small muted">${esc(m.display_name)}</span>` : "";
+        return `<div class="acct-member-row">
+          <span class="acct-member-name mono">${esc(m.username)}</span>${display}
+          ${m.is_default ? '<span class="badge-default">默认账户</span>' : ""}
+          ${m.in_portal === false ? '<span class="badge-warn" title="该用户只有 OS 账号，门户中无对应账号，无法在此移除">仅 OS</span>' : ""}
+          ${canRemove ? `<button class="btn btn-danger btn-sm act-member-remove" type="button"
+              data-account="${esc(name)}" data-uid="${m.id}" data-username="${esc(m.username)}">移除</button>` : ""}
+        </div>`;
+      }).join("");
+      const empty = $("#members-empty");
+      if (empty) empty.hidden = members.length > 0;
+      refreshMemberSelect(members);
+      const md = $("#member-default");
+      if (md) md.checked = false;
+      mmask.hidden = false;
+    }
+
+    mlist.addEventListener("click", async ev => {
+      const b = ev.target && ev.target.closest ? ev.target.closest(".act-member-remove") : null;
+      if (!b) return;
+      const accName = b.dataset.account || "";
+      const go = await askConfirm({
+        title: "移除成员", danger: true, okText: "移除",
+        text: "确定把用户 " + (b.dataset.username || "") + " 从账户「" + accName + "」移除？\n"
+          + "若该账户是此用户的默认账户，Slurm 会拒绝；请先在「用户管理」或个人资料里改默认账户。",
+      });
+      if (!go) return;
+      b.disabled = true;
+      try {
+        const d = await acctPost("/admin/accounts/" + encodeURIComponent(accName)
+          + "/members/" + encodeURIComponent(b.dataset.uid || "") + "/remove", new FormData());
+        toast((d && d.msg) || "成员已移除", "ok");
+        setTimeout(() => location.reload(), 700);
+      } catch (e) { toast(e.message || "移除失败", "err"); b.disabled = false; }
+    });
+
+    addBtn.addEventListener("click", async () => {
+      const uid = parseInt(memberUserSel.value || "0", 10);
+      if (!uid) { toast("请选择要添加的用户", "err"); return; }
+      if (!curAccount) { toast("未选择账户", "err"); return; }
+      const fd = new FormData();
+      fd.append("user_id", String(uid));
+      const md = $("#member-default");
+      if (md && md.checked) fd.append("make_default", "1");
+      addBtn.disabled = true;
+      try {
+        const d = await acctPost("/admin/accounts/" + encodeURIComponent(curAccount) + "/members/add", fd);
+        toast((d && d.msg) || "成员已添加", "ok");
+        setTimeout(() => location.reload(), 700);
+      } catch (e) { toast(e.message || "添加失败", "err"); addBtn.disabled = false; }
+    });
+  }
+
+  /* ---------- 用户管理：开通表单的账户多选 / 默认账户联动 ---------- */
+  function wireAdminUserCreate() {
+    const form = $("#create-user-form");
+    if (!form) return;
+    const roleSel = form.querySelector("#create-role");
+    const accts = form.querySelector("#create-accounts");
+    const defSel = form.querySelector("#create-default-account");
+    if (!accts || !defSel) return;
+
+    function selected() {
+      return Array.from(accts.selectedOptions).map(o => o.value);
+    }
+    function syncDefault() {
+      const vals = selected();
+      const prev = defSel.value;
+      defSel.innerHTML = vals.length
+        ? vals.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("")
+        : '<option value="">（未选择账户）</option>';
+      if (vals.indexOf(prev) >= 0) defSel.value = prev;
+      else if (vals.length) defSel.value = vals[0];
+    }
+    // 站点默认账户不在当前账户列表（或默认项被停用）时，退而选第一个可用账户
+    if (!accts.selectedOptions.length) {
+      const first = Array.from(accts.options).find(o => !o.disabled);
+      if (first) first.selected = true;
+    }
+    accts.addEventListener("change", syncDefault);
+    syncDefault();
+    form.addEventListener("submit", ev => {
+      const vals = selected();
+      const role = roleSel ? roleSel.value : "user";
+      if (role === "user" && vals.length === 0) {
+        ev.preventDefault();
+        toast("普通用户至少需要选择一个集群账户", "err");
+        accts.focus();
+        return;
+      }
+      if (vals.length && vals.indexOf(defSel.value) < 0) {
+        ev.preventDefault();
+        toast("默认账户必须包含在已选的集群账户中", "err");
+        defSel.focus();
+      }
+    });
+  }
+
   /* ---------- 启动 ---------- */
   document.addEventListener("DOMContentLoaded", () => {
     wireDialog();
@@ -874,5 +1131,7 @@
     wireHourChips();
     wireCopyButtons();
     wireImagePage();
+    wireAdminAccounts();
+    wireAdminUserCreate();
   });
 })();

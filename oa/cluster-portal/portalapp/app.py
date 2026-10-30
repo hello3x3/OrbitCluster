@@ -31,6 +31,9 @@ from .db import (ACTIVE_STATES, DB, STATE_CN, init_db)
 # 实际接受的范围吻合（历史坑：客户端 pattern 写成了 `v` 模式下的非法正则，
 # 被浏览器整条忽略 → 客户端其实什么都没拦，见 admin_users.html 的注释）。
 USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
+# 账户名规则：与 deploy/portal-ctl 的账户名校验保持一致（契约第 3 节）。
+ACCOUNT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+ACCOUNT_NAME_HINT = "小写字母开头，仅小写字母/数字/下划线/横线，1-32 位"
 # 与 deploy/portal-ctl RESERVED 对齐：这些 OS 账号不能设配额/建号/托管密钥/被提交作业。
 # 注意 systemd-* 必须用前缀匹配 —— 写成集合里的字面量 "systemd-*" 永远匹配不上。
 RESERVED_OS = {"root", "portal", "slurm", "nobody", "daemon", "bin", "sys", "games",
@@ -602,6 +605,8 @@ def create_app(testing=False):
         db = get_db()
         u = db.user_by_id(inst["user_id"])
         d["username"] = u["username"] if u else "?"
+        # 多账户：实例申请时选的 Slurm 会计账户（老实例为空串 = 当时用 defaultaccount）
+        d["account"] = (inst["account"] if "account" in inst.keys() else "") or ""
         plan = db.plan_by_id(inst["plan_id"]) if inst["plan_id"] else None
         d["plan_name"] = plan["name"] if plan else ""
         d["res_name"] = inst["task_name"] or (plan["name"] if plan else "") or "任务"
@@ -662,6 +667,166 @@ def create_app(testing=False):
                     "请稍后重试，或换一个端口" % (port, PORT_COOLDOWN_S))
         return ""
 
+    # ---- 多账户（契约第 7 节）----
+    def _int_or(val, default=0):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            try:
+                return int(default or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def _parse_expiry(text):
+        """expires_at 解析：支持 ISO 日期/日期时间（可带时区）；空或非法返回 None。"""
+        s = (text or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _expiry_invalid(text):
+        return bool((text or "").strip()) and _parse_expiry(text) is None
+
+    def _account_expired(row, now=None):
+        """账户是否已过期（expires_at 为空 = 永不过期；非法值按不过期处理）。"""
+        if row is None:
+            return False
+        exp = row["expires_at"] if "expires_at" in row.keys() else ""
+        dt = _parse_expiry(exp)
+        if dt is None:
+            return False
+        if now is None:
+            now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else datetime.datetime.now()
+        return dt <= now
+
+    def _account_active(row):
+        return bool(row is not None and row["enabled"] and not _account_expired(row))
+
+    def _account_meta(row):
+        """DB 账户行 -> 展示/下拉用 dict（契约 7.2 的账户条目 + 管理页附加字段）。"""
+        return {
+            "name": row["name"],
+            "description": row["description"] or "",
+            "priority": _int_or(row["priority"], 5),
+            "per_user_gpu_cap": _int_or(row["per_user_gpu_cap"], 0),
+            "preempt": bool(row["preempt"]),
+            "is_temporary": bool(row["is_temporary"]),
+            "expires_at": row["expires_at"] or "",
+            "enabled": bool(row["enabled"]),
+            "expired": _account_expired(row),
+            "qos": "acct-" + row["name"],
+        }
+
+    def _accounts_meta(include_inactive=False):
+        """账户元数据列表（默认只含启用且未过期的账户，用于申请/开通下拉）。"""
+        out = []
+        for row in get_db().accounts_all():
+            d = _account_meta(row)
+            if not include_inactive and (not d["enabled"] or d["expired"]):
+                continue
+            out.append(d)
+        return out
+
+    def _qos_gpu_cap(qinfo):
+        """从 slurm-info 的 QoS 数据里取「每用户 GPU 卡数上限」（多种键名兼容）。"""
+        if not isinstance(qinfo, dict):
+            return None
+        for key in ("per_user_gpu_cap", "max_tres_per_user", "maxtrespu", "max_tresp"):
+            v = qinfo.get(key)
+            if v in (None, ""):
+                continue
+            if isinstance(v, int):
+                return v
+            s = str(v).strip()
+            m = re.search(r"(?:gres/gpu|gpu)[=:](\d+)", s)
+            if m:
+                return int(m.group(1))
+            if s.isdigit():
+                return int(s)
+        return None
+
+    def _user_accounts(u):
+        """该用户在 Slurm **实际关联**、且门户侧启用/未过期的账户列表。
+
+        权威数据来自 root 助手 `user-accounts`（成员关系只存在于 Slurm）；
+        门户 DB 只负责 enabled/expires_at/priority/cap 这些管理属性。
+        助手不可用时返回 []（申请页降级为“不显示账户下拉”，提交不带 account）。
+        每请求用 g 缓存，避免同一请求里重复调助手。
+        """
+        cache = getattr(g, "_user_accounts_cache", None)
+        if cache is None:
+            cache = {}
+            g._user_accounts_cache = cache
+        if u["id"] in cache:
+            return copy.deepcopy(cache[u["id"]])
+        try:
+            res = ctl.user_accounts(u["username"])
+        except ctl.CtlError:
+            res = {}
+        db = get_db()
+        out = []
+        seen = set()
+        for a in res.get("accounts") or []:
+            name = (a.get("name") or "").strip()
+            if not name or name in seen:
+                continue
+            row = db.account_by_name(name)
+            if row is not None and not _account_active(row):
+                continue          # 已停用/已过期：不可再选
+            seen.add(name)
+            out.append({
+                "name": name,
+                "qos": a.get("qos") or ("acct-" + name),
+                "priority": _int_or(a.get("priority"),
+                                    row["priority"] if row is not None else 5),
+                "per_user_gpu_cap": _int_or(a.get("per_user_gpu_cap"),
+                                            row["per_user_gpu_cap"] if row is not None else 0),
+                "is_default": bool(a.get("is_default")),
+            })
+        names = [a["name"] for a in out]
+        default = (res.get("default") or "").strip()
+        if default not in names:
+            default = siteconf.DEFAULT_ACCOUNT if siteconf.DEFAULT_ACCOUNT in names else ""
+        if not default and names:
+            default = names[0]
+        for a in out:
+            a["is_default"] = (a["name"] == default)
+        cache[u["id"]] = out
+        return copy.deepcopy(out)
+
+    def _default_account(u, accounts=None):
+        """该用户申请时的默认账户：优先 Slurm DefaultAccount，其次站点默认，最后第一个。"""
+        accts = accounts if accounts is not None else _user_accounts(u)
+        for a in accts:
+            if a.get("is_default"):
+                return a["name"]
+        if siteconf.DEFAULT_ACCOUNT and any(a["name"] == siteconf.DEFAULT_ACCOUNT
+                                            for a in accts):
+            return siteconf.DEFAULT_ACCOUNT
+        return accts[0]["name"] if accts else ""
+
+    def _raw_user_accounts(u):
+        """该用户在 Slurm 里的原始关联账户名（含过期/停用，未过滤）。
+
+        用于区分「用户本来就没有账户」与「账户全部过期/停用」两种空列表：
+        前者保持旧行为（走 defaultaccount），后者必须拒绝新提交。
+        """
+        try:
+            res = ctl.user_accounts(u["username"])
+        except ctl.CtlError:
+            return []
+        return [(a.get("name") or "").strip() for a in (res.get("accounts") or [])
+                if (a.get("name") or "").strip()]
+
     def _quota_ctx(u):
         """当前用户配额/额度上下文（带短缓存）。
 
@@ -680,7 +845,9 @@ def create_app(testing=False):
     def _quota_ctx_uncached(u):
         """真正去问 OS/Slurm 的实现（别直接调它，走带缓存的 _quota_ctx）。"""
         ctx = {"ok": False, "os_ok": _os_ok(u), "disk": None, "slurm": None,
-               "disk_err": "", "slurm_err": ""}
+               "disk_err": "", "slurm_err": "",
+               # 多账户（契约 7.2）：模板按账户分组展示额度；旧字段 slurm.* 保持兼容
+               "accounts": [], "default_account": ""}
         if not ctx["os_ok"]:
             ctx["note"] = "该门户账号在集群没有同名 OS 账号，无磁盘配额/Slurm 关联"
             return ctx
@@ -735,6 +902,61 @@ def create_app(testing=False):
                 "total": "不限" if not limit_parts else "；".join(sorted(set(limit_parts))),
                 "raw": {"assocs": assocs, "qos": qos},
             }
+            # 按账户列出 QoS/优先级/单用户卡数上限/is_default（新助手直接给 accounts；
+            # 老助手只能从 assocs+qos 推导，保证升级期间页面不空）。
+            db = get_db()
+            acct_list = []
+            raw = s.get("accounts") if isinstance(s.get("accounts"), list) else []
+            if raw:
+                for a in raw:
+                    name = (a.get("name") or "").strip()
+                    if not name:
+                        continue
+                    row = db.account_by_name(name)
+                    if row is not None and not _account_active(row):
+                        continue
+                    qn = a.get("qos") or ("acct-" + name)
+                    qinfo = qos.get(qn) if isinstance(qos, dict) else {}
+                    cap = a.get("per_user_gpu_cap")
+                    if cap in (None, ""):
+                        cap = _qos_gpu_cap(qinfo)
+                    if cap in (None, ""):
+                        cap = row["per_user_gpu_cap"] if row is not None else 0
+                    prio = a.get("priority")
+                    if prio in (None, ""):
+                        prio = (qinfo or {}).get("priority")
+                    if prio in (None, ""):
+                        prio = row["priority"] if row is not None else 5
+                    acct_list.append({"name": name, "qos": qn,
+                                      "priority": _int_or(prio, 5),
+                                      "per_user_gpu_cap": _int_or(cap, 0),
+                                      "is_default": bool(a.get("is_default"))})
+            else:
+                for name in accounts:
+                    row = db.account_by_name(name)
+                    if row is not None and not _account_active(row):
+                        continue
+                    qn = next((x.get("qos") for x in assocs
+                               if x.get("account") == name and x.get("qos")),
+                              "acct-" + name)
+                    qinfo = qos.get(qn) if isinstance(qos, dict) else {}
+                    acct_list.append({
+                        "name": name, "qos": qn,
+                        "priority": _int_or((qinfo or {}).get("priority"),
+                                            row["priority"] if row is not None else 5),
+                        "per_user_gpu_cap": _int_or(_qos_gpu_cap(qinfo),
+                                                    row["per_user_gpu_cap"] if row is not None else 0),
+                        "is_default": False})
+            default_acc = (s.get("default_account") or "").strip()
+            names = [x["name"] for x in acct_list]
+            if default_acc not in names:
+                default_acc = siteconf.DEFAULT_ACCOUNT if siteconf.DEFAULT_ACCOUNT in names else ""
+            if not default_acc and names:
+                default_acc = names[0]
+            for x in acct_list:
+                x["is_default"] = (x["name"] == default_acc)
+            ctx["accounts"] = acct_list
+            ctx["default_account"] = default_acc
             ctx["ok"] = ctx["disk"] is not None
         except ctl.CtlError as e:
             ctx["slurm_err"] = str(e)
@@ -984,6 +1206,7 @@ def create_app(testing=False):
             flash("未发现可申请镜像：%s 下没有 .sqsh 文件，请联系管理员" % IMAGES_DIR, "error")
         busy = {p["port"] for p in db.ports_for(u["id"])
                 if db.user_active_by_port(u["id"], p["port"])}
+        accounts = _user_accounts(u)
         return render_template("apply.html",
                                image_groups=groups,
                                plans=db.plans_enabled(),
@@ -991,6 +1214,8 @@ def create_app(testing=False):
                                busy_ports=sorted(busy),
                                nodes=nodes,
                                default_hours=12,
+                               accounts=accounts,
+                               default_account=_default_account(u, accounts),
                                username=u["username"])
 
     @app.route("/apply", methods=["POST"])
@@ -1062,9 +1287,21 @@ def create_app(testing=False):
         submit_wt = _walltime_submit(hours)       # 实际提交时长（含到期保存缓冲）
         home = "/share/home/%s" % u["username"]
         job_name = _sanitize_task_name(task_name)
+        # 多账户：用户可选账户必须属于其当前有效关联（helper 才是权威，门户校验只是 UX）；
+        # 未选时落到默认账户，并把实际账户写进实例记录（重启按此沿用）。
+        account = (request.form.get("account") or "").strip()
+        accts = _user_accounts(u)
+        if account and account not in [a["name"] for a in accts]:
+            return _json_err("所选账户「%s」不存在、不属于你或已过期，请重新选择" % account)
+        if not account and not accts and _raw_user_accounts(u):
+            return _json_err("你所属的计费账户均已过期或停用，暂无可提交账户，请联系管理员")
+        if not account:
+            account = _default_account(u, accts)
         spec = {"user": u["username"], "node": node, "image": image,
                 "gpus": gpus, "cpus": cpus, "mem_gb": mem_gb,
                 "walltime": submit_wt, "port": port, "job_name": job_name}
+        if account:
+            spec["account"] = account
         try:
             res = ctl.submit(spec)
         except ctl.CtlError as e:
@@ -1074,7 +1311,7 @@ def create_app(testing=False):
         try:
             iid = db.add_instance(u["id"], plan_id, task_name, node, gpus, cpus, mem_gb,
                                   port, walltime, image, job_id, "PENDING", cmd,
-                                  res["log_path"], ip)
+                                  res["log_path"], ip, account=account)
         except sqlite3.IntegrityError as e:
             # 兜底：并发提交同一任务名/端口时由唯一索引拦下，回滚作业避免孤儿作业
             note = rollback_submit(u["username"], job_id)
@@ -1083,11 +1320,14 @@ def create_app(testing=False):
                                  % (task_name, note))
             return _json_err("资源记录冲突（%s）；%s" % (e, note))
         db.add_event(iid, "submit",
-                     "已提交资源：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s"
+                     "已提交资源：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s%s"
                      % (job_id, plan["name"], os.path.basename(image), port,
-                        walltime, node or "自动调度"))
+                        walltime, node or "自动调度",
+                        ("，账户 %s" % account) if account else ""))
         where = "自动调度" if not node else node
-        flash("资源已提交：作业 #%d（%s），端口 %d @ %s" % (job_id, task_name, port, where), "ok")
+        flash("资源已提交：作业 #%d（%s），端口 %d @ %s%s"
+              % (job_id, task_name, port, where,
+                 ("，账户 %s" % account) if account else ""), "ok")
         return _json_ok("ok", {"instance_id": iid, "job_id": job_id})
 
     @app.route("/api/plans")
@@ -1111,6 +1351,19 @@ def create_app(testing=False):
         if not u:
             return _json_err("用户不存在")
         return jsonify(image_groups(u["username"]))
+
+    @app.route("/api/user-accounts/<int:uid>")
+    @admin_required
+    def api_user_accounts(uid):
+        """管理员代申请：目标用户当前有效账户（契约 7.2；代申请页据此填账户下拉）。"""
+        db = get_db()
+        u = db.user_by_id(uid)
+        if not u:
+            return _json_err("用户不存在")
+        accounts = _user_accounts(u)
+        return jsonify({"ok": True, "username": u["username"],
+                        "default": _default_account(u, accounts),
+                        "accounts": accounts})
 
     # ------------------------------------------------------------------ 实例操作
     def _saving_guard(inst):
@@ -1191,6 +1444,13 @@ def create_app(testing=False):
         image = inst["image"] or ""
         if image not in allowed_image_paths(u["username"]):
             return _json_err("镜像已不存在（%s），无法重新启动" % os.path.basename(image))
+        # 多账户：沿用实例申请时的账户；该关联已不存在/已过期则拒绝（契约 7.2）
+        account = (inst["account"] if "account" in inst.keys() else "") or ""
+        if account:
+            accts = _user_accounts(u)
+            if account not in [a["name"] for a in accts]:
+                return _json_err("原资源使用的账户「%s」已不在你的账户列表中"
+                                 "（可能被移除或已过期），无法重新启动；请重新申请" % account)
         # 端口仍须属于该用户端口池（重启=继续占用同一端口）
         port = inst["port"]
         my_port = db.port_by_number(port)
@@ -1222,6 +1482,8 @@ def create_app(testing=False):
                 "gpus": inst["gpus"], "cpus": inst["cpus"], "mem_gb": inst["mem_gb"],
                 "walltime": _walltime_submit(hours), "port": port,
                 "job_name": _sanitize_task_name(task_name)}
+        if account:
+            spec["account"] = account
         try:
             res = ctl.submit(spec)
         except ctl.CtlError as e:
@@ -1232,7 +1494,8 @@ def create_app(testing=False):
                 "started_at=NULL, auto_saved_at=NULL, auto_saved_path='', "
                 "last_error=NULL, updated_at=? WHERE id=?",
                 (job_id, node, ip, res.get("command") or "", res["log_path"], _now(), iid))
-        db.add_event(iid, "start", "已重新启动：新作业 #%d，沿用端口 %d" % (job_id, port))
+        db.add_event(iid, "start", "已重新启动：新作业 #%d，沿用端口 %d%s"
+                     % (job_id, port, ("，账户 %s" % account) if account else ""))
         return _json_ok("已重新启动：作业 #%d（%s）" % (job_id, task_name),
                         {"instance_id": iid, "job_id": job_id})
 
@@ -1633,7 +1896,10 @@ def create_app(testing=False):
                 d["quota_can_edit"] = True
             users.append(d)
         return {"users": users,
-                "quota_options": ["100G", "300G", "500G", "1T", QUOTA_UNLIMITED]}
+                "quota_options": ["100G", "300G", "500G", "1T", QUOTA_UNLIMITED],
+                # 多账户：开通表单的账户多选/默认账户下拉（契约 7.3）
+                "accounts": db.accounts_all(),
+                "default_account": siteconf.DEFAULT_ACCOUNT}
 
     @app.route("/admin/users")
     @admin_required
@@ -1684,10 +1950,25 @@ def create_app(testing=False):
                         % (u["username"], size, _fmt_limit(hard)),
                         {"hard_kb": hard, "used_kb": res.get("used_kb", 0)})
 
-    def _create_user_inner(db, username, display_name, role, password, quota, os_mode):
+    def _create_user_inner(db, username, display_name, role, password, quota, os_mode,
+                           accounts=None, default_account=None):
         from . import pwfile
         imported_keys = 0
         err = None
+        # 多账户：去重保序；账户必须已在门户 DB 中（init_db 会按站点 ACCOUNTS 种子化）。
+        normalized = []
+        for a in accounts or []:
+            a = (a or "").strip()
+            if a and a not in normalized:
+                normalized.append(a)
+        accounts = normalized
+        for name in accounts:
+            if db.account_by_name(name) is None:
+                return None, "账户「%s」不存在（请先在【管理账户】中创建）" % name, 0
+        if default_account:
+            default_account = default_account.strip()
+            if accounts and default_account not in accounts:
+                return None, "默认账户必须是所选账户之一", 0
         if not USERNAME_RE.match(username):
             return None, "用户名不合法（只能用小写字母、数字、下划线，小写字母或下划线开头，1-32 位）", 0
         # 系统/保留账号（root、portal、slurm、sshd…）不能建门户账号。
@@ -1724,12 +2005,14 @@ def create_app(testing=False):
         if want_os:
             try:
                 if os_mode == "provision":
-                    ctl.provision_user(username, quota)
+                    ctl.provision_user(username, quota, accounts=accounts or None,
+                                       default_account=default_account or None)
                 else:
                     if not ctl.user_exists(username).get("exists"):
                         return None, ("OS 账号 %s 不存在，不能按「OS 账号已存在」开通；"
                                       "请先用 add-user.sh 建号，或改用「自动建号」" % username), 0
-                    ctl.init_user(username)
+                    ctl.init_user(username, accounts=accounts or None,
+                                  default_account=default_account or None)
                     ctl.set_quota(username, quota)   # 关键：把额度真正落到 OS
             except ctl.CtlError as e:
                 return None, "集群建号失败：%s" % e, 0
@@ -1778,8 +2061,46 @@ def create_app(testing=False):
             return redirect(url_for("admin_users"))
         password = request.form.get("password") or ""
         os_mode = request.form.get("os_mode") or "provision"
+        # 多账户（契约 7.3）：普通用户至少一个账户；默认账户必须在所选列表里；
+        # 账户必须已在门户 DB 中且启用/未过期。管理员角色允许不选（纯平台管理员）。
+        accounts = []
+        for a in request.form.getlist("accounts"):
+            a = (a or "").strip()
+            if a and a not in accounts:
+                accounts.append(a)
+        default_account = (request.form.get("default_account") or "").strip()
+        for a in accounts:
+            row = db.account_by_name(a)
+            if row is None:
+                flash("账户「%s」不存在（请先在【管理账户】中创建）" % a, "error")
+                return redirect(url_for("admin_users"))
+            if not _account_active(row):
+                flash("账户「%s」已停用或已过期，不能用于开通用户" % a, "error")
+                return redirect(url_for("admin_users"))
+        if accounts:
+            if not default_account:
+                default_account = (siteconf.DEFAULT_ACCOUNT
+                                   if siteconf.DEFAULT_ACCOUNT in accounts else accounts[0])
+            elif default_account not in accounts:
+                flash("默认账户必须是所选账户之一", "error")
+                return redirect(url_for("admin_users"))
+        elif role == "user":
+            # 兼容旧单账户表单（未传 accounts）：落到站点默认账户而不是拒绝建号。
+            active = [a["name"] for a in _accounts_meta()]
+            if siteconf.DEFAULT_ACCOUNT in active:
+                accounts = [siteconf.DEFAULT_ACCOUNT]
+            elif active:
+                accounts = [active[0]]
+            if not accounts:
+                flash("请为普通用户至少选择一个账户", "error")
+                return redirect(url_for("admin_users"))
+            default_account = accounts[0]
+        else:
+            default_account = ""
         uid, pwd, imported = _create_user_inner(db, username, display_name, role,
-                                                password, quota, os_mode)
+                                                password, quota, os_mode,
+                                                accounts=accounts,
+                                                default_account=default_account or None)
         if uid is None:
             flash(pwd, "error")
             return redirect(url_for("admin_users"))
@@ -1963,10 +2284,22 @@ def create_app(testing=False):
             ip = node_ok["ip"]
         walltime = _walltime_disp(hours)
         home = "/share/home/%s" % target["username"]
+        # 多账户：目标用户所选账户必须属于其当前有效关联（helper 最终再校验一次）
+        account = (request.form.get("account") or "").strip()
+        accts = _user_accounts(target)
+        if account and account not in [a["name"] for a in accts]:
+            return _json_err("账户「%s」不存在、不属于 %s 或已过期，请重新选择"
+                             % (account, target["username"]))
+        if not account and not accts and _raw_user_accounts(target):
+            return _json_err("该用户的计费账户均已过期或停用，暂无可提交账户，请先续期或调整成员")
+        if not account:
+            account = _default_account(target, accts)
         spec = {"user": target["username"], "node": node, "image": image,
                 "gpus": plan["gpus"], "cpus": plan["cpus"], "mem_gb": plan["mem_gb"],
                 "walltime": _walltime_submit(hours), "port": port,
                 "job_name": _sanitize_task_name(task_name)}
+        if account:
+            spec["account"] = account
         try:
             res = ctl.submit(spec)   # 底层：root 经 runuser(=sudo -u) 以目标用户身份提交
         except ctl.CtlError as e:
@@ -1975,7 +2308,8 @@ def create_app(testing=False):
         try:
             iid = db.add_instance(target["id"], plan_id, task_name, node, plan["gpus"],
                                   plan["cpus"], plan["mem_gb"], port, walltime, image,
-                                  job_id, "PENDING", res.get("command") or "", res["log_path"], ip)
+                                  job_id, "PENDING", res.get("command") or "",
+                                  res["log_path"], ip, account=account)
         except sqlite3.IntegrityError as e:
             note = rollback_submit(target["username"], job_id)
             if "task_name" in str(e):
@@ -1983,9 +2317,12 @@ def create_app(testing=False):
                                  % (task_name, note))
             return _json_err("资源记录冲突（%s）；%s" % (e, note))
         db.add_event(iid, "submit",
-                     "由管理员代为提交：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s"
+                     "由管理员代为提交：作业 #%d，套餐「%s」，镜像 %s，端口 %d，时长 %s，节点 %s%s"
                      % (job_id, plan["name"], os.path.basename(image), port,
-                        walltime, node or "自动调度"))
+                        walltime, node or "自动调度",
+                        ("，账户 %s" % account) if account else ""))
+        app.logger.info("账户审计: 代申请 actor=%s target=%s account=%s job=%s result=ok",
+                        actor["username"], target["username"], account or "-", job_id)
         return _json_ok("已代 %s 提交：作业 #%d（%s）" % (target["username"], job_id, task_name),
                         {"instance_id": iid, "job_id": job_id})
 
@@ -2009,6 +2346,266 @@ def create_app(testing=False):
         db.user_bump_session_epoch(u["id"])   # 权限变更后强制重新登录，避免旧会话沿用旧权限
         return _json_ok("已将 %s 的权限调整为：%s" % (u["username"],
                          "管理员" if new_role == "admin" else "普通用户"))
+
+    # ------------------------------------------------------------------ 管理员：账户管理（root-only）
+    # 契约 7.1：仅 root。账户的权威配置在 Slurm（account + QoS acct-<name>）；
+    # 门户 DB 只是管理属性（描述/优先级/单用户卡数上限/抢占/临时/到期/启用）的副本，
+    # 因此所有写操作都必须"DB + helper 同步成功"才算成功，helper 失败一律回滚 DB。
+    def _admin_accounts_ctx():
+        db = get_db()
+        # Slurm 侧快照：存在性 / 成员数（helper 不可用时页面仍展示 DB 并标出未同步）
+        snap_ok = False
+        snap = {}
+        snap_err = ""
+        try:
+            data = ctl.accounts()
+            snap_ok = True
+            for a in data.get("accounts") or []:
+                nm = (a.get("name") or "").strip()
+                if nm:
+                    snap[nm] = a
+        except ctl.CtlError as e:
+            snap_err = str(e)
+        users = [_row_dict(u) for u in db.users_all()]
+        pmap = {u["username"]: u for u in users}
+        accounts = []
+        for row in db.accounts_all():
+            d = _account_meta(row)
+            s = snap.get(row["name"]) or {}
+            # helper 的 accounts 会同时列出站点配置账户与 Slurm 已存在账户；
+            # 两边都没有 = 门户库里有、Slurm 里没同步（或读取失败）。
+            slurm_ok = bool(snap_ok and row["name"] in snap and s.get("exists", True))
+            members = []
+            if slurm_ok:
+                try:
+                    for mu in ctl.account_users(row["name"]).get("users") or []:
+                        uname = (mu.get("username") or "").strip()
+                        if not uname:
+                            continue
+                        pu = pmap.get(uname)
+                        members.append({
+                            "id": pu["id"] if pu else 0,
+                            "username": uname,
+                            "display_name": (pu["display_name"] if pu else uname),
+                            "is_default": bool(mu.get("default")),
+                            "in_portal": bool(pu),
+                        })
+                except ctl.CtlError:
+                    pass
+            d["slurm_ok"] = slurm_ok
+            d["members"] = members
+            n = s.get("members")
+            d["member_count"] = (_int_or(n, len(members))
+                                 if n not in (None, "") else len(members))
+            accounts.append(d)
+        return {"accounts": accounts, "users": users,
+                "default_account": siteconf.DEFAULT_ACCOUNT,
+                "accounts_slurm_ok": snap_ok,
+                "accounts_slurm_err": snap_err}
+
+    def _account_name_valid(name):
+        return bool(ACCOUNT_NAME_RE.match(name or ""))
+
+    def _account_form(need_name=True):
+        """解析账户表单（契约 7.1 的字段）。返回 (vals, err)。"""
+        name = (request.form.get("name") or "").strip()
+        description = (request.form.get("description") or "").strip()[:200]
+        expires_at = (request.form.get("expires_at") or "").strip()[:32]
+        try:
+            priority = int(request.form.get("priority") or 5)
+            per_user_gpu_cap = int(request.form.get("per_user_gpu_cap") or 0)
+        except ValueError:
+            return None, "优先级/单用户卡数上限必须是整数"
+        if need_name and not ACCOUNT_NAME_RE.match(name):
+            return None, "账户名不合法（%s）" % ACCOUNT_NAME_HINT
+        if not (1 <= priority <= 10):
+            return None, "优先级须在 1-10（数值越大越优先）"
+        if not (0 <= per_user_gpu_cap <= 64):
+            return None, "单用户卡数上限须在 0-64（0=不限）"
+        if _expiry_invalid(expires_at):
+            return None, "到期时间格式错误（例 2026-12-31 或 2026-12-31 23:59）"
+        vals = {"description": description, "priority": priority,
+                "per_user_gpu_cap": per_user_gpu_cap,
+                "preempt": 1 if request.form.get("preempt") else 0,
+                "is_temporary": 1 if request.form.get("is_temporary") else 0,
+                "expires_at": expires_at}
+        if need_name:
+            vals["name"] = name
+        return vals, None
+
+    def _wants_json():
+        accept = request.headers.get("Accept") or ""
+        return bool(request.headers.get("X-CSRF-Token")
+                    or "application/json" in accept
+                    or request.form.get("_json") in ("1", "true", "yes"))
+
+    def _account_reply(ok, msg, extra=None):
+        """账户管理路由的响应：表单提交 -> flash+重定向；fetch（带 JSON 头）-> JSON。"""
+        if _wants_json():
+            return _json_ok(msg, extra) if ok else _json_err(msg)
+        flash(msg, "ok" if ok else "error")
+        return redirect(url_for("admin_accounts"))
+
+    def _account_audit(actor, action, target, result, detail=""):
+        app.logger.info("账户审计: actor=%s action=%s target=%s result=%s%s",
+                        actor["username"] if actor else "?",
+                        action, target, result,
+                        (" detail=%s" % detail) if detail else "")
+
+    def _sync_accounts_to_slurm():
+        """把 DB 全量账户配置同步到 Slurm（priority/cap/preempt）；成功返回 None。"""
+        payload = [{"name": r["name"],
+                    "priority": _int_or(r["priority"], 5),
+                    "per_user_gpu_cap": _int_or(r["per_user_gpu_cap"], 0),
+                    "preempt": bool(r["preempt"])}
+                   for r in get_db().accounts_all()]
+        try:
+            ctl.accounts_sync(payload)
+            return None
+        except ctl.CtlError as e:
+            return str(e)
+
+    @app.route("/admin/accounts")
+    @super_admin_required
+    def admin_accounts():
+        return render_template("admin_accounts.html", **_admin_accounts_ctx())
+
+    @app.route("/admin/accounts/add", methods=["POST"])
+    @super_admin_required
+    def admin_account_add():
+        actor = get_user_row()
+        if not csrf_ok():
+            return _account_reply(False, "页面已过期，请重试")
+        vals, err = _account_form(need_name=True)
+        if err:
+            return _account_reply(False, err)
+        db = get_db()
+        name = vals.pop("name")
+        if db.account_by_name(name):
+            return _account_reply(False, "账户「%s」已存在" % name)
+        try:
+            db.add_account(name, **vals)
+        except sqlite3.IntegrityError:
+            return _account_reply(False, "账户「%s」已存在（并发创建）" % name)
+        err = _sync_accounts_to_slurm()
+        if err:
+            db.delete_account(name)          # 回滚：绝不出现"只改了库"的状态
+            _account_audit(actor, "add", name, "failed", err)
+            return _account_reply(False, "Slurm 同步失败，已回滚：%s" % err)
+        _account_audit(actor, "add", name, "ok")
+        return _account_reply(True, "账户「%s」已创建并同步到 Slurm" % name)
+
+    @app.route("/admin/accounts/<name>/edit", methods=["POST"])
+    @super_admin_required
+    def admin_account_edit(name):
+        actor = get_user_row()
+        if not _account_name_valid(name):
+            return _account_reply(False, "账户名不合法（%s）" % ACCOUNT_NAME_HINT)
+        if not csrf_ok():
+            return _account_reply(False, "页面已过期，请重试")
+        db = get_db()
+        row = db.account_by_name(name)
+        if row is None:
+            return _account_reply(False, "账户「%s」不存在" % name)
+        vals, err = _account_form(need_name=False)
+        if err:
+            return _account_reply(False, err)
+        old = _row_dict(row)
+        db.update_account(name, **vals)
+        err = _sync_accounts_to_slurm()
+        if err:
+            db.update_account(name, description=old["description"],
+                              priority=old["priority"],
+                              per_user_gpu_cap=old["per_user_gpu_cap"],
+                              preempt=old["preempt"],
+                              is_temporary=old["is_temporary"],
+                              expires_at=old["expires_at"] or "")
+            _account_audit(actor, "edit", name, "failed", err)
+            return _account_reply(False, "Slurm 同步失败，已回滚：%s" % err)
+        _account_audit(actor, "edit", name, "ok")
+        return _account_reply(True, "账户「%s」已更新并同步到 Slurm" % name)
+
+    @app.route("/admin/accounts/<name>/delete", methods=["POST"])
+    @super_admin_required
+    def admin_account_delete(name):
+        actor = get_user_row()
+        if not _account_name_valid(name):
+            return _account_reply(False, "账户名不合法（%s）" % ACCOUNT_NAME_HINT)
+        if not csrf_ok():
+            return _account_reply(False, "页面已过期，请重试")
+        db = get_db()
+        if name == siteconf.DEFAULT_ACCOUNT:
+            return _account_reply(False, "「%s」是站点默认账户，不能删除" % name)
+        if db.account_by_name(name) is None:
+            return _account_reply(False, "账户「%s」不存在" % name)
+        # 门户侧保护：还有排队/运行中的资源记录时不允许删（Slurm 侧 helper 也会拒绝）
+        n = db.q1("SELECT COUNT(*) n FROM instances WHERE account=? AND state IN (%s)"
+                  % ",".join("?" * len(ACTIVE_STATES)),
+                  (name,) + ACTIVE_STATES)["n"]
+        if n:
+            return _account_reply(False, "该账户下还有 %d 个排队/运行中的资源记录，"
+                                         "请先停机后再删除" % n)
+        try:
+            ctl.account_delete(name)   # 有成员/运行作业时 helper 拒绝（fail closed）
+        except ctl.CtlError as e:
+            _account_audit(actor, "delete", name, "failed", str(e))
+            return _account_reply(False, "删除失败（门户记录未改动）：%s" % e)
+        db.delete_account(name)
+        _account_audit(actor, "delete", name, "ok")
+        return _account_reply(True, "账户「%s」已删除" % name)
+
+    @app.route("/admin/accounts/<name>/members/add", methods=["POST"])
+    @super_admin_required
+    def admin_account_member_add(name):
+        actor = get_user_row()
+        if not _account_name_valid(name):
+            return _account_reply(False, "账户名不合法（%s）" % ACCOUNT_NAME_HINT)
+        if not csrf_ok():
+            return _account_reply(False, "页面已过期，请重试")
+        db = get_db()
+        if db.account_by_name(name) is None:
+            return _account_reply(False, "账户「%s」不存在" % name)
+        try:
+            uid = int(request.form.get("user_id") or 0)
+        except ValueError:
+            return _account_reply(False, "请选择要加入的用户")
+        target = db.user_by_id(uid)
+        if not target:
+            return _account_reply(False, "用户不存在")
+        make_default = request.form.get("make_default") in ("1", "true", "on", "yes")
+        try:
+            ctl.account_add_user(name, target["username"], make_default=make_default)
+        except ctl.CtlError as e:
+            _account_audit(actor, "member-add", name, "failed",
+                           "%s: %s" % (target["username"], e))
+            return _account_reply(False, "加入账户失败：%s" % e)
+        _account_audit(actor, "member-add", name, "ok", target["username"])
+        return _account_reply(True, "已将 %s 加入账户「%s」%s"
+                              % (target["username"], name,
+                                 "（并设为默认账户）" if make_default else ""))
+
+    @app.route("/admin/accounts/<name>/members/<int:uid>/remove", methods=["POST"])
+    @super_admin_required
+    def admin_account_member_remove(name, uid):
+        actor = get_user_row()
+        if not _account_name_valid(name):
+            return _account_reply(False, "账户名不合法（%s）" % ACCOUNT_NAME_HINT)
+        if not csrf_ok():
+            return _account_reply(False, "页面已过期，请重试")
+        db = get_db()
+        if db.account_by_name(name) is None:
+            return _account_reply(False, "账户「%s」不存在" % name)
+        target = db.user_by_id(uid)
+        if not target:
+            return _account_reply(False, "用户不存在或不在门户中（OS 用户请用 sacctmgr 处理）")
+        try:
+            ctl.account_remove_user(name, target["username"])
+        except ctl.CtlError as e:
+            _account_audit(actor, "member-remove", name, "failed",
+                           "%s: %s" % (target["username"], e))
+            return _account_reply(False, "移出账户失败：%s" % e)
+        _account_audit(actor, "member-remove", name, "ok", target["username"])
+        return _account_reply(True, "已将 %s 移出账户「%s」" % (target["username"], name))
 
     # ------------------------------------------------------------------ 管理员：资源套餐（CPU/内存/GPU 预设）
     @app.route("/admin/plans")

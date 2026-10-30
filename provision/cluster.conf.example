@@ -17,7 +17,13 @@
 
 # ---------------------------------------------------------------- 集群标识
 CLUSTER_NAME=lab              # slurm.conf ClusterName，与 sacctmgr 的 cluster 必须同名
-ACCOUNT=lab                   # Slurm 会计账户名（sacctmgr account），建号脚本与门户共用
+ACCOUNTS=lab                  # Slurm 会计账户（sacctmgr account），逗号分隔，可多个：
+                              #   ACCOUNTS=phd,ms,be,ra
+                              # 每个账户由门户【管理账户】页维护一个 QoS acct-<账户名>
+                              # （优先级 / 该账户下每用户同时最多 N 卡 / 是否可抢占）。
+DEFAULT_ACCOUNT=lab           # 新用户默认账户，**必须在 ACCOUNTS 里**；留空则取第一个账户。
+ACCOUNT=lab                   # 兼容旧单账户：ACCOUNTS 缺省时 ACCOUNT 作为唯一账户；
+                              # 渲染时 ACCOUNT 恒等于 DEFAULT_ACCOUNT（旧模板/旧文档仍可读）。
 
 # ---------------------------------------------------------------- 网络 / 系统
 LAN_CIDR=192.168.1.0/24      # 内网网段：NFS 导出白名单、chrony allow 用

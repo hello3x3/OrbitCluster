@@ -425,6 +425,40 @@ body.auth main.container{flex:1;display:flex;align-items:center;justify-content:
 .plan-opt:has(input:checked){border-color:var(--brand);background:#f4f8ff;
   box-shadow:0 6px 18px -14px rgba(47,109,246,.9)}
 
+/* ---------- 多账户：管理账户页 / 配额卡 / 成员弹窗 ---------- */
+.badge-default{background:var(--ok);color:#fff;border-radius:var(--radius-pill);
+  padding:2px 9px;font-size:11px;font-weight:600;font-style:normal;margin-left:4px;
+  letter-spacing:.02em;white-space:nowrap}
+.badge-temp{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-line);
+  border-radius:var(--radius-pill);padding:1px 9px;font-size:11px;font-weight:600;
+  font-style:normal;white-space:nowrap}
+.acct-desc{max-width:360px;overflow-wrap:break-word}
+/* 复选/多选控件：与普通 input 对齐，标签不撑满整行 */
+label.chk{display:inline-flex;align-items:center;gap:7px;margin:0 0 12px;white-space:nowrap}
+label.chk input[type=checkbox]{flex:none;accent-color:var(--brand)}
+.acct-flags{align-items:flex-end}
+.acct-flags>label{margin-bottom:12px}
+.acct-flags label.chk{flex:0 0 auto;min-width:0;padding-bottom:9px}
+/* 多选账户列表：去掉下拉箭头（multiple 不是弹出菜单），给足行高 */
+select.multi-select{background-image:none;padding-right:11px;min-height:96px;max-width:none}
+select.multi-select option{padding:4px 6px}
+/* 「我的资源」配额卡：按账户分组的小卡片 */
+.acct-quota-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.acct-quota-card{border:1px solid var(--line);border-radius:11px;padding:10px 13px;background:#fafbfe}
+.acct-quota-card.is-default{border-color:var(--brand-line);background:var(--brand-soft)}
+.acct-quota-head{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.acct-quota-head b{font-size:14.5px;color:#16233a}
+.acct-quota-card code{background:rgba(255,255,255,.75);border-color:rgba(0,0,0,.06)}
+/* 管理账户页的成员弹窗 */
+.acct-members{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+.acct-member-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:#fafbfe}
+.acct-member-name{font-weight:700;color:#16233a}
+.acct-member-row .btn{margin-left:auto}
+.acct-member-add{margin-top:16px;padding-top:14px;border-top:1px dashed var(--line-3)}
+.acct-member-add h3{margin-top:0}
+.acct-member-add label{margin-bottom:10px}
+
 /* ---------- 窄屏 ---------- */
 @media(max-width:760px){
   .topbar{height:auto;min-height:var(--topbar-h);flex-wrap:wrap;gap:8px;padding:9px 14px}

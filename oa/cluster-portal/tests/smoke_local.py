@@ -55,12 +55,121 @@ ctlmod.user_exists = lambda u: {"ok": True, "username": u,
 ctlmod.user_status = lambda u: {"ok": True, "username": u, "exists": _fake_os_exists(u),
                                 "uid_admin": "2000" if _fake_os_exists(u) else None,
                                 "nodes": {}}
-ctlmod.provision_user = lambda u, q, skip_os=False: (
-    _set_fake_quota(u, (q or "500G")),  # 建号同时写假配额记录
-    {"ok": True, "mode": "new", "username": u, "uid": 2000})[1]
+# ---------- fake 多账户（成员关系只在 Slurm，测试里用内存模拟）----------
+FAKE_ACCOUNTS = {"lab": {"priority": 5, "per_user_gpu_cap": 8, "preempt": False}}
+FAKE_MEMBERS = {}          # username -> set(account)
+FAKE_USER_DEFAULT = {}     # username -> default account
+FAKE_DEFAULT = "lab"
+
+
+def _fake_assign(u, accounts=None, default_account=None):
+    names = [a for a in (accounts or []) if a] or [FAKE_DEFAULT]
+    FAKE_MEMBERS[u] = set(names)
+    FAKE_USER_DEFAULT[u] = default_account if default_account in names else names[0]
+    return names
+
+
+def _fake_provision_user(u, q, skip_os=False, accounts=None, default_account=None):
+    _set_fake_quota(u, (q or "500G"))  # 建号同时写假配额记录
+    _fake_assign(u, accounts, default_account)
+    return {"ok": True, "mode": "new", "username": u, "uid": 2000}
+
+
+def _fake_init_user(u, accounts=None, default_account=None):
+    _fake_assign(u, accounts, default_account)
+    return {"ok": True, "username": u, "uid": 2000}
+
+
+def _fake_accounts():
+    rows = []
+    for name, meta in sorted(FAKE_ACCOUNTS.items()):
+        rows.append({"name": name, "qos": "acct-" + name, "exists": True,
+                     "priority": meta["priority"],
+                     "per_user_gpu_cap": meta["per_user_gpu_cap"],
+                     "preempt": "", "members": sum(1 for m in FAKE_MEMBERS.values()
+                                                   if name in m)})
+    return {"ok": True, "accounts": rows}
+
+
+def _fake_accounts_sync(accounts):
+    for a in accounts or []:
+        name = a.get("name")
+        if not name:
+            continue
+        FAKE_ACCOUNTS[name] = {"priority": int(a.get("priority", 5)),
+                               "per_user_gpu_cap": int(a.get("per_user_gpu_cap", 0)),
+                               "preempt": bool(a.get("preempt"))}
+    return {"ok": True, "synced": [a.get("name") for a in accounts or []]}
+
+
+def _fake_accounts_init():
+    return {"ok": True, "created": sorted(FAKE_ACCOUNTS),
+            "existing": []}
+
+
+def _fake_account_delete(name):
+    if name not in FAKE_ACCOUNTS:
+        raise ctlmod.CtlError("账户不存在: %s" % name)
+    if any(name in m for m in FAKE_MEMBERS.values()):
+        raise ctlmod.CtlError("账户还有成员，不能删除")
+    FAKE_ACCOUNTS.pop(name, None)
+    return {"ok": True, "deleted": name}
+
+
+def _fake_account_users(name):
+    if name not in FAKE_ACCOUNTS:
+        raise ctlmod.CtlError("账户不存在: %s" % name)
+    users = []
+    for u, members in sorted(FAKE_MEMBERS.items()):
+        if name in members:
+            users.append({"username": u,
+                          "default": FAKE_USER_DEFAULT.get(u) == name,
+                          "qos": "acct-" + name})
+    return {"ok": True, "account": name, "users": users}
+
+
+def _fake_account_add_user(name, user, make_default=False):
+    if name not in FAKE_ACCOUNTS:
+        raise ctlmod.CtlError("账户不存在: %s" % name)
+    FAKE_MEMBERS.setdefault(user, set()).add(name)
+    if make_default or user not in FAKE_USER_DEFAULT:
+        FAKE_USER_DEFAULT[user] = name
+    return {"ok": True, "account": name, "user": user}
+
+
+def _fake_account_remove_user(name, user):
+    FAKE_MEMBERS.get(user, set()).discard(name)
+    if FAKE_USER_DEFAULT.get(user) == name:
+        rest = sorted(FAKE_MEMBERS.get(user, set()))
+        if rest:
+            FAKE_USER_DEFAULT[user] = rest[0]
+    return {"ok": True, "account": name, "user": user}
+
+
+def _fake_user_accounts(user):
+    names = sorted(FAKE_MEMBERS.get(user) or [FAKE_DEFAULT])
+    default = FAKE_USER_DEFAULT.get(user) or names[0]
+    return {"ok": True, "username": user, "default": default,
+            "accounts": [{"name": n, "qos": "acct-" + n,
+                          "priority": FAKE_ACCOUNTS.get(n, {}).get("priority", 5),
+                          "per_user_gpu_cap": FAKE_ACCOUNTS.get(n, {}).get(
+                              "per_user_gpu_cap", 0),
+                          "is_default": n == default} for n in names]}
+
+
+ctlmod.provision_user = _fake_provision_user
 ctlmod.unprovision_user = lambda u: (FAKE_QUOTA.pop(u, None),
-                                     {"ok": True, "username": u, "uid": 2000})[1]
-ctlmod.init_user = lambda u: {"ok": True, "username": u, "uid": 2000}
+                                     FAKE_MEMBERS.pop(u, None),
+                                     {"ok": True, "username": u, "uid": 2000})[2]
+ctlmod.init_user = _fake_init_user
+ctlmod.accounts = _fake_accounts
+ctlmod.accounts_init = _fake_accounts_init
+ctlmod.accounts_sync = _fake_accounts_sync
+ctlmod.account_delete = _fake_account_delete
+ctlmod.account_users = _fake_account_users
+ctlmod.account_add_user = _fake_account_add_user
+ctlmod.account_remove_user = _fake_account_remove_user
+ctlmod.user_accounts = _fake_user_accounts
 LAST_SUBMIT_SPEC = {}
 
 
@@ -271,15 +380,33 @@ ctlmod.quota = _quota_row
 ctlmod.quota_all = lambda: {"ok": True, "quotas": {
     u: {k: v for k, v in d.items()} for u, d in FAKE_QUOTA.items()}}
 ctlmod.set_quota = lambda u, size: (_set_fake_quota(u, size), _quota_row(u))[1]
-ctlmod.slurm_info = lambda u: {"ok": True, "username": u, "assocs": [
-    {"account": "lab", "partition": "", "qos": "normal", "priority": "",
-     "grp_tres": "", "grp_tres_mins": "", "max_tres": "", "max_tres_mins": "",
-     "grp_jobs": "", "grp_submit": "", "max_jobs": "", "max_submit": "",
-     "max_wall": "", "grp_wall": ""}],
-    "qos": {"normal": {"priority": "5", "max_tres": "", "grp_tres": "",
-                       "max_tres_mins": "", "grp_tres_mins": "", "grp_jobs": "",
-                       "grp_submit": "", "max_jobs": "", "max_submit": "",
-                       "max_wall": "", "grp_wall": ""}}}
+def _fake_slurm_info(u):
+    names = sorted(FAKE_MEMBERS.get(u) or [FAKE_DEFAULT])
+    default = FAKE_USER_DEFAULT.get(u) or names[0]
+    assocs = []
+    qos = {}
+    for n in names:
+        qn = "acct-" + n
+        meta = FAKE_ACCOUNTS.get(n, {})
+        qos[qn] = {"priority": str(meta.get("priority", 5)),
+                   "max_tres": "", "grp_tres": "", "max_tres_mins": "",
+                   "grp_tres_mins": "", "grp_jobs": "", "grp_submit": "",
+                   "max_jobs": "", "max_submit": "", "max_wall": "", "grp_wall": "",
+                   "per_user_gpu_cap": meta.get("per_user_gpu_cap", 0)}
+        assocs.append({"account": n, "partition": "", "qos": qn, "priority": "",
+                       "grp_tres": "", "grp_tres_mins": "", "max_tres": "",
+                       "max_tres_mins": "", "grp_jobs": "", "grp_submit": "",
+                       "max_jobs": "", "max_submit": "", "max_wall": "", "grp_wall": ""})
+    return {"ok": True, "username": u, "assocs": assocs, "qos": qos,
+            "default_account": default,
+            "accounts": [{"name": n, "qos": "acct-" + n,
+                          "priority": FAKE_ACCOUNTS.get(n, {}).get("priority", 5),
+                          "per_user_gpu_cap": FAKE_ACCOUNTS.get(n, {}).get(
+                              "per_user_gpu_cap", 0),
+                          "is_default": n == default} for n in names]}
+
+
+ctlmod.slurm_info = _fake_slurm_info
 
 def _set_fake_quota(u, size):
     n = int(size[:-1]) if size[:-1].isdigit() else 0
@@ -401,9 +528,70 @@ def main():
 
     # 管理员 + 「OS 已存在」同样要落地配额（只改库不落 OS 会显示"不限"）
     # —— 管理员账号只能由 root 创建，所以这里切换到 root 会话
+    # 账户管理是 root-only：普通管理员访问页面/写接口都必须 403。
+    assert c.get("/admin/accounts").status_code == 403
+    r = c.post("/admin/accounts/add", headers={"X-CSRF-Token": tok},
+               data={"name": "nope", "priority": "5"})
+    assert r.status_code == 403, r.status_code
+
     c.get("/logout")
     login(c, "root", "RootPass1234")
     tok = csrf_of(c, "/admin/users")
+    # ---- 多账户管理：root 建/改/成员/删除保护 ----
+    r = c.get("/admin/accounts")
+    assert r.status_code == 200 and "管理账户".encode() in r.data, r.status_code
+    tok_a = csrf_of(c, "/admin/accounts")
+    r = c.post("/admin/accounts/add", headers={"X-CSRF-Token": tok_a},
+               data={"name": "phd", "description": "博士生账户", "priority": "5",
+                     "per_user_gpu_cap": "8", "preempt": "1",
+                     "is_temporary": "1", "expires_at": "2099-12-31"})
+    j = r.get_json()
+    assert j["ok"], j
+    dbx_a = appmod.DB(appmod.DB_PATH)
+    try:
+        row_phd = dbx_a.account_by_name("phd")
+        assert row_phd and row_phd["priority"] == 5 \
+            and row_phd["per_user_gpu_cap"] == 8 \
+            and row_phd["preempt"] == 1 and row_phd["is_temporary"] == 1, dict(row_phd)
+    finally:
+        dbx_a.close()
+    # 编辑：优先级/单用户卡数上限
+    r = c.post("/admin/accounts/phd/edit", headers={"X-CSRF-Token": tok_a},
+               data={"name": "phd", "description": "博士生账户", "priority": "8",
+                     "per_user_gpu_cap": "16", "preempt": "1"})
+    assert r.get_json()["ok"], r.get_json()
+    dbx_a = appmod.DB(appmod.DB_PATH)
+    try:
+        row_phd = dbx_a.account_by_name("phd")
+        assert row_phd["priority"] == 8 and row_phd["per_user_gpu_cap"] == 16, dict(row_phd)
+        uid_alice = dbx_a.q1("SELECT id FROM users WHERE username='alice'")["id"]
+    finally:
+        dbx_a.close()
+    # 成员：把 alice 加进 phd，并设为默认账户（用于后面的申请页选账户）
+    r = c.post("/admin/accounts/phd/members/add", headers={"X-CSRF-Token": tok_a},
+               data={"user_id": str(uid_alice), "make_default": "1"})
+    assert r.get_json()["ok"], r.get_json()
+    assert "phd" in FAKE_MEMBERS.get("alice", set()) and FAKE_USER_DEFAULT["alice"] == "phd"
+    r = c.get("/api/user-accounts/%d" % uid_alice)
+    accts_api = r.get_json()
+    assert accts_api["ok"] and accts_api["default"] == "phd", accts_api
+    assert sorted(a["name"] for a in accts_api["accounts"]) == ["lab", "phd"], accts_api
+    # 默认账户不能删；有成员的账户不能删
+    j = c.post("/admin/accounts/lab/delete", headers={"X-CSRF-Token": tok_a}).get_json()
+    assert not j["ok"] and "默认账户" in j["error"], j
+    j = c.post("/admin/accounts/phd/delete", headers={"X-CSRF-Token": tok_a}).get_json()
+    assert not j["ok"], j
+    # 开户时多选账户 + 默认账户：普通用户必须落到所选关联
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "dave", "display_name": "Dave 多账户",
+        "role": "user", "os_mode": "provision", "quota": "100G",
+        "password": "DaveInit99", "accounts": ["lab", "phd"],
+        "default_account": "phd"}, follow_redirects=True)
+    assert "dave".encode() in r.data, r.data[:600]
+    assert FAKE_MEMBERS.get("dave") == {"lab", "phd"} and FAKE_USER_DEFAULT["dave"] == "phd", \
+        (FAKE_MEMBERS.get("dave"), FAKE_USER_DEFAULT.get("dave"))
+    # 普通管理员不能创建管理员账号（原有约束保留）
+
     r = c.post("/admin/users/create", data={
         "_csrf": tok, "username": "adminexist", "display_name": "管理员既有账号",
         "role": "admin", "os_mode": "existing", "quota": "1T",
@@ -514,6 +702,8 @@ def main():
     assert "提交命令" not in r.text and "cmd-preview" not in r.text  # 不展示命令
     assert 'value="12"' in r.text                                   # 时长默认 12 小时
     assert 'value=""' in r.text or "自动分配" in r.text              # 节点默认不填
+    # 多账户：默认账户 phd 应在下拉里预选（alice 已由 root 加入 phd 并设为默认）
+    assert 'name="account"' in r.text and "phd" in r.text, "申请页应展示账户下拉"
     tok2 = csrf_of(c, "/my")
 
     # 申请资源（POST）—— 镜像/套餐/任务名；本地 isfile stub
@@ -521,7 +711,7 @@ def main():
     appmod.os.path.isfile = lambda p: p.startswith("/share/images/") or orig_isfile(p)
     try:
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
-            "image": PUBIMG,
+            "image": PUBIMG, "account": "phd",
             "plan_id": "3", "task_name": "训练resnet", "hours": "12",
             "node": "<GPU01>", "port": "28766"})
         j = r.get_json()
@@ -530,8 +720,17 @@ def main():
         # site.conf 的 EXTRA_MOUNTS 读，请求里出现任何挂载字段就意味着"门户能自己指定
         # 挂载什么"——攻破门户即可挂走 /var/lib/cluster-portal 拿到 DB 与 Flask secret。
         assert set(LAST_SUBMIT_SPEC) == {"user", "node", "image", "gpus", "cpus",
-                                         "mem_gb", "walltime", "port", "job_name"}, LAST_SUBMIT_SPEC
+                                         "mem_gb", "walltime", "port", "job_name",
+                                         "account"}, LAST_SUBMIT_SPEC
         assert not [k for k in LAST_SUBMIT_SPEC if "mount" in k.lower()], LAST_SUBMIT_SPEC
+        assert LAST_SUBMIT_SPEC.get("account") == "phd", LAST_SUBMIT_SPEC
+        # 选了不属于自己的账户必须拒绝（不能让门户替用户越权选账户）
+        r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
+            "image": PUBIMG, "account": "ghost",
+            "plan_id": "3", "task_name": "越权账户", "hours": "12",
+            "node": "<GPU01>", "port": "28767"})
+        j_bad = r.get_json()
+        assert not j_bad["ok"] and "账户" in j_bad["error"], j_bad
         pl = c.get("/api/plans").get_json()
         assert all("maxtime_h" in x and "gpu_model" in x for x in pl), "套餐应含 gpu_model/maxtime_h"
         # 超过套餐 maxtime 被拒并提示需管理员协助
@@ -610,12 +809,16 @@ def main():
     assert r.status_code == 200 and "运行中".encode() in r.data
     assert "我的配额".encode() in r.data and "Slurm".encode() in r.data, "我的资源应展示配额/Slurm 额度"
     assert "100 GiB".encode() in r.data, "alice 配额 100G 应显示为硬上限 100 GiB"
+    assert "账户".encode() in r.data and "phd".encode() in r.data, "我的资源应显示实例账户"
     r = c.get("/api/my/quota")
     qj = r.get_json()
     assert qj["ok"] and qj["os_ok"] and qj["disk"]["hard_kb"] == 100 * 1024 * 1024, qj
-    assert qj["slurm"]["accounts"] == "lab" and qj["slurm"]["total"] == "不限", qj
+    assert qj["slurm"]["accounts"] == "lab,phd", qj
+    assert qj.get("default_account") == "phd", qj
+    assert {a["name"] for a in qj.get("accounts", [])} == {"lab", "phd"}, qj
     r = c.get("/api/my/instances")
     assert r.get_json()[0]["job_id"] == 424242
+    assert r.get_json()[0].get("account") == "phd", r.get_json()[0]
 
     # ---- 「启动中」：Slurm 报 RUNNING，但容器里的 sshd 还没在监听 ----
     # 光有 RUNNING 不等于用户能 ssh 进去（镜像导入 + sshd 起来还要几秒到几十秒）。

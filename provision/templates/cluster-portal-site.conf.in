@@ -21,8 +21,20 @@ DEFAULT_GPU_MODEL=@@DEFAULT_GPU_MODEL@@
 
 # Slurm 会计账户名（sacctmgr account）。用户必须在这个账户下有关联，
 # 否则在 AccountingStorageEnforce=associations 的集群上 sbatch 会被拒。
-# 与 base-cluster/scripts/cluster-admin/add-user.sh 的 CLUSTER_ACCOUNT 保持一致。
+#
+# 多账户：ACCOUNTS=逗号分隔的账户列表；DEFAULT_ACCOUNT=新用户默认账户（必须在列表内）。
+# 每个账户对应一个 QoS `acct-<账户名>`：优先级（Priority）与「该账户下每个用户同时
+# 最多 N 卡」（MaxTRESPerUser，0=不限）由 root 助手维护，**不用账户级 GrpTRES**。
+# 账户的增删改在门户【管理账户】页（仅 root）操作，助手负责落 Slurm。
+ACCOUNTS=@@ACCOUNTS@@
+DEFAULT_ACCOUNT=@@DEFAULT_ACCOUNT@@
+
+# 兼容旧单账户配置：ACCOUNT 仍可读，语义 = 默认账户（ACCOUNTS 缺省时作为唯一账户）。
+# 与 base-cluster/scripts/cluster-admin/add-user.sh 的 CLUSTER_ACCOUNTS/CLUSTER_ACCOUNT 对应。
 ACCOUNT=@@ACCOUNT@@
+
+# Slurm 集群名（sacctmgr 的 ClusterName / Organization 用；门户与助手共用）。
+CLUSTER_NAME=@@CLUSTER_NAME@@
 
 # 首次建库时的套餐种子 JSON；留空则用内置套餐 + 上面的默认型号。
 SEED_PLANS=/etc/cluster-portal/plans.json
