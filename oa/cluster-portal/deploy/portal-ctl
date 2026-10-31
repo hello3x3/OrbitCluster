@@ -1694,8 +1694,12 @@ def _qos_map():
 
 
 def _user_defaults():
-    """用户名 -> DefaultAccount；查询失败返回 None。"""
-    r = _sacct_show(["show", "user", "format=Name,DefaultAccount"])
+    """用户名 -> DefaultAccount；查询失败返回 None。
+
+    注意：`sacctmgr show user` 的字段名是 User（不是 Name）；用 Name 时首列为空，
+    会导致 user-accounts 的 default 永远为空、门户默认账户回落到站点默认值。
+    """
+    r = _sacct_show(["show", "user", "format=User,DefaultAccount"])
     if r.returncode != 0:
         return None
     got = {}

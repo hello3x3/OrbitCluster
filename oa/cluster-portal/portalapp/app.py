@@ -1990,10 +1990,13 @@ def create_app(testing=False):
         # ---- 集群侧账号 ----
         #   provision：门户自动建号（建号 + 家目录 + 配额 + 会计关联）
         #   existing ：OS 账号已存在 —— 初始化（家目录/.portal）+ **把配额真正落到 OS** + 会计关联
+        #   none     ：仅门户管理员（管理员角色专用；不建 OS、不设配额）
         # 配额必须落到 OS：只写门户库的话，页面（显示 OS 实读值）会与库里的额度漂移。
-        # existing 对任何角色都生效（管理员也可以同时有 OS 账号），且必须显式 set_quota。
+        # provision/existing 对任何角色都生效 —— 管理员也可以有 OS 账号并设配额。
         if role == "user" and os_mode not in ("provision", "existing"):
             return None, "普通用户必须选择账号开通方式", 0
+        if role == "admin" and os_mode not in ("provision", "existing", "none"):
+            return None, "管理员必须选择：自动建号 / OS 账号已存在 / 仅门户管理员", 0
         # 普通用户**可以**留空密码 = 随机生成。
         # 界面（admin_users.html「初始门户密码（留空=随机生成，只显示一次）」）、
         # README、以及下面的 `pwd = password or random_password()` 和响应里
@@ -2001,7 +2004,10 @@ def create_app(testing=False):
         # 历史 bug：这里曾有一条 `role == "user" and not password` 的硬校验，把「留空」
         # 直接判成错误（"普通用户初始密码不能为空"）—— 界面让你留空、服务端说你必须填，
         # 于是根本建不出普通用户。不要再加回来；真要改语义，请连界面与 README 一起改。
-        want_os = os_mode == "existing" or (os_mode == "provision" and role == "user")
+        want_os = os_mode in ("provision", "existing")
+        if not want_os:
+            # 纯门户管理员没有 OS 账号，配额字段无意义；统一存「不限」避免误导。
+            quota = QUOTA_UNLIMITED
         if want_os:
             try:
                 if os_mode == "provision":
@@ -2016,7 +2022,7 @@ def create_app(testing=False):
                     ctl.set_quota(username, quota)   # 关键：把额度真正落到 OS
             except ctl.CtlError as e:
                 return None, "集群建号失败：%s" % e, 0
-        # 管理员角色：未选「OS 已存在」时仅建门户账号（可选设密码）
+        # 仅门户管理员（os_mode=none）不建 OS 账号；其余角色按 want_os 决定是否建号。
         pwd = password or authlib.random_password()
         uid = db.add_user(username, display_name or username, role,
                           authlib.hash_password(pwd), quota,

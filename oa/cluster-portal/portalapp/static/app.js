@@ -1083,7 +1083,29 @@
     const roleSel = form.querySelector("#create-role");
     const accts = form.querySelector("#create-accounts");
     const defSel = form.querySelector("#create-default-account");
+    const osSel = form.querySelector("#create-osmode");
+    const noneOpt = form.querySelector("#create-osmode-none");
+    const quotaSel = form.querySelector('[name="quota"]');
+    const quotaLabel = document.getElementById("create-quota-label");
+    const pureNote = document.getElementById("create-pure-admin-note");
+    const acctRow = document.getElementById("create-acctrow");
     if (!accts || !defSel) return;
+
+    function syncRoleAndOsMode() {
+      const role = roleSel ? roleSel.value : "user";
+      const isAdmin = role === "admin";
+      // 「仅门户管理员」只对管理员角色开放
+      if (noneOpt) {
+        noneOpt.hidden = !isAdmin;
+        noneOpt.disabled = !isAdmin;
+      }
+      if (!isAdmin && osSel && osSel.value === "none") osSel.value = "provision";
+      const pureAdmin = isAdmin && osSel && osSel.value === "none";
+      if (quotaLabel) quotaLabel.hidden = pureAdmin;
+      if (quotaSel) quotaSel.disabled = pureAdmin;
+      if (pureNote) pureNote.hidden = !pureAdmin;
+      if (acctRow) acctRow.hidden = pureAdmin;
+    }
 
     function selected() {
       return Array.from(accts.selectedOptions).map(o => o.value);
@@ -1103,7 +1125,10 @@
       if (first) first.selected = true;
     }
     accts.addEventListener("change", syncDefault);
+    if (roleSel) roleSel.addEventListener("change", syncRoleAndOsMode);
+    if (osSel) osSel.addEventListener("change", syncRoleAndOsMode);
     syncDefault();
+    syncRoleAndOsMode();
     form.addEventListener("submit", ev => {
       const vals = selected();
       const role = roleSel ? roleSel.value : "user";

@@ -44,12 +44,13 @@
     </div>
     <div class="row" id="create-osrow">
       <label>集群账号方式
-        <select name="os_mode">
+        <select name="os_mode" id="create-osmode">
           <option value="provision">自动建号（推荐）</option>
           <option value="existing">OS 账号已存在，仅开通门户</option>
+          <option value="none" id="create-osmode-none" hidden>仅门户管理员（不建 OS 账号，无 /share 配额）</option>
         </select>
       </label>
-      <label>磁盘配额（/share 总量，可选「不限」）
+      <label id="create-quota-label">磁盘配额（/share 总量，可选「不限」）
         <select name="quota">
           {% for q in quota_options %}<option value="{{ q }}" {% if q=='500G' %}selected{% endif %}>{{ q }}</option>{% endfor %}
         </select>
@@ -58,6 +59,7 @@
         <input type="password" name="password" maxlength="128" placeholder="留空自动生成">
       </label>
     </div>
+    <p class="field-note" id="create-pure-admin-note" hidden>纯门户管理员：不创建 OS 账号、不设 /share 配额，只能管理门户，不能申请资源。</p>
     {% if accounts %}
     <div class="row" id="create-acctrow">
       <label>集群账户（可多选）

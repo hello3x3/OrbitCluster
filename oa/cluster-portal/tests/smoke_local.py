@@ -599,6 +599,36 @@ def main():
     assert "adminexist".encode() in r.data, r.data[:600]
     assert FAKE_QUOTA.get("adminexist", {}).get("hard_kb") == 1024 * 1024 * 1024, \
         "管理员 existing 开通没有落地配额: %s" % FAKE_QUOTA.get("adminexist")
+    # 管理员 + 自动建号：也必须真正建 OS 账号并落地配额（历史 bug：role=admin 时
+    # want_os 恒为 False，界面上选「自动建号」却只建门户账号）
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "adminauto", "display_name": "管理员自动建号",
+        "role": "admin", "os_mode": "provision", "quota": "100G",
+        "password": "AdminAuto99"}, follow_redirects=True)
+    assert "adminauto".encode() in r.data, r.data[:600]
+    assert FAKE_QUOTA.get("adminauto", {}).get("hard_kb") == 100 * 1024 * 1024, \
+        "管理员自动建号没有落地配额: %s" % FAKE_QUOTA.get("adminauto")
+    dbx_admin = appmod.DB(appmod.DB_PATH)
+    try:
+        row_adminauto = dbx_admin.user_by_name("adminauto")
+        assert row_adminauto["role"] == "admin" and row_adminauto["os_mode"] == "provision", \
+            dict(row_adminauto)
+    finally:
+        dbx_admin.close()
+    # 管理员 + 仅门户账号：不建 OS、不设配额，库里的 quota 存「不限」
+    r = c.post("/admin/users/create", data={
+        "_csrf": tok, "username": "pureadm", "display_name": "纯门户管理员",
+        "role": "admin", "os_mode": "none", "quota": "500G",
+        "password": "PureAdmin99"}, follow_redirects=True)
+    assert "pureadm".encode() in r.data, r.data[:600]
+    assert "pureadm" not in FAKE_QUOTA, "纯门户管理员不应触发 OS 建号/配额"
+    dbx_pure = appmod.DB(appmod.DB_PATH)
+    try:
+        row_pure = dbx_pure.user_by_name("pureadm")
+        assert row_pure["role"] == "admin" and row_pure["os_mode"] == "none"
+        assert row_pure["quota"] == "不限", dict(row_pure)
+    finally:
+        dbx_pure.close()
     # 切回普通管理员会话继续后面的用例
     c.get("/logout")
     login(c, "admin", "AdminPass123")

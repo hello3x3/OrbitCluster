@@ -183,16 +183,16 @@ apt install -y git curl wget build-essential make gcc
 ```bash
 install -d /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/10-portal-only.conf <<'EOF'
-# 只允许运维账号登录宿主机；集群用户一律不能登录（他们只该连自己容器内的 sshd）
-AllowUsers root
+# root 供门户助手跨节点执行；运维用户 <USER> 也可登录宿主机
+AllowUsers root <USER>
 # root 有可用口令且默认 PasswordAuthentication yes，只写 AllowUsers 挡不住口令爆破
 PermitRootLogin prohibit-password
 EOF
 sshd -t && systemctl reload ssh
 sshd -T | grep -iE '^allowusers|^permitrootlogin'
 ```
-> * 若还有别的运维账号（例如手册 2.5 的 OS 用户 `<USER>`）确实需要登录宿主机，写成
->   `AllowUsers root <USER>`。**但绝不要把普通科研用户写进去。**
+> * 必须保留 `root`：门户的 root 助手需要从管理节点 ssh 到各计算节点执行建号/配额等操作。
+> * 只允许 `root` 与运维用户 `<USER>`；**绝不要把普通科研用户写进去**。
 > * `systemd-*`、`sshd`、`mysql` 等系统账号不必列 —— 它们本来就没有可用 shell。
 
 **验收（[全部节点]）**
@@ -1622,7 +1622,7 @@ sacctmgr show user <新建用户名> format=Name,DefaultAccount  # 默认账户
 
 | 现象 | 原因与处理 |
 |---|---|
-| **普通用户能 ssh 登录宿主机**（`ssh -p <sshd端口> <自己>@<节点>` 直接进系统） | 宿主机 sshd 没做白名单。门户把用户公钥写进 NFS 家目录的 `~/.ssh/authorized_keys`，而宿主机 sshd 读同一个文件 → 用户拿容器那把私钥就能登宿主机，并用 `sbatch/srun` 绕过全部门户策略。修法见 **1.7 节**：加 `/etc/ssh/sshd_config.d/10-portal-only.conf`（`AllowUsers root`）后 `systemctl reload ssh`；检查 `sshd -T \| grep -i allowusers` |
+| **普通用户能 ssh 登录宿主机**（`ssh -p <sshd端口> <自己>@<节点>` 直接进系统） | 宿主机 sshd 没做白名单。门户把用户公钥写进 NFS 家目录的 `~/.ssh/authorized_keys`，而宿主机 sshd 读同一个文件 → 用户拿容器那把私钥就能登宿主机，并用 `sbatch/srun` 绕过全部门户策略。修法见 **1.7 节**：加 `/etc/ssh/sshd_config.d/10-portal-only.conf`（`AllowUsers root <USER>`）后 `systemctl reload ssh`；检查 `sshd -T \| grep -i allowusers` |
 | 容器里 sshd 不认公钥、但用户明明登记过 | ① `~/.ssh/authorized_keys` 被换成软链或权限不对（门户助手已拒绝软链）；② 镜像没内置 sshd 或 `/opt/start_ssh.sh`；③ 容器还没有就绪（Slurm RUNNING ≠ 容器可登录，pyxis 解包 .sqsh 要数十秒，测试要重试） |
 | NFS 挂载 `access denied by server` | exports 网段与客户端 IP 不匹配：`exportfs -v` 看放行范围，改对 `/etc/exports` 后 `exportfs -ra` |
 | 重启后 /share 没挂上（df 显示根分区设备） | fstab NFS 行缺 `_netdev`；`mount -a` 恢复并补 `_netdev` |

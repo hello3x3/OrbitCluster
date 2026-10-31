@@ -161,8 +161,8 @@ PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
 
 - **（前提）宿主机 sshd 必须做白名单**：门户把用户公钥写进 `~/.ssh/authorized_keys`，
   那是给**容器内** sshd 用的；而宿主机 sshd 读的是同一个文件（家目录在 NFS 上）。
-  所以宿主机必须配 `AllowUsers root`（见 `base-cluster` 手册 **1.7 节** 与
-  `deploy/etc/ssh/sshd_config.d/10-portal-only.conf`，由 `make` 生成）。不做的话，
+  所以宿主机必须配 `AllowUsers root`（root 保留给门户助手；运维用户登录再加 `<USER>`）；见 `base-cluster` 手册 **1.7 节** 与
+  `deploy/etc/ssh/sshd_config.d/10-portal-only.conf`（由 `make` 生成）。不做的话，
   用户拿容器那把私钥就能 `ssh -p 2180 <自己>@<节点>` 登上宿主机，
   并用 PATH 里的 `sbatch/srun` 绕过全部门户策略。`oa/scripts/verify-install.sh` 会检查该项。
   ⚠️ **不要**用把用户 shell 改成 `nologin` 的办法：enroot 的 passwd hook 会把宿主机

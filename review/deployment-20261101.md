@@ -132,6 +132,9 @@ WantedBy=timers.target
   否则 waitress 绑定 80 会 `Permission denied`。
 - 默认只有一个超级管理员 **root**；密码随机生成，写在 `/root/.cluster-portal-admin`（600）。
   root 后续可在门户里创建其他管理员/普通用户；普通管理员看不到「管理账户」和「资源套餐」入口。
+- 管理员创建支持三种方式：**自动建号**（真正建 OS 账号+配额+Slurm 关联）、
+  **OS 账号已存在**（补配额/关联）、**仅门户管理员**（不建 OS，不设配额）。
+  早期代码对 role=admin 的“自动建号”实际只建门户账号，已修复。
 - 安装脚本已自动执行 `portal-ctl accounts-init`，当前账户 `phd/ms/be/ra` 均为 `existing`，没有重复创建。
 
 ### 1.8 pip 使用浙江大学镜像
@@ -300,6 +303,38 @@ timeout = 120
 - 外部访问 `http://10.71.106.251/login`：HTTP 200。
 - 门户只有 `root` 一个超级管理员（由 `install.sh` 创建）；其他管理员/用户需 root 后续创建。
 
+### 2.14 门户建号失败：root 到计算节点 SSH 被 AllowUsers 拦住
+
+**现象**：在门户开通 `shujiuhe`（管理员 + 自动建号）时，`portal-ctl provision-user` 报：
+```text
+无法在 3090-01 创建 /opt/cluster-admin: root@3090-01: Permission denied (publickey).
+```
+**根因**：`portal-ctl` 以 root 身份通过 SSH 到各计算节点执行 `add-user.sh`，但计算节点的
+`/etc/ssh/sshd_config.d/10-portal-only.conf` 实际是 `AllowUsers zju`，root 被挡；
+同时 3090-00 的 root 没有到计算节点的 SSH key。
+
+**解决**：
+1. 在 3090-00 生成 root ed25519 key（仅内网管理用）；
+2. 把公钥追加到四台 `/root/.ssh/authorized_keys`（600）；
+3. 把四台的 `AllowUsers zju` 改为 **`AllowUsers root zju`**，保留 `PermitRootLogin prohibit-password`；
+4. `sshd -t && systemctl reload ssh`，在 3090-00 以 root 验证 `ssh -p 2022 root@3090-0x hostname`；
+5. 重新执行：
+   ```bash
+   portal-ctl provision-user shujiuhe 500G --accounts phd
+   ```
+   成功创建 UID=1001（四台一致）、`/share/home/shujiuhe`、500G 配额、`phd/acct-phd` 关联。
+
+> ⚠️ 门户的特权助手依赖 **3090-00 root → 各计算节点 root 的 key 登录**；
+> `AllowUsers` 不能只留 `zju`，否则门户建号/停机/日志等跨节点操作都会失败。
+
+### 2.15 user-accounts 默认账户为空
+
+**现象**：`portal-ctl user-accounts zju` 返回 `"default": ""`，但 `sacctmgr` 里默认账户是 `phd`。
+**根因**：`sacctmgr show user` 的用户名字段是 `User`，助手用了 `format=Name,DefaultAccount`，
+首列为空，导致 `_user_defaults()` 解析不到用户名。
+**解决**：把助手 `_user_defaults()` 改为 `format=User,DefaultAccount`，重新安装
+`/usr/local/sbin/portal-ctl`；修复后 `user-accounts zju/shujiuhe` 均返回 `default: phd`。
+
 ## 3. 最终验收
 
 ### Slurm
@@ -405,6 +440,10 @@ cluster-portal             active
    - cache 清理 timer 已 enable。
 6. `zju` 的 OS 家目录是 `/home/zju`，不是 `/share/home/zju`；`/share/home/zju` 存在，`zju` 的 `/share` 配额已设为**不限**。
    后续普通用户用 `/opt/cluster-admin/add-user.sh` 会创建 NFS 家目录并默认 500G 配额。
+7. **root 免密 SSH 到计算节点是门户的硬依赖**：`AllowUsers root zju`、root key 和
+   `PermitRootLogin prohibit-password` 必须保留；重装 sshd 配置时尤其注意。
+8. 当前 `shujiuhe` 已补成：管理员 + OS 账号（UID 1001）+ 500G 配额 + phd 关联。
+   纯门户管理员请创建时选“仅门户管理员”。
 7. 生成器的通用 enroot 模板仍是 `/share/enroot-cache`；本机实际为本地 cache + timer，重新 `make` 时要注意不要覆盖。
 
 ## 6. 本次涉及的仓库/生成物
@@ -417,6 +456,11 @@ cluster-portal             active
 - `oa/cluster-portal/deploy/install.sh`：默认端口 80 + 特权端口自动加 `AmbientCapabilities`
 - 门户相关文档/测试默认端口从 8000 改为 80；系统 `/etc/pip.conf` 指向 ZJU 镜像
 - 门户安装目录 `/opt/cluster-portal`、数据目录 `/var/lib/cluster-portal`、站点配置 `/etc/cluster-portal/site.conf`
+- `portalapp/app.py`：管理员“自动建号”真正建 OS/配额；新增 `os_mode=none` 仅门户管理员
+- `oa/cluster-portal/deploy/portal-ctl`：修复 `_user_defaults()` 的 `User`/`Name` 字段
+- `portalapp/templates/admin_users.html` + `static/app.js`：管理员角色新增“仅门户管理员”，纯管理员隐藏配额/账户
+- `tests/smoke_local.py`：新增管理员自动建号 / 纯门户管理员的回归用例
+- 四台 `/etc/ssh/sshd_config.d/10-portal-only.conf`：`AllowUsers root zju`；3090-00 root key → 计算节点 root 免密
 
 部署完成后已执行 `make reset` + `make clean`，仓库回到模板状态；
 本次源码/文档修复与部署记录随后提交。`make test` 通过。
