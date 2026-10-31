@@ -120,6 +120,15 @@ BIND_CAP=""
 if [ "$PORT" -lt 1024 ]; then
   BIND_CAP="AmbientCapabilities=CAP_NET_BIND_SERVICE"
 fi
+# PrivateDevices=yes 后沙箱里的 /dev 只剩最小集合；repquota/setquota 需要
+# stat() /share 对应的块设备节点。这里按实际挂载点找设备，不能写死 /dev/sda
+# （RAID/云盘/NVMe 环境下会指错，配额列会静默变成「—」）。
+SHARE_DEV="$(findmnt -no SOURCE /share 2>/dev/null | head -1)"
+if [ -b "$SHARE_DEV" ]; then
+  SHARE_DEV="$(readlink -f "$SHARE_DEV")"
+else
+  SHARE_DEV=/dev/sda
+fi
 cat > /etc/systemd/system/$SERVICE.service <<EOF
 [Unit]
 Description=OrbitCluster Cluster Portal (web)
@@ -158,13 +167,14 @@ ProtectSystem=strict
 ReadWritePaths=$DATA_DIR /etc/cluster-portal /share
 ProtectHome=read-only
 PrivateDevices=yes
-# ⚠ PrivateDevices=yes 会把 /dev/sda 从沙箱的 /dev 里摘掉，而 `repquota /share` 必须先
-#   stat() 这个块设备节点，否则直接空手而归（rc 还是 0，所以是**静默**失败）：
-#   用户管理页的「配额（OS 实读）」整列变成「—」，库里的额度与 OS 实际值漂移就完全
-#   看不出来 —— 直到写入超过配额、报 "Write failed because Disk quota exceeded" 才暴露。
+# ⚠ PrivateDevices=yes 会把 /share 对应的块设备从沙箱的 /dev 里摘掉，而
+#   `repquota /share` 必须先 stat() 这个块设备节点，否则直接空手而归
+#   （rc 还是 0，所以是**静默**失败）：用户管理页的「配额（OS 实读）」整列
+#   变成「—」，库里的额度与 OS 实际值漂移就完全看不出来 —— 直到写入超过配额、
+#   报 "Write failed because Disk quota exceeded" 才暴露。
 #   只把这一个设备节点**只读**bind 进沙箱：repquota 只要 stat()，不需要打开设备，
 #   所以不必放宽 DevicePolicy；非特权 portal 进程依旧打不开它（brw-rw---- root:disk）。
-BindReadOnlyPaths=/dev/sda
+BindReadOnlyPaths=$SHARE_DEV
 RestrictSUIDSGID=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

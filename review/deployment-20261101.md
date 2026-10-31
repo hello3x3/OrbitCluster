@@ -335,6 +335,20 @@ timeout = 120
 **解决**：把助手 `_user_defaults()` 改为 `format=User,DefaultAccount`，重新安装
 `/usr/local/sbin/portal-ctl`；修复后 `user-accounts zju/shujiuhe` 均返回 `default: phd`。
 
+### 2.16 门户「配额（OS 实读）」显示为「—」
+
+**现象**：`shujiuhe` 在 OS 上已有 500G 配额，但门户用户管理页配额列仍显示「—」。
+**根因**：portal systemd 单元开了 `PrivateDevices=yes`，而 `BindReadOnlyPaths` 被写死成
+`/dev/sda`；实际 `/share` 是 RAID 设备 `/dev/md0`。portal 沙箱里看不到 `/dev/md0`，
+`repquota /share` 静默失败（rc=0 但无数据），页面只能显示「—」。
+
+**解决**：
+1. 把 portal 单元的 `BindReadOnlyPaths` 改为实际设备 `/dev/md0`；
+2. `install.sh` 不再写死 `/dev/sda`，改为 `findmnt -no SOURCE /share` 后 `readlink -f`
+   取实际块设备（找不到时才回退 `/dev/sda`）；
+3. 重启门户，验证沙箱内 `ls /dev/md0` 可见、`quota-all` 返回 `shujiuhe` 的 500G，
+   页面上显示 `24 KiB / 500 GiB`。
+
 ## 3. 最终验收
 
 ### Slurm
@@ -461,6 +475,8 @@ cluster-portal             active
 - `portalapp/templates/admin_users.html` + `static/app.js`：管理员角色新增“仅门户管理员”，纯管理员隐藏配额/账户
 - `tests/smoke_local.py`：新增管理员自动建号 / 纯门户管理员的回归用例
 - 四台 `/etc/ssh/sshd_config.d/10-portal-only.conf`：`AllowUsers root zju`；3090-00 root key → 计算节点 root 免密
+- `install.sh`：`BindReadOnlyPaths` 按 `/share` 实际块设备动态生成（不再写死 `/dev/sda`）
+- 当前 portal 单元：`BindReadOnlyPaths=/dev/md0`（修复配额列静默为空）
 
 部署完成后已执行 `make reset` + `make clean`，仓库回到模板状态；
 本次源码/文档修复与部署记录随后提交。`make test` 通过。
