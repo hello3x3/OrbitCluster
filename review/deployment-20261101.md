@@ -349,6 +349,25 @@ timeout = 120
 3. 重启门户，验证沙箱内 `ls /dev/md0` 可见、`quota-all` 返回 `shujiuhe` 的 500G，
    页面上显示 `24 KiB / 500 GiB`。
 
+### 2.17 root 打开「管理账户」页 500
+
+**现象**：root 访问 `/admin/accounts` 返回 500，日志：
+```text
+PermissionError: [Errno 13] Permission denied:
+/opt/cluster-portal/portalapp/templates/admin_accounts.html
+```
+**根因**：该模板文件在仓库/部署目录里的权限是 `600`，portal 运行账号 `portal` 读不到。
+`install.sh` 正常会 `chmod -R a+rX /opt/cluster-portal`，但本次是手工 rsync 更新代码，
+没有重新执行 chmod，rsync 又保留了源文件的 600 权限。
+
+**解决**：
+1. `chmod -R a+rX /opt/cluster-portal`（模板改为 644）；
+2. 重启 `cluster-portal`；
+3. 重启后 `accounts` 表按 `site.conf` 种子化，页面显示 phd/ms/be/ra；
+4. 验证 `/admin/accounts` HTTP 200，`/admin/users` 中 `shujiuhe` 显示 `24 KiB / 500 GiB`。
+
+> 以后手工 rsync 部署代码后，记得补 `chmod -R a+rX /opt/cluster-portal`，或直接重跑 `install.sh`。
+
 ## 3. 最终验收
 
 ### Slurm
