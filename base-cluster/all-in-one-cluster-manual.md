@@ -662,7 +662,7 @@ EOF
 | 参数 | 作用 | 本手册取值 | 备注 |
 |---|---|---|---|
 | `ENROOT_RUNTIME_PATH` | 运行时临时目录（挂载点等） | `/run/enroot/user-$(id -u)` | 父目录 /run/enroot 需 1777 + 开机重建（5.3） |
-| `ENROOT_CACHE_PATH` | 镜像缓存（docker:// 拉取落这里） | `/share/enroot-cache/group-$(id -g)` | NFS 全网一份；组目录预建 1777 才能共享（5.3） |
+| `ENROOT_CACHE_PATH` | 镜像缓存（docker:// 拉取落这里） | `/share/enroot-cache/group-$(id -g)` | NFS 全网一份；组目录预建 1777 才能共享（5.3）。也可改本地 `/scratch/enroot-cache/user-$(id -u)` + 定期清理，不占 `/share` 配额 |
 | `ENROOT_DATA_PATH` | 容器 rootfs/数据层（本地盘） | `/scratch/enroot-data/user-$(id -u)` | 中间目录 /scratch/enroot-data **必须预建 1777**（见 5.3） |
 | `ENROOT_MOUNT_HOME` | 是否自动挂载 $HOME | n（不挂） | 容器内家目录自己用 --container-mounts 挂 |
 | `ENROOT_RESTRICT_DEV` | 限制 /dev 设备 | y | 安全 |
@@ -734,6 +734,11 @@ if grep -q '^NVIDIA_VISIBLE_DEVICES=' "${env_file}"; then
     exit 0
 fi
 cvd=$(sed -n 's/^CUDA_VISIBLE_DEVICES=//p' "${env_file}" | head -1)
+# pyxis 有时只把 CUDA_VISIBLE_DEVICES 放在 enroot 进程环境里，不写 ENROOT_ENVIRON；
+# 实测 pyxis v0.24.0 + enroot 4.2.1 就是这种情况，从 hook 自身环境兜底。
+if [ -z "${cvd}" ]; then
+    cvd="${CUDA_VISIBLE_DEVICES:-}"
+fi
 if [ -n "${cvd}" ]; then
     printf 'NVIDIA_VISIBLE_DEVICES=%s\n' "${cvd}" >> "${env_file}"
 fi

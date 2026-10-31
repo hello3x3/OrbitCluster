@@ -228,7 +228,7 @@ python3 -m venv .venv-test
 .venv-test/bin/python tests/smoke_local.py          # 成功打印 SMOKE_OK
 
 # 真机端到端验收（需门户已部署且本机可 ssh root@<ADMIN>）
-E2E_BASE=http://<ADMIN>:8000 .venv-test/bin/python tests/e2e_live.py
+E2E_BASE=http://<ADMIN>:80 .venv-test/bin/python tests/e2e_live.py
 ```
 
 ## 仓库约定

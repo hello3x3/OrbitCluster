@@ -2,7 +2,7 @@
 """集群门户真机验收脚本（从外部机器通过 HTTP + 真实 slurm/容器 SSH）。
 
 用法:
-  E2E_BASE=http://<ADMIN_IP>:8000 \
+  E2E_BASE=http://<ADMIN_IP> \
   E2E_ADMIN_USER=root \
   E2E_ADMIN_PWD=<root 当前门户密码> \
   python e2e_live.py
@@ -22,7 +22,7 @@ import uuid
 
 import requests
 
-BASE = os.environ.get("E2E_BASE", "http://<ADMIN_IP>:8000")
+BASE = os.environ.get("E2E_BASE", "http://<ADMIN_IP>")
 ADMIN_USER = os.environ.get("E2E_ADMIN_USER", "root")     # 默认管理员账号
 ADMIN_PWD = os.environ.get("E2E_ADMIN_PWD", "")
 SSH_PORT_HOST = 2180

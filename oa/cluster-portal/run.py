@@ -16,7 +16,7 @@ def main():
     from waitress import serve
     app = create_app()
     host = os.environ.get("PORTAL_HOST", "0.0.0.0")
-    port = int(os.environ.get("PORTAL_PORT", "8000"))
+    port = int(os.environ.get("PORTAL_PORT", "80"))
     threads = int(os.environ.get("PORTAL_THREADS", "32"))
     print("cluster-portal listening on http://%s:%s" % (host, port), flush=True)
     serve(app, host=host, port=port, threads=threads, channel_timeout=120)

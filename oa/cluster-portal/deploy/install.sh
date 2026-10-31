@@ -2,7 +2,7 @@
 # cluster-portal 安装脚本 —— 在集群管理/登录节点上以 root 执行
 #
 # 用法:  install.sh <代码目录> [门户端口] [站点目录]
-#   例:  bash install.sh /tmp/cluster-portal-src 8000 /tmp/site-3090
+#   例:  bash install.sh /tmp/cluster-portal-src 80 /tmp/site-3090
 #
 # 【站点目录】可选，内含 site.conf（及可选的 plans.json）。给了就装到
 #   /etc/cluster-portal/ 下，用于适配不同集群的 ssh 端口 / GPU 型号 / 套餐种子；
@@ -20,7 +20,7 @@
 set -eu
 
 SRC="${1:?用法: install.sh <代码目录> [端口] [站点目录]}"
-PORT="${2:-8000}"
+PORT="${2:-80}"
 SITE_DIR="${3:-}"
 APP_DIR=/opt/cluster-portal
 DATA_DIR=/var/lib/cluster-portal
@@ -114,6 +114,12 @@ else
 fi
 
 echo "==> [5/8] systemd 单元"
+# 80/443 等特权端口：服务以 portal 用户运行，必须显式授予绑定能力，
+# 否则 waitress 在 bind 时会报 Permission denied。
+BIND_CAP=""
+if [ "$PORT" -lt 1024 ]; then
+  BIND_CAP="AmbientCapabilities=CAP_NET_BIND_SERVICE"
+fi
 cat > /etc/systemd/system/$SERVICE.service <<EOF
 [Unit]
 Description=OrbitCluster Cluster Portal (web)
@@ -124,6 +130,7 @@ Wants=network-online.target
 Type=simple
 User=portal
 Group=portal
+$BIND_CAP
 WorkingDirectory=$APP_DIR
 Environment=PORTAL_DATA=$DATA_DIR
 Environment=PORTAL_CTL=$CTL

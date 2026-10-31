@@ -52,7 +52,7 @@ def _site_conf(key, default=""):
     return default
 
 
-BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8000")
+BASE = os.environ.get("E2E_BASE", "http://127.0.0.1")
 MGT = os.environ["E2E_MGT"] if os.environ.get("E2E_MGT") else ""
 PEER = os.environ["E2E_PEER"] if os.environ.get("E2E_PEER") else ""
 SSH_PORT = os.environ.get("E2E_SSH_PORT") or _site_conf("SSH_PORT") or "22"

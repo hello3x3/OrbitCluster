@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # verify-install.sh —— 在管理节点以 root 执行：门户安装自检
-# 用法: bash verify-install.sh [门户端口(默认8000)]
+# 用法: bash verify-install.sh [门户端口(默认80)]
 set -eu
-PORT="${1:-8000}"
+PORT="${1:-80}"
 fail=0
 chk(){ if eval "$2" >/dev/null 2>&1; then echo "  [OK] $1"; else echo "  [FAIL] $1"; fail=1; fi; }
 

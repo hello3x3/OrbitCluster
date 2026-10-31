@@ -4,7 +4,7 @@
 部署在登录/管理节点（本集群 `<ADMIN>`），用浏览器完成：账号开通、资料维护、资源申请、
 SSH 进容器、看日志、停机。
 
-- 运行位置：`http://<ADMIN>:8000`（内网 `http://<ADMIN_IP>:8000`）
+- 运行位置：`http://<ADMIN>:80`（内网 `http://<ADMIN_IP>`）
 - 技术栈：Python 3 + Flask + SQLite(WAL) + waitress；root 特权收敛到白名单助手
   `/usr/local/sbin/portal-ctl`（sudoers 只放行这一个命令给运行账号 `portal`）
 - **多账户**：一套集群可配置多个 Slurm 会计账户（示例站点 `ZJU-CV` 为 `phd/ms/be/ra`，默认 `phd`）。
@@ -53,8 +53,8 @@ cluster-portal/
 # 1) 把本目录拷到 <ADMIN>（示例）：
 scp -r cluster-portal root@<ADMIN>:/tmp/cluster-portal-src
 
-# 2) 安装并启动（端口可改，默认 8000）：
-bash /tmp/cluster-portal-src/deploy/install.sh /tmp/cluster-portal-src 8000
+# 2) 安装并启动（端口可改，默认 80）：
+bash /tmp/cluster-portal-src/deploy/install.sh /tmp/cluster-portal-src 80
 
 # 3) 默认管理员 root 的初始密码（安装时自动生成，仅 root 可读）：
 cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管理员）
@@ -63,7 +63,7 @@ cat /root/.cluster-portal-admin        # 默认管理员账号: root（最高管
 安装脚本做的事：创建运行账号 `portal`、数据目录 `/var/lib/cluster-portal`；
 代码部署到 `/opt/cluster-portal`；建立 venv 装依赖；安装 `/usr/local/sbin/portal-ctl`
 与 sudoers 白名单（`portal ALL=(root) NOPASSWD: /usr/local/sbin/portal-ctl`）；
-生成 systemd 服务 `cluster-portal`（waitress，0.0.0.0:8000，开机自启）。
+生成 systemd 服务 `cluster-portal`（waitress，0.0.0.0:80，开机自启）。
 
 ## 日常使用
 
@@ -143,7 +143,7 @@ EXTRA_MOUNTS=/data:/data:ro;/mnt/nas219:/mnt/nas219:ro
 systemctl status cluster-portal            # 服务状态
 journalctl -u cluster-portal -n 100        # 服务日志
 systemctl restart cluster-portal           # 重启
-curl http://127.0.0.1:8000/login           # 健康检查
+curl http://127.0.0.1/login           # 健康检查
 
 # 重置默认管理员(root)的门户密码（在 <ADMIN> 节点以 OS root 执行）：
 PORTAL_DATA=/var/lib/cluster-portal /opt/cluster-portal/venv/bin/python \
@@ -292,7 +292,7 @@ python3 tests/test_ctl_security.py
 # 真机验收（需 portal 已部署、本机可 ssh root@<ADMIN>）：
 #   默认以 root（默认管理员）执行；不传 E2E_ADMIN_PWD 时自动读取 <ADMIN> 节点
 #   /etc/cluster-portal/users.passwd 中该用户的当前密码
-E2E_BASE=http://<ADMIN>:8000 .venv-test/bin/python tests/e2e_live.py
+E2E_BASE=http://<ADMIN>:80 .venv-test/bin/python tests/e2e_live.py
 # 覆盖：管理员建号(三节点)、登录、资料门槛、密钥/端口与冲突规则、GPU 双实例并发、
 #       ssh 进容器见卡、CPU+GPU 同节点并发、日志、停机、端口复用、停用/启用、集群状态、
 #       镜像分组(公共/个人)、保存镜像(真实 enroot export)、到期自动保存+自动停机

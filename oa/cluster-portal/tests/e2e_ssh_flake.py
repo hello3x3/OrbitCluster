@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from e2e_live import (Portal, ssh_run_retry, make_key, check, OK, log,  # noqa
                       ADMIN_HOST, ADMIN_USER, SSH_PORT_HOST, NODE_IP)
 
-BASE = os.environ.get("E2E_BASE", "http://<ADMIN_IP>:8000")
+BASE = os.environ.get("E2E_BASE", "http://<ADMIN_IP>")
 ADMIN_PWD = os.environ.get("E2E_ADMIN_PWD", "")
 
 
