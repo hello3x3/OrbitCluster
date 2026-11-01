@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orbitcluster-terminal"
+version = "0.1.0"
+description = "OrbitCluster user terminal: TUI and scriptable CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27,<1", "textual>=1,<7"]
+
+[project.scripts]
+orbit = "orbitcluster.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
