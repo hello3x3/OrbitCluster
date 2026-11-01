@@ -428,6 +428,30 @@ portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写�
 - 1 卡与 2 卡作业自动提交，命令均带 `--prefer=light`，两个作业都落在 **3090-03**；
 - 随后取消，队列为空。
 
+### 2.23 NAS 只读挂载与容器只读透传
+
+**需求**：七条 NAS 共享先只读挂载，容器内也只读。
+
+**实现**：
+
+- 四个节点 `/etc/fstab` 增加七条 NFS 挂载，统一：
+  `ro,nfsvers=3,hard,proto=tcp,noatime,nofail,_netdev`；
+- NAS 实测不支持 NFSv4.2（`Protocol not supported`），必须用 NFSv3；
+- `/etc/cluster-portal/site.conf` 增加七条 `EXTRA_MOUNTS=/mnt/nas/...:ro`；
+- `10.71.106.219` 的导出 ACL 未包含 3090-02：
+  - 3090-00/01/03 直连；
+  - 3090-02 通过 3090-00 的只读 re-export 挂载；
+  - 已在 3090-00 `/etc/exports` 增加 `/mnt/nas/datasets4` 只读导出。
+
+**真机验证**：
+
+- 四节点各 7 个 `/mnt/nas/*` 挂载，全部 `ro`；
+- root 在 `/mnt/nas/share` 写文件返回 `Read-only file system`；
+- 门户 CPU 作业提交命令的 `--container-mounts` 中七个 NAS 路径全部带 `:ro`；
+- 测试作业已取消，队列为空。
+
+> 若 NAS 管理员把 `10.130.136.182` 加入 `datasets4` 的导出允许列表，可把 3090-02 改为直连。
+
 ## 3. 最终验收
 
 ### Slurm
