@@ -249,48 +249,6 @@
     });
   }
 
-  /* ---------- 个人资料：端口实时校验（历史功能，门户已改为平台自动分配） ---------- */
-  function wireProfilePorts() {
-    const dataEl = $("#profile-data");
-    const input = $("#port-num");
-    const btn = $("#btn-port-add");
-    const hint = $("#port-hint");
-    if (!dataEl || !input || !btn || !hint) return;
-    let data = { common_ports: [], mine: [], claimed: [] };
-    try { data = JSON.parse(dataEl.textContent); } catch (e) { /* noop */ }
-    const common = new Set(data.common_ports || []);
-    const mine = new Set(data.mine || []);
-    const claimed = new Set(data.claimed || []);
-    const MIN = 10000, MAX = 65535;
-
-    function validate() {
-      const raw = input.value.trim();
-      const reasons = [];
-      if (raw === "") reasons.push("请输入端口号");
-      else {
-        const n = Number(raw);
-        if (!Number.isInteger(n)) reasons.push("端口必须是整数");
-        else {
-          if (n < MIN) reasons.push("端口必须 ≥ " + MIN + "（" + MIN + " 以下多为系统/常用端口）");
-          if (n > MAX) reasons.push("端口不能超过 " + MAX);
-          if (n >= MIN && n <= MAX) {
-            if (common.has(n)) reasons.push("端口 " + n + " 属于常用/保留端口，不能申请");
-            if (mine.has(n)) reasons.push("端口 " + n + " 已在你的端口池中");
-            else if (claimed.has(n)) reasons.push("端口 " + n + " 已被其他用户申请");
-          }
-        }
-      }
-      const valid = reasons.length === 0;
-      hint.hidden = valid;
-      hint.textContent = reasons.join("；");
-      btn.disabled = !valid;
-      return valid;
-    }
-    input.addEventListener("input", validate);
-    input.addEventListener("change", validate);
-    validate(); // 初始为空 → 禁用按钮
-  }
-
   /* ---------- 我的资源页 ---------- */
   function rowHtml(i) {
     const terminal = !ACTIVE_STATES.includes(String(i.state || ""));

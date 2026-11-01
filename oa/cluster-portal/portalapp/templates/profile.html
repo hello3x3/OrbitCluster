@@ -5,15 +5,12 @@
   <h1>个人资料</h1>
   {% if not profile_ok %}
   <div class="alert alert-warn">
-    ⚠️ 你还需要：<b>至少 1 个 SSH 公钥</b> 和 <b>至少 1 个端口</b> 才能申请资源。
-    完善下方两项即可开始使用。
+    ⚠️ 你还需要：<b>至少 1 个 SSH 公钥</b> 才能申请资源。端口由平台自动分配。
   </div>
   {% endif %}
 </div>
 
 <div id="toast" class="toast" hidden></div>
-
-<script type="application/json" id="profile-data">{{ profile_payload | safe }}</script>
 
 <div class="grid-2">
   <section class="card">
@@ -52,15 +49,10 @@
     {% endif %}
   </section>
 
-  <section class="card">
-    <h2>② SSH 端口</h2>
-    <p class="muted">端口由平台在提交资源时自动分配（10000-65535 的空闲端口），无需手动登记或释放；
-      分配结果会显示在「我的资源」和 SSH 连接命令里。</p>
-  </section>
 </div>
 
 <section class="card">
-  <h2>③ 显示名</h2>
+  <h2>② 显示名</h2>
   <p class="muted">显示名会显示在门户右上角与管理员用户列表里，随时可改。</p>
   <form class="xform" data-url="{{ url_for('profile_name') }}">
     <div class="row">
@@ -74,7 +66,7 @@
 </section>
 
 <section class="card">
-  <h2>④ 修改登录密码</h2>
+  <h2>③ 修改登录密码</h2>
   <form class="xform" data-url="{{ url_for('profile_password') }}">
     <div class="row">
       <label>原密码 <input type="password" name="old" required autocomplete="current-password"></label>
