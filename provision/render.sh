@@ -355,18 +355,18 @@ write_text() {  # write_text <内容> <输出文件>
 
 # 门户首次建库的套餐种子（schema 见 portalapp/db.py::_load_seed_plans）：
 #   name / desc / gpus / gpu_model / cpus / mem_gb / maxtime_h
-# 四卡档 + 2 个 CPU 档 = 20C/28G + 2×8C/16G = 36C/60G，能放进 3090-00（40C/约62.5G）。
+# 四卡档 + 2 个 CPU 档 = 24C/40G + 2×4C/8G = 32C/56G，能放进 3090-00（40C/约62.5G）。
 gen_plans_json() {
   local model="$DEFAULT_GPU_MODEL" maxg="$MAX_GPUS_VAL" out="" sep=""
   _add() { out="${out}${sep}  $1"; sep=$',\n'; }
-  _add '{"name": "CPU 标准", "desc": "纯 CPU：8 核 / 16G，适合编译、数据处理和轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 8, "mem_gb": 16, "maxtime_h": 48}'
+  _add '{"name": "CPU 标准", "desc": "纯 CPU：4 核 / 8G，适合下载数据、配置环境等轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 4, "mem_gb": 8, "maxtime_h": 48}'
   if [ -n "$model" ]; then
     _add "{\"name\": \"GPU 一卡\", \"desc\": \"1×${model} + 8 核 / 16G，单卡训练、推理。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 8, \"mem_gb\": 16, \"maxtime_h\": 48}"
     if [ "${maxg:-0}" -ge 2 ] 2>/dev/null; then
       _add "{\"name\": \"GPU 两卡\", \"desc\": \"2×${model} + 12 核 / 32G，多卡并行、中等规模训练。\", \"gpus\": 2, \"gpu_model\": \"${model}\", \"cpus\": 12, \"mem_gb\": 32, \"maxtime_h\": 48}"
     fi
     if [ "${maxg:-0}" -ge 4 ] 2>/dev/null; then
-      _add "{\"name\": \"GPU 四卡\", \"desc\": \"4×${model} + 20 核 / 28G；可与 2 个 CPU 套餐同机共存。\", \"gpus\": 4, \"gpu_model\": \"${model}\", \"cpus\": 20, \"mem_gb\": 28, \"maxtime_h\": 24}"
+      _add "{\"name\": \"GPU 四卡\", \"desc\": \"4×${model} + 24 核 / 40G；可与 2 个 CPU 套餐同机共存。\", \"gpus\": 4, \"gpu_model\": \"${model}\", \"cpus\": 24, \"mem_gb\": 40, \"maxtime_h\": 24}"
     fi
   fi
   printf '[\n%s\n]\n' "$out"
