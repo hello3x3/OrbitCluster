@@ -360,6 +360,8 @@ def create_app(testing=False):
         return g.db
 
     def get_user_row():
+        if request.blueprint == "terminal_api" and getattr(g, "terminal_bearer_verified", False):
+            return g.terminal_user
         uid = session.get("uid")
         if not uid:
             return None
@@ -417,6 +419,10 @@ def create_app(testing=False):
         return w
 
     def csrf_ok():
+        # Only the terminal Blueprint can establish this verified identity.
+        # Legacy routes still require their original browser CSRF token.
+        if request.blueprint == "terminal_api" and getattr(g, "terminal_bearer_verified", False):
+            return True
         tok = session.get("csrf")
         posted = request.form.get("_csrf") or request.headers.get("X-CSRF-Token") or ""
         return authlib.csrf_ok(tok, posted)
@@ -1050,7 +1056,8 @@ def create_app(testing=False):
         get_db().user_set_password(u["id"], authlib.hash_password(new))
         # 改密即吊销其它会话：其它浏览器/被偷走的 Cookie 立刻失效，当前会话重新取 epoch
         get_db().user_bump_session_epoch(u["id"])
-        session["epoch"] = int(get_db().user_by_id(u["id"])["session_epoch"] or 0)
+        if request.blueprint != "terminal_api":
+            session["epoch"] = int(get_db().user_by_id(u["id"])["session_epoch"] or 0)
         try:
             pwfile.upsert(u["username"], new)   # 同步明文到 /etc/cluster-portal/users.passwd
         except Exception:
@@ -1320,9 +1327,10 @@ def create_app(testing=False):
                         walltime, node or "自动调度",
                         ("，账户 %s" % account) if account else ""))
         where = "自动调度" if not node else node
-        flash("资源已提交：作业 #%d（%s），端口 %d @ %s%s"
-              % (job_id, task_name, port, where,
-                 ("，账户 %s" % account) if account else ""), "ok")
+        if request.blueprint != "terminal_api":
+            flash("资源已提交：作业 #%d（%s），端口 %d @ %s%s"
+                  % (job_id, task_name, port, where,
+                     ("，账户 %s" % account) if account else ""), "ok")
         return _json_ok("ok", {"instance_id": iid, "job_id": job_id})
 
     @app.route("/api/plans")
@@ -2744,7 +2752,38 @@ def create_app(testing=False):
         init_terminal_schema(db)
         db.close()
     from .terminal_api import register_terminal_api
-    register_terminal_api(app, get_db)
+
+    def terminal_profile():
+        u = get_user_row()
+        db = get_db()
+        _sync_os_keys(db, u)
+        return {"username": u["username"], "display_name": u["display_name"],
+                "can_apply": can_apply(u), "os_ok": _os_ok(u),
+                "keys": [dict(k) for k in db.keys_for(u["id"])]}
+
+    def terminal_accounts():
+        u = get_user_row()
+        accounts = _user_accounts(u)
+        return {"accounts": accounts, "default": _default_account(u, accounts)}
+
+    def terminal_instance(iid):
+        u = get_user_row()
+        db = get_db()
+        row = db.instance_by_id(iid)
+        if row is None or row["user_id"] != u["id"]:
+            abort(404)
+        return enrich_instance(_reconcile_instance(db, row, u))
+
+    register_terminal_api(app, get_db, {
+        "instances": lambda: reconcile_user_instances(get_user_row()),
+        "instance": terminal_instance,
+        "plans": lambda: [dict(p) for p in get_db().plans_enabled()],
+        "images": lambda: {"public": _public_image_rows(), "mine": _my_images(get_user_row())},
+        "nodes": lambda: app.node_cache.get(),
+        "quota": lambda: _quota_ctx(get_user_row()),
+        "profile": terminal_profile,
+        "accounts": terminal_accounts,
+    })
     from . import pwfile
     pwfile.start(DB_PATH)  # 密码文件监听（PORTAL_PASSWD_SYNC=0 可关闭）
     if not EXPIRY_DISABLED:

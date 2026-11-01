@@ -45,6 +45,15 @@ IMAGES_MOUNT=@@IMAGES_MOUNT@@
 # 分区名。预留：当前代码按 sinfo 自动探测，填了也不改调度行为。
 PARTITION=@@PARTITION@@
 
+# 终端独立令牌：从签发起固定有效，不自动续期；不改变网页 Cookie 策略。
+TERMINAL_TOKEN_DAYS=7
+TERMINAL_REQUIRE_HTTPS=1
+TERMINAL_LOGIN_MAX_ATTEMPTS=5
+TERMINAL_LOGIN_IP_MAX_ATTEMPTS=50
+TERMINAL_LOGIN_WINDOW_S=300
+# HTTPS 反代的明确源 IP；默认不信任转发头。与 Caddy 同机时可设 127.0.0.1。
+TRUSTED_PROXY=
+
 # 1/2 卡临时调试作业的软偏好：自动调度时优先尝试带该 Slurm feature 的节点；
 # 节点忙/不可用时仍会自动回退到其它 GPU 节点。需在 Slurm 给目标节点配 Features。
 # 例：GPU_LIGHT_FEATURE=light（目标节点 3090-03）

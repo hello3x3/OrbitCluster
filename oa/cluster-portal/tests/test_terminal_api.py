@@ -26,6 +26,8 @@ def portal(tmp_path, monkeypatch):
     monkeypatch.setitem(siteconf.CONF, "TERMINAL_TOKEN_DAYS", "7")
     monkeypatch.setitem(siteconf.CONF, "TERMINAL_REQUIRE_HTTPS", "1")
     monkeypatch.setitem(siteconf.CONF, "TERMINAL_LOGIN_MAX_ATTEMPTS", "5")
+    monkeypatch.setattr(fake.ctlmod, "ssh_ready", lambda user, jobid: {"ok": True, "ready": True})
+    appmod._start_state_cache.clear()
     app = appmod.create_app(testing=True)
     app.config["TESTING"] = True
     db = DB(appmod.DB_PATH)
@@ -159,3 +161,92 @@ def test_browser_csrf_still_required(portal):
     r = c.post("/profile/name", data={"display_name": "Changed"})
     assert not r.get_json()["ok"]
     assert portal.config["PERMANENT_SESSION_LIFETIME"].total_seconds() == 12 * 3600
+
+
+def create_instance(portal, token, name="experiment"):
+    plans = call(portal, "GET", "/plans", token).get_json()["data"]
+    image = call(portal, "GET", "/images", token).get_json()["data"]["public"][0]["path"]
+    r = call(portal, "POST", "/instances", token, data={"task_name": name,
+        "plan_id": plans[0]["id"], "image": image, "hours": 1, "account": "lab"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert "Set-Cookie" not in r.headers
+    return r.get_json()["data"]["instance_id"]
+
+
+def test_instance_lifecycle_reuses_existing_rules(portal):
+    token = login(portal).get_json()["data"]["token"]
+    iid = create_instance(portal, token)
+    rows = call(portal, "GET", "/instances", token).get_json()["data"]
+    assert rows[0]["id"] == iid and rows[0]["state"] == "RUNNING"
+    assert "cmd" not in rows[0]
+    detail = call(portal, "GET", f"/instances/{iid}", token).get_json()["data"]
+    assert detail["id"] == iid
+    connection = call(portal, "GET", f"/instances/{iid}/connection", token).get_json()["data"]
+    assert connection["ready"] is True
+    assert connection["argv"][:2] == ["ssh", "-p"]
+    assert call(portal, "GET", f"/instances/{iid}/log", token).get_json()["data"]["events"]
+    assert call(portal, "POST", f"/instances/{iid}/save-image", token,
+                data={"name": "saved_env", "force": "1"}).get_json()["ok"]
+    assert call(portal, "POST", f"/instances/{iid}/delete", token).status_code == 400
+    assert call(portal, "POST", f"/instances/{iid}/stop", token).get_json()["ok"]
+    assert call(portal, "POST", f"/instances/{iid}/restart", token).get_json()["ok"]
+    assert call(portal, "POST", f"/instances/{iid}/stop", token).get_json()["ok"]
+    assert call(portal, "POST", f"/instances/{iid}/delete", token).get_json()["ok"]
+
+
+def test_terminal_ownership_and_json_errors(portal):
+    alice = login(portal).get_json()["data"]["token"]
+    bob = login(portal, "bob").get_json()["data"]["token"]
+    iid = create_instance(portal, alice)
+    for method, path in [("GET", f"/instances/{iid}"), ("GET", f"/instances/{iid}/log"),
+                         ("POST", f"/instances/{iid}/stop"), ("POST", f"/instances/{iid}/delete")]:
+        response = call(portal, method, path, bob)
+        assert response.status_code in (400, 404)
+        assert response.is_json and not response.get_json()["ok"]
+    assert call(portal, "GET", "/instances", bob).get_json()["data"] == []
+    assert call(portal, "GET", "/admin/users", alice).status_code == 404
+
+
+def test_profile_keys_accounts_and_quota(portal):
+    token = login(portal).get_json()["data"]["token"]
+    p = call(portal, "GET", "/profile", token).get_json()["data"]
+    assert p["username"] == "alice" and p["keys"]
+    assert "passwd" not in p
+    r = call(portal, "POST", "/profile/name", token, data={"display_name": "Researcher"})
+    assert r.get_json()["ok"] and "Set-Cookie" not in r.headers
+    key = "ssh-ed25519 AAAA" + "B" * 60 + " pytest"
+    assert call(portal, "POST", "/profile/keys", token, data={"pubkey": key}).get_json()["ok"]
+    keys = call(portal, "GET", "/profile", token).get_json()["data"]["keys"]
+    kid = next(k["id"] for k in keys if k["pubkey"] == key)
+    assert call(portal, "POST", f"/profile/keys/{kid}/delete", token).get_json()["ok"]
+    assert call(portal, "GET", "/accounts", token).get_json()["data"]["default"] == "lab"
+    assert call(portal, "GET", "/quota", token).get_json()["data"]["disk"]
+    assert call(portal, "GET", "/nodes", token).get_json()["data"]["nodes"]
+
+
+def test_image_operations_keep_busy_guards(portal):
+    token = login(portal).get_json()["data"]["token"]
+    iid = create_instance(portal, token)
+    call(portal, "GET", "/instances", token)
+    assert call(portal, "POST", f"/instances/{iid}/save-image", token,
+                data={"name": "personal", "force": "1"}).get_json()["ok"]
+    assert call(portal, "POST", "/images/personal/comment", token, data={"note": "My image"}).get_json()["ok"]
+    assert call(portal, "POST", "/images/personal/rename", token, data={"new_name": "renamed"}).get_json()["ok"]
+    assert call(portal, "POST", "/images/renamed/delete", token).get_json()["ok"]
+
+
+def test_terminal_password_change_no_browser_session(portal):
+    token = login(portal).get_json()["data"]["token"]
+    r = call(portal, "POST", "/profile/password", token,
+             data={"old": "TestPass123", "new": "ChangedPass123", "new2": "ChangedPass123"})
+    assert r.get_json()["ok"] and "Set-Cookie" not in r.headers
+    assert call(portal, "GET", "/auth/me", token).status_code == 401
+
+
+def test_stale_password_snapshot_cannot_issue_token(portal):
+    from portalapp.terminal_auth import issue
+    db = DB(appmod.DB_PATH)
+    old = db.user_by_name("alice")
+    db.user_set_password(old["id"], auth.hash_password("ReplacedPass123"))
+    assert issue(db, old) is None
+    db.close()

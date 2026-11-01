@@ -1,5 +1,6 @@
 """Terminal API. Browser Cookies are neither accepted nor issued here."""
 from functools import wraps
+import shlex
 
 from flask import Blueprint, current_app, g, jsonify, request
 from werkzeug.exceptions import HTTPException
@@ -38,9 +39,21 @@ def register_terminal_api(app, get_db, callbacks=None):
         response.headers["Pragma"] = "no-cache"
         return response
 
+    @bp.errorhandler(400)
+    @bp.errorhandler(403)
+    @bp.errorhandler(404)
+    @bp.errorhandler(405)
+    @bp.errorhandler(413)
     @bp.errorhandler(HTTPException)
     def http_error(exc):
         return failure("资源不存在" if exc.code == 404 else "请求无法处理", "http_error", exc.code)
+
+    @bp.errorhandler(Exception)
+    def unexpected_error(exc):
+        if current_app.testing:
+            raise exc
+        current_app.logger.error("Terminal request failed", exc_info=True)
+        return failure("服务器内部错误，请联系管理员", "server_error", 500)
 
     def authenticated(func):
         @wraps(func)
@@ -100,5 +113,77 @@ def register_terminal_api(app, get_db, callbacks=None):
     def logout():
         terminal_auth.revoke(get_db(), g.terminal_raw_token)
         return success(message="当前终端登录已注销")
+
+    if callbacks:
+        # Keep browser and terminal behavior in the same business handlers.
+        # No endpoint name or user identity can be chosen by the caller.
+        legacy_routes = [
+            ("POST", "/instances", "apply_submit"),
+            ("GET", "/instances/<int:iid>/log", "instance_log"),
+            ("POST", "/instances/<int:iid>/stop", "instance_stop"),
+            ("POST", "/instances/<int:iid>/restart", "instance_restart"),
+            ("POST", "/instances/<int:iid>/save-image", "instance_save_image"),
+            ("POST", "/instances/<int:iid>/delete", "instance_delete"),
+            ("POST", "/images/<name>/rename", "image_rename"),
+            ("POST", "/images/<name>/delete", "image_delete"),
+            ("POST", "/images/<name>/comment", "image_comment"),
+            ("POST", "/profile/name", "profile_name"),
+            ("POST", "/profile/password", "profile_password"),
+            ("POST", "/profile/keys", "profile_key_add"),
+            ("POST", "/profile/keys/<int:kid>/delete", "profile_key_del"),
+        ]
+
+        def adapt_legacy(endpoint):
+            def invoke(**kwargs):
+                response = app.make_response(app.view_functions[endpoint](**kwargs))
+                payload = response.get_json(silent=True)
+                if not isinstance(payload, dict):
+                    return failure("服务器响应格式错误", "invalid_response", 502)
+                if payload.get("ok") is False:
+                    result = failure(payload.get("error", "操作失败"))
+                    if payload.get("need_force"):
+                        result = jsonify(ok=False, error=payload["error"],
+                                         code="overwrite_confirmation_required", need_force=True)
+                        result.status_code = 409
+                    return result
+                data = {k: v for k, v in payload.items() if k not in ("ok", "msg")}
+                return success(data, payload.get("msg"))
+            return invoke
+
+        for method, path, endpoint in legacy_routes:
+            bp.add_url_rule(path, endpoint="user_" + endpoint,
+                view_func=authenticated(adapt_legacy(endpoint)), methods=[method])
+
+        def public_instance(row):
+            # Internal sbatch commands and log filesystem paths are not UI data.
+            return {k: v for k, v in row.items() if k not in ("cmd", "log_path", "user_id")}
+
+        def read_adapter(name):
+            def invoke(**kwargs):
+                result = callbacks[name](**kwargs)
+                if name == "instances":
+                    result = [public_instance(row) for row in result]
+                elif name == "instance":
+                    result = public_instance(result)
+                return success(result)
+            return invoke
+
+        for path, name in [("/instances", "instances"), ("/instances/<int:iid>", "instance"),
+                           ("/plans", "plans"), ("/images", "images"), ("/nodes", "nodes"),
+                           ("/quota", "quota"), ("/profile", "profile"), ("/accounts", "accounts")]:
+            bp.add_url_rule(path, endpoint="read_" + name,
+                            view_func=authenticated(read_adapter(name)), methods=["GET"])
+
+        @bp.get("/instances/<int:iid>/connection")
+        @authenticated
+        def connection(iid):
+            row = callbacks["instance"](iid)
+            ready = (row["state"] == "RUNNING" and not row["starting"]
+                     and not row["startup_error"] and bool(row["ssh_ip"]))
+            argv = ["ssh", "-p", str(row["port"]), row["username"] + "@" + row["ssh_ip"]] if ready else []
+            return success({"id": iid, "job_id": row["job_id"], "ready": ready,
+                            "state": row["state"], "state_cn": row["state_cn"],
+                            "argv": argv, "command": shlex.join(argv) if argv else "",
+                            "error": row["startup_error"]})
 
     app.register_blueprint(bp)
