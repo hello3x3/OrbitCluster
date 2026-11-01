@@ -247,10 +247,9 @@
         } catch (e) { toast(e.message || "网络错误", "err"); }
       });
     });
-    wireProfilePorts();
   }
 
-  /* ---------- 个人资料：端口实时校验 ---------- */
+  /* ---------- 个人资料：端口实时校验（历史功能，门户已改为平台自动分配） ---------- */
   function wireProfilePorts() {
     const dataEl = $("#profile-data");
     const input = $("#port-num");
@@ -468,7 +467,7 @@
         const goRestart = await askConfirm({
           title: "重新启动资源", okText: "重新启动",
           text: "确定按原参数重新启动该资源？\n作业 #" + (rec.job_id || id)
-                + " 将重新入队（镜像/套餐资源/端口/时长/任务名不变）。",
+                + " 将重新入队（镜像/套餐资源/时长/任务名不变；SSH 端口由平台重新随机分配）。",
         });
         if (!goRestart) return;
         b.disabled = true;
@@ -566,8 +565,6 @@
     const f = $("#admin-apply-form");
     if (!f) return;
     const tsel = f.querySelector("#target-sel");
-    const aport = f.querySelector("#aport");
-    const aportHint = f.querySelector("#aport-hint");
     const ahours = f.querySelector("#ahours");
     const ahint = f.querySelector("#ahours-hint");
     const task = f.querySelector("#atask"), th = f.querySelector("#atask-hint");
@@ -576,7 +573,6 @@
     const acctHint = f.querySelector("#account-hint");
     const btn = f.querySelector("#btn-admin-submit");
     let targets = [];
-    let portReady = false;
     let imgReady = false;
     let accountReady = false;
     function overInfoAdmin() {
@@ -588,14 +584,14 @@
       } else ahint.hidden = true;
     }
     function upd() {
-      btn.disabled = !(portReady && imgReady && accountReady && checkTask(task, th));
+      btn.disabled = !(imgReady && accountReady && checkTask(task, th));
     }
     async function loadTargets() {
       try {
         targets = await get("/api/apply-targets");
         tsel.innerHTML = '<option value="">请选择用户…</option>' + targets.map(t =>
           `<option value="${t.id}">${esc(t.username)}${t.display_name ? "（" + esc(t.display_name) + "）" : ""}` +
-          `【密钥 ${t.keys} · 端口 ${t.ports.length}】</option>`).join("");
+          `【密钥 ${t.keys}】</option>`).join("");
         if (targets.length === 0) {
           tsel.innerHTML = '<option value="">（暂无可代申请的用户）</option>';
         }
@@ -676,28 +672,11 @@
       }
       upd();
     }
-    function refreshPorts() {
-      const uid = parseInt(tsel.value || "0", 10);
-      const t = targets.find(x => x.id === uid);
-      aport.innerHTML = "";
-      if (!t) {
-        aportHint.hidden = false; aportHint.textContent = "先选择用户，使用该用户登记（且未被占用）的端口";
-        portReady = false;
-      } else if (t.ports.length === 0) {
-        aportHint.hidden = false; aportHint.textContent = "该用户端口池为空，需先在门户登记端口";
-        portReady = false;
-      } else {
-        aportHint.hidden = true;
-        aport.innerHTML = t.ports.map(p =>
-          `<option value="${p.port}" ${p.busy ? "disabled" : ""}>${p.port}${p.busy ? "（使用中）" : ""}</option>`).join("");
-        portReady = t.ports.some(p => !p.busy);
-      }
+    function onTargetChange() {
       loadImages();
       loadAccounts();
-      upd();
     }
-    tsel.addEventListener("change", refreshPorts);
-    aport.addEventListener("change", upd);
+    tsel.addEventListener("change", onTargetChange);
     planSel.addEventListener("change", () => { overInfoAdmin(); upd(); });
     ahours.addEventListener("input", overInfoAdmin);
     task.addEventListener("input", upd);

@@ -120,25 +120,11 @@
     </select>
   </section>
 
-  <section class="step">
-    <h2 class="step-title"><span class="step-no">7</span>SSH 端口
-      <span class="muted small">（从你的端口池选择；使用中的端口不可选）</span></h2>
-    {% if my_ports %}
-    <select name="port" required aria-label="SSH 端口">
-      {% for p in my_ports %}
-      <option value="{{ p.port }}" {% if p.port in busy_ports %}disabled{% endif %}>
-        {{ p.port }}{% if p.port in busy_ports %}（正在使用，需先停机）{% endif %}
-      </option>
-      {% endfor %}
-    </select>
-    {% else %}
-    <div class="alert alert-warn">端口池为空：请先在「个人资料」登记端口（10000-65535）。</div>
-    {% endif %}
-  </section>
+  <p class="field-note">SSH 端口由平台自动分配一个未使用的高位端口（≥10000），提交成功后可在「我的资源」查看。</p>
 
   <div class="form-actions">
     <button class="btn btn-primary btn-lg" type="submit" id="btn-submit"
-            {% if not image_groups.public and not image_groups.mine or not my_ports or not plans %}disabled{% endif %}>提交申请</button>
+            {% if not image_groups.public and not image_groups.mine or not plans %}disabled{% endif %}>提交申请</button>
   </div>
 </form>
 {% endblock %}

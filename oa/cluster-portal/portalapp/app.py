@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 from flask import (Flask, abort, flash, g, jsonify, redirect,
                    render_template, request, session, url_for)
@@ -487,8 +488,9 @@ def create_app(testing=False):
 
     # ---- 工具函数 ----
     def profile_complete(u):
+        """申请资源只要求 SSH 公钥；端口由平台自动分配，不再要求用户维护。"""
         db = get_db()
-        return db.key_count(u["id"]) >= 1 and db.port_count(u["id"]) >= 1
+        return db.key_count(u["id"]) >= 1
 
     def _os_ok(u):
         """该门户账号是否**可以由门户托管**（建号/密钥/作业）。
@@ -647,6 +649,7 @@ def create_app(testing=False):
         d["last_save"] = d["last_save"] or ""
         d["auto_saved_path"] = d["auto_saved_path"] or ""
         d["started_at"] = d["started_at"] or ""
+        d["deadline_cn"] = _deadline_cn(inst)
         d["can_save"] = d["state"] == "RUNNING" and not d["saving_now"]
         return d
 
@@ -1196,7 +1199,7 @@ def create_app(testing=False):
                   "（如有 OS 账号的 root 可申请；纯平台管理员需用「代申请」帮用户提交）", "error")
             return redirect(url_for("my_instances"))
         if not profile_complete(u):
-            flash("请先完善个人资料（至少添加 1 个 SSH 密钥和 1 个端口）才能申请资源", "error")
+            flash("请先完善个人资料（至少添加 1 个 SSH 密钥）才能申请资源", "error")
             return redirect(url_for("profile"))
         db = get_db()
         ncache = app.node_cache.get()
@@ -1204,14 +1207,10 @@ def create_app(testing=False):
         groups = image_groups(u["username"])
         if _image_total(groups) == 0:
             flash("未发现可申请镜像：%s 下没有 .sqsh 文件，请联系管理员" % IMAGES_DIR, "error")
-        busy = {p["port"] for p in db.ports_for(u["id"])
-                if db.user_active_by_port(u["id"], p["port"])}
         accounts = _user_accounts(u)
         return render_template("apply.html",
                                image_groups=groups,
                                plans=db.plans_enabled(),
-                               my_ports=db.ports_for(u["id"]),
-                               busy_ports=sorted(busy),
                                nodes=nodes,
                                default_hours=12,
                                accounts=accounts,
@@ -1228,12 +1227,11 @@ def create_app(testing=False):
         if not _os_ok(u):
             return _json_err("该门户账号在集群上没有同名 OS 账号，不能申请资源")
         if not profile_complete(u):
-            return _json_err("个人资料未完善：需至少 1 个 SSH 密钥和 1 个端口")
+            return _json_err("个人资料未完善：需至少 1 个 SSH 密钥")
         if _image_total(image_groups(u["username"])) == 0:
             return _json_err("%s 下没有可用 .sqsh 镜像" % IMAGES_DIR)
         try:
             plan_id = int(request.form.get("plan_id") or 0)
-            port = int(request.form.get("port") or 0)
             hours = int(request.form.get("hours") or 0)
         except ValueError:
             return _json_err("参数格式错误")
@@ -1256,16 +1254,6 @@ def create_app(testing=False):
             return _json_err("套餐不存在或已停用")
         gpus, cpus, mem_gb = plan["gpus"], plan["cpus"], plan["mem_gb"]
         maxtime_h = plan["maxtime_h"]
-        my_port = db.port_by_number(port)
-        if not my_port or my_port["user_id"] != u["id"]:
-            return _json_err("请从自己的端口池选择端口")
-        if db.user_active_by_port(u["id"], port):
-            return _json_err("端口 %d 正在被你的某个资源占用（排队/运行中），"
-                             "请先停机或改用其它端口" % port)
-
-        _cd = _port_cooldown_msg(u["id"], port)
-        if _cd:
-            return _json_err(_cd)
         if not (1 <= hours <= maxtime_h):
             return _json_err("时长最多 %d 小时（套餐「%s」上限 maxtime=%d）。"
                              "如需更长，请找平台管理员协助申请" % (maxtime_h, plan["name"], maxtime_h))
@@ -1297,6 +1285,11 @@ def create_app(testing=False):
             return _json_err("你所属的计费账户均已过期或停用，暂无可提交账户，请联系管理员")
         if not account:
             account = _default_account(u, accts)
+        # 端口由平台随机分配（不要求用户维护端口池）。分配失败/提交失败都要释放 lease。
+        try:
+            port, port_lease = db.alloc_port(u["id"], PORT_COOLDOWN_S)
+        except Exception as e:
+            return _json_err("自动分配 SSH 端口失败：%s" % e)
         spec = {"user": u["username"], "node": node, "image": image,
                 "gpus": gpus, "cpus": cpus, "mem_gb": mem_gb,
                 "walltime": submit_wt, "port": port, "job_name": job_name}
@@ -1305,6 +1298,7 @@ def create_app(testing=False):
         try:
             res = ctl.submit(spec)
         except ctl.CtlError as e:
+            db.del_port(u["id"], port_lease)
             return _json_err("提交失败：%s" % e)
         job_id = res["job_id"]
         cmd = res.get("command") or ""
@@ -1315,6 +1309,7 @@ def create_app(testing=False):
         except sqlite3.IntegrityError as e:
             # 兜底：并发提交同一任务名/端口时由唯一索引拦下，回滚作业避免孤儿作业
             note = rollback_submit(u["username"], job_id)
+            db.del_port(u["id"], port_lease)
             if "task_name" in str(e):
                 return _json_err("任务名称「%s」刚被另一个请求占用，请换名后重试；%s"
                                  % (task_name, note))
@@ -1451,18 +1446,7 @@ def create_app(testing=False):
             if account not in [a["name"] for a in accts]:
                 return _json_err("原资源使用的账户「%s」已不在你的账户列表中"
                                  "（可能被移除或已过期），无法重新启动；请重新申请" % account)
-        # 端口仍须属于该用户端口池（重启=继续占用同一端口）
-        port = inst["port"]
-        my_port = db.port_by_number(port)
-        if not my_port or my_port["user_id"] != u["id"]:
-            return _json_err("端口 %d 已不在你的端口池中（可能已删除）；"
-                             "请先删除本条记录或在个人资料重新登记该端口" % port)
-        if db.user_active_by_port(u["id"], port):
-            return _json_err("端口 %d 已被其它资源占用（排队/运行中），请先处理后再重启" % port)
-
-        _cd = _port_cooldown_msg(u["id"], port)
-        if _cd:
-            return _json_err(_cd)
+        # 重启也由平台重新随机分配端口；不复用旧端口（旧端口可能已释放/被其它任务占用）
         # 用申请时选定的节点（req_node，自动调度=''），忽略运行后被回填的实际节点
         node = inst["req_node"] or ""
         ncache = app.node_cache.get()
@@ -1478,6 +1462,10 @@ def create_app(testing=False):
             hours = 24
         if not (1 <= hours <= 720):
             return _json_err("原任务时长非法（%s）" % walltime)
+        try:
+            port, port_lease = db.alloc_port(u["id"], PORT_COOLDOWN_S)
+        except Exception as e:
+            return _json_err("自动分配 SSH 端口失败：%s" % e)
         spec = {"user": u["username"], "node": node, "image": image,
                 "gpus": inst["gpus"], "cpus": inst["cpus"], "mem_gb": inst["mem_gb"],
                 "walltime": _walltime_submit(hours), "port": port,
@@ -1487,17 +1475,19 @@ def create_app(testing=False):
         try:
             res = ctl.submit(spec)
         except ctl.CtlError as e:
+            db.del_port(u["id"], port_lease)
             return _json_err("重新提交失败：%s" % e)
         job_id = res["job_id"]
         db.exec("UPDATE instances SET job_id=?, state='PENDING', slurm_state='PENDING', "
-                "node=?, ssh_ip=?, cmd=?, log_path=?, stopped_at=NULL, "
+                "port=?, node=?, ssh_ip=?, cmd=?, log_path=?, stopped_at=NULL, "
                 "started_at=NULL, auto_saved_at=NULL, auto_saved_path='', "
                 "last_error=NULL, updated_at=? WHERE id=?",
-                (job_id, node, ip, res.get("command") or "", res["log_path"], _now(), iid))
-        db.add_event(iid, "start", "已重新启动：新作业 #%d，沿用端口 %d%s"
+                (job_id, port, node, ip, res.get("command") or "", res["log_path"],
+                 _now(), iid))
+        db.add_event(iid, "start", "已重新启动：新作业 #%d，平台重新分配端口 %d%s"
                      % (job_id, port, ("，账户 %s" % account) if account else ""))
         return _json_ok("已重新启动：作业 #%d（%s）" % (job_id, task_name),
-                        {"instance_id": iid, "job_id": job_id})
+                        {"instance_id": iid, "job_id": job_id, "port": port})
 
     @app.route("/instances/<int:iid>/save-image", methods=["POST"])
     @login_required
@@ -1615,19 +1605,25 @@ def create_app(testing=False):
         out.sort(key=lambda r: (r["scope"] != "public", r["owner"], r["name"]))
         return out
 
+    def _public_image_rows():
+        """普通用户可见的公共镜像（不复用 root 的“所有人的镜像”视图）。"""
+        return sorted([r for r in _all_images() if r["scope"] == "public"],
+                      key=lambda r: r["name"])
+
     def _is_root(u):
         return u["username"] == "root"
 
     @app.route("/images")
     @login_required
     def images_page():
-        """我的镜像：改名 / 删除 / 注释；root 还能管理公共镜像与所有人的镜像。"""
+        """我的镜像：公共镜像和个人镜像分区展示；个人镜像可改名/删除/注释。"""
         u = get_user_row()
         if _is_root(u):
             return render_template("images.html", images=_all_images(), images_dir=IMAGES_DIR,
                                    is_root=True, user_count=len(get_db().users_all()))
-        return render_template("images.html", images=_my_images(u), images_dir=IMAGES_DIR,
-                               is_root=False)
+        return render_template("images.html", images=_my_images(u),
+                               public_images=_public_image_rows(),
+                               images_dir=IMAGES_DIR, is_root=False)
 
     def _image_guard(name):
         """改名/删除/注释共用的前置校验（自己的镜像）。返回 (u, (name, row), err)。"""
@@ -2257,7 +2253,6 @@ def create_app(testing=False):
         try:
             user_id = int(request.form.get("user_id") or 0)
             plan_id = int(request.form.get("plan_id") or 0)
-            port = int(request.form.get("port") or 0)
             hours = int(request.form.get("hours") or 0)
         except ValueError:
             return _json_err("参数格式错误")
@@ -2280,15 +2275,6 @@ def create_app(testing=False):
         plan = db.plan_by_id(plan_id)
         if not plan or not plan["enabled"]:
             return _json_err("套餐不存在或已停用")
-        my_port = db.port_by_number(port)
-        if not my_port or my_port["user_id"] != target["id"]:
-            return _json_err("端口必须是该用户端口池里的（请选帮谁申请后再选其端口）")
-        if db.user_active_by_port(target["id"], port):
-            return _json_err("该用户的端口 %d 正在使用中，请换端口" % port)
-
-        _cd = _port_cooldown_msg(target["id"], port)
-        if _cd:
-            return _json_err("（代 %s 申请）%s" % (target["username"], _cd))
         if not (1 <= hours <= 720):
             return _json_err("时长须在 1-720 小时之间")
         nodeinfo = app.node_cache.get().get("nodes", [])
@@ -2314,6 +2300,11 @@ def create_app(testing=False):
             return _json_err("该用户的计费账户均已过期或停用，暂无可提交账户，请先续期或调整成员")
         if not account:
             account = _default_account(target, accts)
+        # 平台自动给目标用户分配端口；管理员代申请也不再要求目标用户提前登记端口
+        try:
+            port, port_lease = db.alloc_port(target["id"], PORT_COOLDOWN_S)
+        except Exception as e:
+            return _json_err("自动分配 SSH 端口失败：%s" % e)
         spec = {"user": target["username"], "node": node, "image": image,
                 "gpus": plan["gpus"], "cpus": plan["cpus"], "mem_gb": plan["mem_gb"],
                 "walltime": _walltime_submit(hours), "port": port,
@@ -2323,6 +2314,7 @@ def create_app(testing=False):
         try:
             res = ctl.submit(spec)   # 底层：root 经 runuser(=sudo -u) 以目标用户身份提交
         except ctl.CtlError as e:
+            db.del_port(target["id"], port_lease)
             return _json_err("提交失败：%s" % e)
         job_id = res["job_id"]
         try:
@@ -2332,6 +2324,7 @@ def create_app(testing=False):
                                   res["log_path"], ip, account=account)
         except sqlite3.IntegrityError as e:
             note = rollback_submit(target["username"], job_id)
+            db.del_port(target["id"], port_lease)
             if "task_name" in str(e):
                 return _json_err("任务名称「%s」刚被另一个请求占用，请换名后重试；%s"
                                  % (task_name, note))
@@ -2890,6 +2883,22 @@ def _inst_end(inst):
     if hours <= 0:
         return None
     return start + datetime.timedelta(hours=hours)
+
+
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _deadline_cn(inst):
+    """实例截止时间，统一显示为上海时间；排队中尚未开始则明确标注。"""
+    end = _inst_end(inst)
+    if end is None:
+        return "未开始"
+    if end.tzinfo is None:
+        # DB 里历史数据都是本机本地时间（站点时区 Asia/Shanghai），按上海时间解释
+        end = end.replace(tzinfo=SHANGHAI_TZ)
+    else:
+        end = end.astimezone(SHANGHAI_TZ)
+    return end.strftime("%Y-%m-%d %H:%M")
 
 
 def expiry_tick(now=None):

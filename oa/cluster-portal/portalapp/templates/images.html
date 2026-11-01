@@ -12,11 +12,36 @@
     <span class="mono">{{ images_dir }}/</span>。正在打包中的镜像不会出现在这里（导出先写
     <span class="mono">.part</span>，完成才改名）。</p>
   {% else %}
-  <p class="muted small">这里是你从「我的资源」里对<b>运行中</b>容器执行「保存镜像」得到的个人
-    <span class="mono">.sqsh</span>（计入你的存储配额）。可以改<b>注释</b>、<b>重命名</b>或<b>删除</b>；
-    正在打包中的镜像不会出现在这里。公共镜像由管理员维护，不在本页列出。</p>
+  <p class="muted small">本页分两部分展示：<b>公共镜像</b>（管理员维护，所有人只读）和
+    <b>我的镜像</b>（你从「我的资源」里对运行中容器保存的个人 <span class="mono">.sqsh</span>，
+    计入你的存储配额）。个人镜像可以改<b>注释</b>、<b>重命名</b>或<b>删除</b>；
+    正在打包中的镜像不会出现在这里。</p>
   {% endif %}
 </div>
+
+{% if not admin %}
+<div class="card">
+  <h2>公共镜像 <span class="muted small">（{{ public_images|length }} 个，所有人只读）</span></h2>
+  {% if public_images %}
+  <table class="table">
+    <thead><tr><th>名称</th><th>大小</th><th>保存时间</th><th>注释</th></tr></thead>
+    <tbody>
+      {% for m in public_images %}
+      <tr>
+        <td class="mono">{{ m.name }}</td>
+        <td class="mono small">{{ m.size_cn }}</td>
+        <td class="small muted">{{ m.mtime_cn }}</td>
+        <td class="small note-td">{% if m.note %}<span class="note-cell">{{ m.note }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted small">公共镜像由管理员维护；申请资源时可在镜像下拉的「公共镜像」分组选择。</p>
+  {% else %}
+  <p class="muted">暂无公共镜像。</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="card">
   <h2>{{ "全部镜像" if admin else "我的镜像" }}

@@ -729,6 +729,7 @@ def main():
     # 个人资料页应展示完整公钥内容
     r = c.get("/profile")
     assert pub.encode() in r.data, "个人资料页应显示完整公钥内容"
+    assert b'id="port-form"' not in r.data and b'name="port"' not in r.data,         "个人资料页不应再要求用户维护端口"
     r = c.post("/profile/ports/add", headers={"X-CSRF-Token": tok},
                data={"port": "28766"})
     assert r.get_json()["ok"]
@@ -742,6 +743,15 @@ def main():
     # 常用端口被拒
     r = c.post("/profile/ports/add", headers={"X-CSRF-Token": tok}, data={"port": "80"})
     assert not r.get_json()["ok"]
+    # 平台自动分配端口：全局唯一、>=10000，且写入 user_ports lease
+    _dbp = _DB(appmod.DB_PATH)
+    try:
+        _uid = _dbp.user_by_name("alice")["id"]
+        _ap, _lease = _dbp.alloc_port(_uid)
+        assert 10000 <= _ap <= 65535 and _dbp.port_by_number(_ap)["user_id"] == _uid
+        _dbp.del_port(_uid, _lease)
+    finally:
+        _dbp.close()
 
     # 申请页：镜像下拉/套餐/任务名表单
     r = c.get("/apply")
@@ -753,6 +763,7 @@ def main():
     assert 'value=""' in r.text or "自动分配" in r.text              # 节点默认不填
     # 多账户：默认账户 phd 应在下拉里预选（alice 已由 root 加入 phd 并设为默认）
     assert 'name="account"' in r.text and "phd" in r.text, "申请页应展示账户下拉"
+    assert 'name="port"' not in r.text, "申请页不应再要求手选端口"
     tok2 = csrf_of(c, "/my")
 
     # 申请资源（POST）—— 镜像/套餐/任务名；本地 isfile stub
@@ -773,6 +784,9 @@ def main():
                                          "account"}, LAST_SUBMIT_SPEC
         assert not [k for k in LAST_SUBMIT_SPEC if "mount" in k.lower()], LAST_SUBMIT_SPEC
         assert LAST_SUBMIT_SPEC.get("account") == "phd", LAST_SUBMIT_SPEC
+        _auto_port = LAST_SUBMIT_SPEC.get("port")
+        assert isinstance(_auto_port, int) and 10000 <= _auto_port <= 65535, _auto_port
+        assert _auto_port != 28766, "提交请求里的手工 port 不应被采用"
         # 选了不属于自己的账户必须拒绝（不能让门户替用户越权选账户）
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG, "account": "ghost",
@@ -945,26 +959,23 @@ def main():
     r = c.get("/my")
     assert "已停止".encode() in r.data and "重新启动".encode() in r.data \
         and "删除".encode() in r.data, "停机后的资源应出现重新启动/删除操作"
-    # 刚停机不足冷却期：立刻重启必须被拒（旧容器可能还在监听那个端口）
-    r = c.post("/instances/%d/restart" % iid, headers={"X-CSRF-Token": tok2})
-    _j = r.get_json()
-    assert not _j.get("ok") and "刚停机不足" in (_j.get("error") or ""), _j
-    _cd_old = appmod.PORT_COOLDOWN_S
-    appmod.PORT_COOLDOWN_S = 0            # 关掉冷却期，继续测正常重启
-
+    # 重启不再复用旧端口：平台重新随机分配一个 >=10000 的空闲端口
+    _old_port = appmod.DB(appmod.DB_PATH).instance_by_id(iid)["port"]
     orig_isfile_rs = appmod.os.path.isfile
     appmod.os.path.isfile = lambda p: p.startswith("/share/images/") or orig_isfile_rs(p)
     try:
         r = c.post("/instances/%d/restart" % iid, headers={"X-CSRF-Token": tok2})
         j = r.get_json()
         assert j["ok"] and j["job_id"] == 424242, j
+        assert 10000 <= j.get("port", 0) <= 65535 and j["port"] != _old_port, j
+        _new_port = j["port"]
     finally:
         appmod.os.path.isfile = orig_isfile_rs
-        appmod.PORT_COOLDOWN_S = _cd_old
     r = c.get("/api/my/instances")
     row = r.get_json()[0]
     assert row["id"] == iid and row["state"] in ("PENDING", "RUNNING"), \
         "重启应复用同一行并回到活跃状态(假 ctl 会立即 RUNNING)"
+    assert row["port"] == _new_port and row["port"] != _old_port, row
     # 重启后不再显示“重新启动”（活跃态），停机后再删除
     r = c.get("/my")
     assert "重新启动".encode() not in r.data
@@ -1052,7 +1063,8 @@ def main():
     page = c.get("/images")
     assert page.status_code == 200 and "我的镜像".encode() in page.data, page.status_code
     assert "imgmgmt.sqsh".encode() in page.data, "应列出我的个人镜像"
-    assert "cuda12.8.0-devel-ubuntu24.04.sqsh".encode() not in page.data, "本页不该列公共镜像"
+    assert "cuda12.8.0-devel-ubuntu24.04.sqsh".encode() in page.data, "普通用户也应看到公共镜像"
+    assert "公共镜像".encode() in page.data and "我的镜像".encode() in page.data, "应分区展示公共/个人镜像"
     assert "data-img-rename".encode() in page.data and "data-img-delete".encode() in page.data, "应有改名/删除按钮"
 
     def _img_post(act, name, data=None):
@@ -1289,6 +1301,9 @@ def main():
     assert b"16/16" in r.data, "CPU 空闲/总没渲染"
     assert b"23G/31G" in r.data, "内存 空闲/总没渲染（23741/1024≈23G，总量 31933/1024≈31G）"
     assert b"0/1" in r.data, "GPU 空闲/总没渲染（已用 1 / 总 1）"
+    assert "截止时间（上海）".encode() in r.data, "活跃资源应展示上海时间截止时间"
+    assert appmod._deadline_cn({"started_at": "2026-11-01T10:00:00",
+                                "walltime": "04:00:00"}) == "2026-11-01 14:00"
 
     # 管理员页回归：管理员公钥门槛 + 用户列表统计列
     c.get("/logout")

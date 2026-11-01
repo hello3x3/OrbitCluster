@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """portal DB layer (sqlite3, stdlib). 每次请求一个连接（thread-local），teardown 提交关闭。"""
+import datetime
 import json
 import os
+import secrets
 import sqlite3
 import sys
 import threading
@@ -162,6 +164,34 @@ class DB:
         cur = self.exec("INSERT INTO user_ports(user_id, port, label, claimed_at) VALUES(?,?,?,?)",
                         (uid, port, label, _now()))
         return cur.lastrowid
+
+    def alloc_port(self, uid, cooldown=15):
+        """平台自动分配一个全局空闲、>=10000 的 SSH 端口。
+
+        返回 (port, lease_id)。依靠 user_ports.port 的 UNIQUE 索引解决并发：
+        两个请求同时随机到同一端口时，只有一个 INSERT 成功，另一个重试。
+        跳过：保留端口、任何用户已占用的端口、活跃实例端口、刚停机冷却中的端口。
+        """
+        reserved = set(int(x) for x in self.common_ports())
+        cutoff = (datetime.datetime.now()
+                  - datetime.timedelta(seconds=max(0, int(cooldown)))).isoformat(timespec="seconds")
+        active = ",".join("?" * len(ACTIVE_STATES))
+        for _ in range(500):
+            port = secrets.randbelow(PORT_MAX - PORT_MIN + 1) + PORT_MIN
+            if port in reserved or self.is_port_in_use(port):
+                continue
+            if self.q1("SELECT 1 FROM instances WHERE port=? AND state IN (%s)"
+                       % active, (port,) + ACTIVE_STATES):
+                continue
+            if self.q1("SELECT 1 FROM instances WHERE port=? AND stopped_at IS NOT NULL "
+                       "AND stopped_at >= ? LIMIT 1", (port, cutoff)):
+                continue
+            try:
+                pid = self.add_port(uid, port, label="platform-auto")
+                return port, pid
+            except sqlite3.IntegrityError:
+                continue
+        raise RuntimeError("没有可用的空闲端口（10000-65535）")
 
     def del_port(self, uid, pid):
         self.exec("DELETE FROM user_ports WHERE id=? AND user_id=?", (pid, uid))

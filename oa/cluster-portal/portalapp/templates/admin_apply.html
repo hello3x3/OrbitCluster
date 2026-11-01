@@ -94,14 +94,7 @@
     </select>
   </section>
 
-  <section class="step">
-    <h2 class="step-title"><span class="step-no">7</span>SSH 端口
-      <span class="muted small">（所选用户端口池；使用中不可选）</span></h2>
-    <select name="port" id="aport" required>
-      <option value="">先在上方选择用户…</option>
-    </select>
-    <p class="field-hint" id="aport-hint" hidden></p>
-  </section>
+  <p class="field-note">SSH 端口由平台在提交时自动分配（≥10000 的未使用端口），无需手选。</p>
 
   <div class="form-actions">
     <button class="btn btn-primary btn-lg" type="submit" id="btn-admin-submit" disabled>代提交申请</button>
