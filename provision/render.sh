@@ -355,21 +355,18 @@ write_text() {  # write_text <内容> <输出文件>
 
 # 门户首次建库的套餐种子（schema 见 portalapp/db.py::_load_seed_plans）：
 #   name / desc / gpus / gpu_model / cpus / mem_gb / maxtime_h
-# 单卡档固定给三档；节点卡数 ≥2/≥3 时自动追加双卡、三卡档。
+# 四卡档 + 2 个 CPU 档 = 20C/28G + 2×8C/16G = 36C/60G，能放进 3090-00（40C/约62.5G）。
 gen_plans_json() {
   local model="$DEFAULT_GPU_MODEL" maxg="$MAX_GPUS_VAL" out="" sep=""
   _add() { out="${out}${sep}  $1"; sep=$',\n'; }
-  _add '{"name": "基础 CPU", "desc": "纯 CPU 小任务（无 GPU），适合调试/轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 2, "mem_gb": 4, "maxtime_h": 48}'
-  _add '{"name": "均衡 CPU", "desc": "纯 CPU（无 GPU），适合编译/中等任务。", "gpus": 0, "gpu_model": "", "cpus": 4, "mem_gb": 8, "maxtime_h": 48}'
+  _add '{"name": "CPU 标准", "desc": "纯 CPU：8 核 / 16G，适合编译、数据处理和轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 8, "mem_gb": 16, "maxtime_h": 48}'
   if [ -n "$model" ]; then
-    _add "{\"name\": \"GPU 入门\", \"desc\": \"单卡 ${model} + 4 核 8G，训练/推理入门配置。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 4, \"mem_gb\": 8, \"maxtime_h\": 48}"
-    _add "{\"name\": \"GPU 标准\", \"desc\": \"单卡 ${model} + 8 核 16G，日常训练推荐。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 8, \"mem_gb\": 16, \"maxtime_h\": 48}"
-    _add "{\"name\": \"GPU 高配\", \"desc\": \"单卡 ${model} + 16 核 24G，重负载训练。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 16, \"mem_gb\": 24, \"maxtime_h\": 48}"
+    _add "{\"name\": \"GPU 一卡\", \"desc\": \"1×${model} + 8 核 / 16G，单卡训练、推理。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 8, \"mem_gb\": 16, \"maxtime_h\": 48}"
     if [ "${maxg:-0}" -ge 2 ] 2>/dev/null; then
-      _add "{\"name\": \"GPU 双卡\", \"desc\": \"双卡 ${model} + 24 核 96G，多卡并行 / 大模型微调。\", \"gpus\": 2, \"gpu_model\": \"${model}\", \"cpus\": 24, \"mem_gb\": 96, \"maxtime_h\": 48}"
+      _add "{\"name\": \"GPU 两卡\", \"desc\": \"2×${model} + 12 核 / 32G，多卡并行、中等规模训练。\", \"gpus\": 2, \"gpu_model\": \"${model}\", \"cpus\": 12, \"mem_gb\": 32, \"maxtime_h\": 48}"
     fi
-    if [ "${maxg:-0}" -ge 3 ] 2>/dev/null; then
-      _add "{\"name\": \"GPU 三卡\", \"desc\": \"三卡 ${model} + 32 核 112G，单机满卡训练。\", \"gpus\": 3, \"gpu_model\": \"${model}\", \"cpus\": 32, \"mem_gb\": 112, \"maxtime_h\": 24}"
+    if [ "${maxg:-0}" -ge 4 ] 2>/dev/null; then
+      _add "{\"name\": \"GPU 四卡\", \"desc\": \"4×${model} + 20 核 / 28G；可与 2 个 CPU 套餐同机共存。\", \"gpus\": 4, \"gpu_model\": \"${model}\", \"cpus\": 20, \"mem_gb\": 28, \"maxtime_h\": 24}"
     fi
   fi
   printf '[\n%s\n]\n' "$out"

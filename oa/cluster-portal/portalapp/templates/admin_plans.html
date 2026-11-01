@@ -12,7 +12,7 @@
   <form method="post" action="{{ url_for('admin_plan_add') }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     <div class="row">
-      <label>名称 <input name="name" required maxlength="80" placeholder="例如：GPU 标准"></label>
+      <label>名称 <input name="name" required maxlength="80" placeholder="例如：GPU 四卡"></label>
       <label>GPU <select name="gpus" class="plan-gpus"><option value="0">0（纯 CPU）</option>{% for n in range(1, 9) %}<option value="{{ n }}">{{ n }} 卡</option>{% endfor %}</select></label>
       <label>GPU 型号
         <select name="gpu_model">
