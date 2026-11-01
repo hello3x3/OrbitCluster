@@ -66,7 +66,7 @@
 - [x] 释放占用后 **qahigh 先启动**，qalow 没有同时启动；
 - [x] qacap 单用户上限=1，提交 2 卡作业被 QOS/limits 限制。
 
-> 抢占配置已验证（qahigh QoS Preempt 含 acct-qalow），但**没有实际触发一次抢占 kill**；需要的话可再单独做破坏性测试。
+> 抢占已进一步做**真实 kill 测试**：见下方“附加专项测试”。
 
 ### 2.6 管理账户 500 修复验证
 
@@ -89,9 +89,21 @@
 4. **管理账户页 500（已单独修复）**
    - `admin_accounts.html` 权限 600 → portal 读不到；chmod 644 + 重启。
 
+## 3.1 附加专项：抢占 + 账户单用户卡数上限（22/22）
+
+脚本：[review/preempt_cap_test_20261101.py](preempt_cap_test_20261101.py)
+
+- 创建 qalowp（priority=1）、qahighp（priority=10、preempt=1）、qacapp（cap=1）；
+- 低优用户 qalowu 在 3090-03 占满 4 张 GPU（sleep）；
+- 高优用户 qahighu 用 qahighp 提交 4 卡作业；
+- 结果：高优作业 RUNNING，低优作业被抢占为 CANCELLED/PREEMPTED；
+- qacapp 单用户上限=1：
+  - 单作业申请 2 卡被 QOS 限制；
+  - 两个 1 卡作业并发时，第一个 RUNNING，第二个 PENDING，原因 `QOSMaxGRESPerUser`；
+- 测试结束清理，无 qa 用户/账户/作业残留。
+
 ## 4. 本轮未覆盖
 
-- 真正的抢占 kill（只验证了 Preempt 列表配置）；
 - 保存镜像/到期自动保存（保存 9.1G 容器需要较长异步时间）；
 - 监控 §6；
 - 门户 root 密码轮换/密码文件同步；
