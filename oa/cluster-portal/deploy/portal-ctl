@@ -547,6 +547,18 @@ def partition_name():
     return (p.split()[0] if p else "gpu").rstrip("*")
 
 
+def gpu_exclude_nodes():
+    """站点配置里 GPU 已下线的节点：GPU 作业必须排除它们，CPU 作业仍可落到这些节点。"""
+    raw = (os.environ.get("PORTAL_GPU_EXCLUDE_NODES")
+           or SITE.get("GPU_EXCLUDE_NODES") or "")
+    out = []
+    for x in raw.replace(",", " ").split():
+        x = x.strip()
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
 def nodes_ips(names=None):
     """节点名 -> IP（通用实现，不依赖固定节点名单）。
 
@@ -1157,6 +1169,9 @@ def cmd_submit():
         die("gpus/cpus/mem_gb/port 必须是整数")
     if not (0 <= gpus <= 8):
         die("gpus 超出范围 0-8（0=纯 CPU；上限按单节点最多 8 卡）")
+    gpu_off = set(gpu_exclude_nodes())
+    if gpus > 0 and node and node in gpu_off:
+        die("节点 %s 的 GPU 已下线，不能申请 GPU 任务；请换节点，或选择 0 卡的 CPU 套餐" % node)
     if not (1 <= cpus <= 64):
         die("cpus 超出范围 1-64")
     if not (1 <= mem_gb <= 256):
@@ -1255,6 +1270,8 @@ def cmd_submit():
         argv.insert(argv.index("-J"), "-w")
         argv.insert(argv.index("-J"), node)
     if gpus >= 1:
+        if gpu_off:
+            argv.insert(argv.index("-J"), "--exclude=" + ",".join(sorted(gpu_off)))
         argv.insert(argv.index("-J"), "--gres=gpu:%d" % gpus)
     # 安全约束：绝不加 --container-remap-root（默认也不 remap，所以无需 --no-...）。
     # 容器一旦以 root 起来，sshd 就是 root 身份 + enroot 共享宿主机网络，风险太大。
