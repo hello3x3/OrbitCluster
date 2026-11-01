@@ -438,10 +438,11 @@ portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写�
   `ro,nfsvers=3,hard,proto=tcp,noatime,nofail,_netdev`；
 - NAS 实测不支持 NFSv4.2（`Protocol not supported`），必须用 NFSv3；
 - `/etc/cluster-portal/site.conf` 增加七条 `EXTRA_MOUNTS=/mnt/nas/...:ro`；
-- `10.71.106.219` 的导出 ACL 未包含 3090-02：
-  - 3090-00/01/03 直连；
-  - 3090-02 通过 3090-00 的只读 re-export 挂载；
-  - 已在 3090-00 `/etc/exports` 增加 `/mnt/nas/datasets4` 只读导出。
+- `10.71.106.219` 的导出 ACL 原来未包含 3090-02：
+  - 已通过 NAS `10.71.106.220` 的 sudo 修改 `/etc/exports`，给
+    `10.130.136.182` 增加 `ro` 导出；
+  - 四个节点现在全部直连 `10.71.106.219:/volume1/datasets4`；
+  - 3090-00 上临时使用的 re-export 已移除。
 
 **真机验证**：
 
@@ -450,7 +451,8 @@ portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写�
 - 门户 CPU 作业提交命令的 `--container-mounts` 中七个 NAS 路径全部带 `:ro`；
 - 测试作业已取消，队列为空。
 
-> 若 NAS 管理员把 `10.130.136.182` 加入 `datasets4` 的导出允许列表，可把 3090-02 改为直连。
+> 当前 3090-02 已改为直连；NAS 上仅这一条 `.182` 是服务端 `ro`，
+> 其余共享的服务端导出仍可能是 rw，但客户端和容器都是 ro。
 
 ## 3. 最终验收
 
