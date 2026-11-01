@@ -547,6 +547,17 @@ def partition_name():
     return (p.split()[0] if p else "gpu").rstrip("*")
 
 
+def gpu_light_feature():
+    """1/2 卡调试作业优先尝试的 Slurm node feature（软偏好，节点忙时仍可回退）。"""
+    raw = (os.environ.get("PORTAL_GPU_LIGHT_FEATURE")
+           or SITE.get("GPU_LIGHT_FEATURE") or "").strip()
+    if not raw:
+        return ""
+    if not re.match(r"^[A-Za-z0-9_,.-]+$", raw):
+        die("GPU_LIGHT_FEATURE 含非法字符: %s" % raw)
+    return raw
+
+
 def nodes_ips(names=None):
     """节点名 -> IP（通用实现，不依赖固定节点名单）。
 
@@ -1157,6 +1168,7 @@ def cmd_submit():
         die("gpus/cpus/mem_gb/port 必须是整数")
     if not (0 <= gpus <= 8):
         die("gpus 超出范围 0-8（0=纯 CPU；上限按单节点最多 8 卡）")
+    light_feature = gpu_light_feature()
     if not (1 <= cpus <= 64):
         die("cpus 超出范围 1-64")
     if not (1 <= mem_gb <= 256):
@@ -1255,6 +1267,10 @@ def cmd_submit():
         argv.insert(argv.index("-J"), "-w")
         argv.insert(argv.index("-J"), node)
     if gpus >= 1:
+        # 1/2 卡是临时调试：自动调度时优先尝试站点指定的调试节点 feature；
+        # --prefer 是软约束，节点忙/不可用时 Slurm 会回退到其它节点。
+        if not node and light_feature and 1 <= gpus <= 2:
+            argv.insert(argv.index("-J"), "--prefer=" + light_feature)
         argv.insert(argv.index("-J"), "--gres=gpu:%d" % gpus)
     # 安全约束：绝不加 --container-remap-root（默认也不 remap，所以无需 --no-...）。
     # 容器一旦以 root 起来，sshd 就是 root 身份 + enroot 共享宿主机网络，风险太大。

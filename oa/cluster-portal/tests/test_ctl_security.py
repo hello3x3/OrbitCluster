@@ -475,6 +475,19 @@ def main():
     check("账户管理不写账户级 GrpTRES（契约：只按单用户上限）",
           "set GrpTRES" not in src and "grptres=gres" not in src)
 
+    # ---- 1/2 卡临时调试作业的软偏好 ----
+    print("== 7.2) 1/2 卡调试节点软偏好 ==")
+    _old_lf = mod.SITE.get("GPU_LIGHT_FEATURE")
+    mod.SITE["GPU_LIGHT_FEATURE"] = "light"
+    check("读取 GPU_LIGHT_FEATURE", mod.gpu_light_feature() == "light",
+          mod.gpu_light_feature())
+    if _old_lf is None:
+        mod.SITE.pop("GPU_LIGHT_FEATURE", None)
+    else:
+        mod.SITE["GPU_LIGHT_FEATURE"] = _old_lf
+    check("1/2 卡自动提交会加 --prefer",
+          "--prefer=" in src and "gpu_light_feature" in src and "1 <= gpus <= 2" in src)
+
 
     # ---- 安全文件/镜像边界（保存失败不误删旧镜像、软链不跟随）----
     print("== 8) 安全文件/镜像边界 ==")

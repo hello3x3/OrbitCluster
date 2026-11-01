@@ -159,6 +159,8 @@ MGR_NAME="${N_NAME[0]}"
 MGR_IP="${N_IP[0]}"
 CLUSTER_NAME="$(cfg CLUSTER_NAME lab)"
 PARTITION="$(cfg PARTITION gpu)"
+GPU_LIGHT_FEATURE="$(cfg GPU_LIGHT_FEATURE)"
+GPU_LIGHT_NODE="$(cfg GPU_LIGHT_NODE)"
 SSH_PORT="$(cfg SSH_PORT 2180)"
 LAN_CIDR="$(cfg LAN_CIDR)"
 TIMEZONE="$(cfg TIMEZONE Asia/Shanghai)"
@@ -246,14 +248,18 @@ for i in "${!N_NAME[@]}"; do
   if [ "$g" -gt 0 ] 2>/dev/null && [ -n "$m" ]; then
     gres_field=" Gres=gpu:${m}:${g}"
   fi
+  feat_field=""
+  if [ -n "$GPU_LIGHT_NODE" ] && [ -n "$GPU_LIGHT_FEATURE" ] && [ "$n" = "$GPU_LIGHT_NODE" ]; then
+    feat_field=" Features=${GPU_LIGHT_FEATURE}"
+  fi
   sock="${N_SOCK[$i]:-}"; thr="${N_THR[$i]:-}"
   if [ -n "$cpus" ] && [ -n "$mem" ]; then
     [ -n "$sock" ] || sock=1
     [ -n "$thr" ]  || thr=2
     cores=$(( cpus / (sock * thr) ))
-    NODE_LINES+="NodeName=${n} CPUs=${cpus} Boards=1 SocketsPerBoard=${sock} CoresPerSocket=${cores} ThreadsPerCore=${thr} RealMemory=${mem}${gres_field}"$'\n'
+    NODE_LINES+="NodeName=${n} CPUs=${cpus} Boards=1 SocketsPerBoard=${sock} CoresPerSocket=${cores} ThreadsPerCore=${thr} RealMemory=${mem}${gres_field}${feat_field}"$'\n'
   else
-    NODE_LINES+="NodeName=${n} CPUs=@@待实测@@ Boards=1 SocketsPerBoard=@@待实测@@ CoresPerSocket=@@待实测@@ ThreadsPerCore=@@待实测@@ RealMemory=@@待实测@@${gres_field}"$'\n'
+    NODE_LINES+="NodeName=${n} CPUs=@@待实测@@ Boards=1 SocketsPerBoard=@@待实测@@ CoresPerSocket=@@待实测@@ ThreadsPerCore=@@待实测@@ RealMemory=@@待实测@@${gres_field}${feat_field}"$'\n'
     NEED_MEASURE+=" ${n}"
   fi
   EXPORT_CLIENTS+=" ${ip}"
@@ -308,6 +314,7 @@ fi
 declare -A SUBST=()
 SUBST[MGR_NAME]="$MGR_NAME";           SUBST[MGR_IP]="$MGR_IP"
 SUBST[CLUSTER_NAME]="$CLUSTER_NAME";   SUBST[PARTITION]="$PARTITION"
+SUBST[GPU_LIGHT_FEATURE]="$GPU_LIGHT_FEATURE"
 SUBST[SSH_PORT]="$SSH_PORT";           SUBST[LAN_CIDR]="$LAN_CIDR"
 SUBST[TIMEZONE]="$TIMEZONE";           SUBST[USER]="$USER_VAL"
 SUBST[ACCOUNT]="$ACCOUNT";             SUBST[ACCOUNTS]="$ACCOUNTS_STR"
@@ -361,9 +368,9 @@ gen_plans_json() {
   _add() { out="${out}${sep}  $1"; sep=$',\n'; }
   _add '{"name": "CPU 标准", "desc": "纯 CPU：4 核 / 8G，适合下载数据、配置环境等轻量任务。", "gpus": 0, "gpu_model": "", "cpus": 4, "mem_gb": 8, "maxtime_h": 48}'
   if [ -n "$model" ]; then
-    _add "{\"name\": \"GPU 一卡\", \"desc\": \"1×${model} + 8 核 / 16G，单卡训练、推理。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 8, \"mem_gb\": 16, \"maxtime_h\": 48}"
+    _add "{\"name\": \"GPU 一卡\", \"desc\": \"1×${model} + 8 核 / 16G，临时调试、单卡训练。\", \"gpus\": 1, \"gpu_model\": \"${model}\", \"cpus\": 8, \"mem_gb\": 16, \"maxtime_h\": 4}"
     if [ "${maxg:-0}" -ge 2 ] 2>/dev/null; then
-      _add "{\"name\": \"GPU 两卡\", \"desc\": \"2×${model} + 12 核 / 32G，多卡并行、中等规模训练。\", \"gpus\": 2, \"gpu_model\": \"${model}\", \"cpus\": 12, \"mem_gb\": 32, \"maxtime_h\": 48}"
+      _add "{\"name\": \"GPU 两卡\", \"desc\": \"2×${model} + 12 核 / 32G，临时调试、双卡并行。\", \"gpus\": 2, \"gpu_model\": \"${model}\", \"cpus\": 12, \"mem_gb\": 32, \"maxtime_h\": 4}"
     fi
     if [ "${maxg:-0}" -ge 4 ] 2>/dev/null; then
       _add "{\"name\": \"GPU 四卡\", \"desc\": \"4×${model} + 24 核 / 40G；可与 2 个 CPU 套餐同机共存。\", \"gpus\": 4, \"gpu_model\": \"${model}\", \"cpus\": 24, \"mem_gb\": 40, \"maxtime_h\": 24}"

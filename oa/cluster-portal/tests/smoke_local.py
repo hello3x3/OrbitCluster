@@ -746,7 +746,7 @@ def main():
     try:
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG, "account": "phd",
-            "plan_id": "2", "task_name": "训练resnet", "hours": "12",
+            "plan_id": "2", "task_name": "训练resnet", "hours": "4",
             "node": "<GPU01>", "port": "28766"})
         j = r.get_json()
         assert j["ok"], j
@@ -761,12 +761,15 @@ def main():
         # 选了不属于自己的账户必须拒绝（不能让门户替用户越权选账户）
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG, "account": "ghost",
-            "plan_id": "2", "task_name": "越权账户", "hours": "12",
+            "plan_id": "2", "task_name": "越权账户", "hours": "4",
             "node": "<GPU01>", "port": "28767"})
         j_bad = r.get_json()
         assert not j_bad["ok"] and "账户" in j_bad["error"], j_bad
         pl = c.get("/api/plans").get_json()
         assert all("maxtime_h" in x and "gpu_model" in x for x in pl), "套餐应含 gpu_model/maxtime_h"
+        # 1/2 卡是临时调试：最长 4 小时；CPU/四卡仍各自更长
+        assert all(x["maxtime_h"] == 4 for x in pl if x["gpus"] in (1, 2)), pl
+        assert all(x["maxtime_h"] == 48 for x in pl if x["gpus"] == 0), pl
         # 超过套餐 maxtime 被拒并提示需管理员协助
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
@@ -777,26 +780,26 @@ def main():
         # 同一端口（用户级任意节点）再次申请被拒
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
-            "plan_id": "2", "task_name": "另一个任务", "hours": "12",
+            "plan_id": "2", "task_name": "另一个任务", "hours": "4",
             "node": "<GPU02>", "port": "28766"})
         assert not r.get_json()["ok"], "同一端口在使用中应被拒"
         # 任务名为空被拒
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
-            "plan_id": "2", "task_name": "  ", "hours": "12",
+            "plan_id": "2", "task_name": "  ", "hours": "4",
             "node": "<GPU01>", "port": "28767"})
         assert not r.get_json()["ok"] and "任务名称" in r.get_json()["error"]
         # 任务名长度 3-10（与前端 JS、模板、文档同一口径）
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
-            "plan_id": "2", "task_name": "ab", "hours": "12",
+            "plan_id": "2", "task_name": "ab", "hours": "4",
             "node": "<GPU01>", "port": "28767"})
         j = r.get_json()
         assert not j["ok"] and "3-10" in j["error"], j
         # 同用户重名被拒（不区分大小写；停机不释放名称，需删除记录）
         r = c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
             "image": PUBIMG,
-            "plan_id": "2", "task_name": "训练RESNET", "hours": "12",
+            "plan_id": "2", "task_name": "训练RESNET", "hours": "4",
             "node": "<GPU01>", "port": "28767"})
         j = r.get_json()
         assert not j["ok"] and "已被占用" in j["error"], j
@@ -962,7 +965,7 @@ def main():
     # 重新申请两个实例：S1 用公共镜像(手动保存测试)，S2 用 S1 保存出的个人镜像(个人镜像可用性+到期自动保存)
     def apply_img(p_img, task, port):
         return c.post("/apply", headers={"X-CSRF-Token": tok2}, data={
-            "image": p_img, "plan_id": "2", "task_name": task, "hours": "12",
+            "image": p_img, "plan_id": "2", "task_name": task, "hours": "4",
             "node": "<GPU01>", "port": port})
 
     r = apply_img(PUBIMG, "快照测试", 28766)
