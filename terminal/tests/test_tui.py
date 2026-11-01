@@ -145,3 +145,29 @@ def test_expired_auth_returns_to_login(tmp_path):
             assert isinstance(app.screen, LoginScreen)
             assert app.screen.query_one("#password", Input).value == ""
     asyncio.run(scenario())
+
+
+def test_expiry_under_confirmation_unmounts_old_main_before_relogin(tmp_path):
+    async def scenario():
+        app, client = make_app(tmp_path)
+        async with app.run_test(size=(120, 50)) as pilot:
+            await settle(app, pilot)
+            original_main = app.screen
+            await pilot.click("#resource-stop")
+            await pilot.pause()
+            client.expired = True
+            original_main.refresh_active()
+            await settle(app, pilot)
+            assert isinstance(app.screen, LoginScreen)
+            # Textual's is_mounted flag remains true after removal; attachment
+            # and the message loop establish that the old screen is disposed.
+            assert not original_main.is_attached
+            assert not original_main.is_running
+            assert not any(isinstance(screen, MainScreen) for screen in app.screen_stack)
+            client.expired = False
+            app.screen.query_one("#username", Input).value = "alice"
+            app.screen.query_one("#password", Input).value = "secret"
+            await pilot.click("#login")
+            await settle(app, pilot)
+            assert sum(isinstance(screen, MainScreen) for screen in app.screen_stack) == 1
+    asyncio.run(scenario())

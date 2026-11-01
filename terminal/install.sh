@@ -74,6 +74,13 @@ if [ -z "$source_path" ]; then
   case "$repository" in git+*) ;; *) repository="git+$repository" ;; esac
   source_path="$repository@$ref#subdirectory=terminal"
 fi
+# pip treats a bare name such as `terminal` as an index requirement. Resolve
+# existing paths before passing them across the installer/pip boundary.
+if [ -d "$source_path" ]; then
+  source_path=$(cd "$source_path" && pwd -P)
+elif [ -f "$source_path" ]; then
+  source_path="$(cd "$(dirname "$source_path")" && pwd -P)/$(basename "$source_path")"
+fi
 
 mkdir -p "$install_dir" "$bin_dir"
 install_dir=$(cd "$install_dir" && pwd)

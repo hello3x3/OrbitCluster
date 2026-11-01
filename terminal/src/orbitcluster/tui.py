@@ -139,6 +139,7 @@ class MainScreen(Screen):
         self.plans = []
         self._refreshing = False
         self._writing = False
+        self._inactive = False
 
     def compose(self):
         yield Header(show_clock=True)
@@ -211,8 +212,14 @@ class MainScreen(Screen):
         for name, cols in columns.items():
             for label, key in cols:
                 self.query_one("#" + name, DataTable).add_column(label, key=key)
-        self.set_interval(self.app.settings.poll_seconds, self.refresh_active)
+        self._refresh_timer = self.set_interval(self.app.settings.poll_seconds, self.refresh_active)
         self.refresh_active()
+
+    def deactivate(self):
+        """Stop authenticated activity before removing screens or their modals."""
+        self._inactive = True
+        self._refresh_timer.stop()
+        self.app.workers.cancel_node(self)
 
     def notice(self, text, error=False):
         self.app.notify(escape(str(text)), severity="error" if error else "information")
@@ -243,7 +250,7 @@ class MainScreen(Screen):
 
     @work(group="refresh", exclusive=False)
     async def refresh_active(self):
-        if self._refreshing:
+        if self._refreshing or self._inactive:
             return
         self._refreshing = True
         pane = self.query_one("#tabs", TabbedContent).active
@@ -260,7 +267,7 @@ class MainScreen(Screen):
         finally:
             self._refreshing = False
             # A tab can change while its predecessor's request is in flight.
-            if self.is_mounted and self.query_one("#tabs", TabbedContent).active != pane:
+            if self.is_mounted and not self._inactive and self.query_one("#tabs", TabbedContent).active != pane:
                 self.refresh_active()
 
     async def fetch(self, path):
@@ -352,6 +359,8 @@ class MainScreen(Screen):
             lambda data: self.start_write(path, data) if data is not None else None)
 
     def start_write(self, path, data=None):
+        if self._inactive:
+            return
         if self._writing:
             self.notice("上一项操作尚未完成，请稍候", True)
             return
@@ -384,6 +393,8 @@ class MainScreen(Screen):
 
     @work(group="details", exclusive=True)
     async def show_resource_text(self, iid, logs):
+        if self._inactive:
+            return
         try:
             d = await self.fetch(f"/instances/{iid}/" + ("log" if logs else "connection"))
             if logs:
@@ -503,6 +514,7 @@ class OrbitApp(App):
         self.settings = settings
         self.client = client
         self._external_client = client is not None
+        self._auth_transition = False
 
     async def on_mount(self):
         await self.push_screen(LoginScreen(self.settings.server))
@@ -540,8 +552,24 @@ class OrbitApp(App):
                 self.screen.query_one("#login", Button).disabled = False
 
     def require_login(self, message):
-        if not isinstance(self.screen, LoginScreen):
-            self.switch_screen(LoginScreen(self.settings.server, message))
+        if self._auth_transition or isinstance(self.screen, LoginScreen):
+            return
+        self._auth_transition = True
+        for screen in self.screen_stack:
+            if isinstance(screen, MainScreen):
+                screen.deactivate()
+        self.show_login(message)
+
+    @work(group="login-transition", exclusive=True)
+    async def show_login(self, message):
+        try:
+            # Replacing only the top modal leaves its authenticated main
+            # screen mounted. Unwind the whole user session instead.
+            while len(self.screen_stack) > 1:
+                await self.pop_screen()
+            await self.push_screen(LoginScreen(self.settings.server, message))
+        finally:
+            self._auth_transition = False
 
     @work(group="session", exclusive=True)
     async def perform_logout(self):

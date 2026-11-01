@@ -32,9 +32,9 @@
 
 **Interfaces:** terminal_auth.init_schema(db); issue(db, user, device, now=None); authenticate(db, raw, now=None); revoke(db, raw). Blueprint POST auth/login, GET auth/me, POST auth/logout.
 
-- [ ] Write pytest tests for HTTPS, wrong password, hashing, exact 7-day boundary, fixed expiry, multi-device revoke, password/disable invalidation and existing Cookie isolation; observe failure.
-- [ ] Implement independent token storage, login rate limiting and configurable lifetime; add minimal registration.
-- [ ] Run authentication tests and existing smoke; commit authentication.
+- [x] Write pytest tests for HTTPS, wrong password, hashing, exact 7-day boundary, fixed expiry, multi-device revoke, password/disable invalidation and existing Cookie isolation; observe failure.
+- [x] Implement independent token storage, login rate limiting and configurable lifetime; add minimal registration.
+- [x] Run authentication tests and existing smoke; commit authentication.
 
 ### Task 2: Existing user operations over the terminal API
 
@@ -42,9 +42,9 @@
 
 **Interfaces:** register_terminal_api(app, get_db, callbacks). New routes below /api/terminal/v1 mirror only existing user operations. Requests use form encoding for writes to preserve validators; responses are JSON.
 
-- [ ] Write tests for resource create/list/log/stop/restart/save/delete, image operations, profile/keys, quotas/accounts, ownership denial and no Set-Cookie; observe failure.
-- [ ] Implement explicit adapters and read callbacks, suppress browser-only session writes in terminal requests; leave old routes/CSRF untouched.
-- [ ] Test original smoke and new API; commit adapters.
+- [x] Write tests for resource create/list/log/stop/restart/save/delete, image operations, profile/keys, quotas/accounts, ownership denial and no Set-Cookie; observe failure.
+- [x] Implement explicit adapters and read callbacks, suppress browser-only session writes in terminal requests; leave old routes/CSRF untouched.
+- [x] Test original smoke and new API; commit adapters.
 
 ### Task 3: Installable client and CLI
 
@@ -52,9 +52,9 @@
 
 **Interfaces:** Settings.load(overrides); CredentialStore keyed by server; Client login/logout/identity and request(method,path,data). CLI orbit with user operations, JSON and stable exit codes.
 
-- [ ] Write failing configuration, file permissions/symlink, TLS/redirect, expiry, malformed response, CLI argument/output/error tests.
-- [ ] Implement shared client and commands; no automatic retry of writes; credentials never in output.
-- [ ] Run client/CLI tests and build/install wheel; commit client.
+- [x] Write failing configuration, file permissions/symlink, TLS/redirect, expiry, malformed response, CLI argument/output/error tests.
+- [x] Implement shared client and commands; no automatic retry of writes; credentials never in output.
+- [x] Run client/CLI tests and build/install wheel; commit client.
 
 ### Task 4: Interactive TUI
 
@@ -62,9 +62,9 @@
 
 **Interfaces:** OrbitApp(Settings, client=None); shared Client from Task 3; login then tabs for resources/apply/images/nodes/quota/profile.
 
-- [ ] Write headless tests for login, selection, apply, actions, auth expiry and nonblocking refresh; observe failure.
-- [ ] Implement focused Chinese screens, modal confirmation/input, network workers, raw text rendering, preserved selection and explicit loading/errors.
-- [ ] Run TUI and complete client/API tests; commit TUI.
+- [x] Write headless tests for login, selection, apply, actions, auth expiry and nonblocking refresh; observe failure.
+- [x] Implement focused Chinese screens, modal confirmation/input, network workers, raw text rendering, preserved selection and explicit loading/errors.
+- [x] Run TUI and complete client/API tests; commit TUI.
 
 ### Task 5: Installer, documentation and final verification
 
@@ -72,6 +72,15 @@
 
 **Interfaces:** install.sh supports source/ref/repository/prefix/bin-dir/server/CA. Installs orbit without sudo into a user venv.
 
-- [ ] Write installer tests and run failing checks, implement installation and configuration.
-- [ ] Validate real install in temporary directories, wheel, CLI, TUI, new server tests and original smoke. Record Linux-only existing security-test baseline.
-- [ ] Fresh whole-branch review under requesting-code-review; fix material new findings with tests. Commit final documentation and report hashes and deployment prerequisites.
+- [x] Write installer tests and run failing checks, implement installation and configuration.
+- [x] Validate real install in temporary directories, wheel, CLI, TUI, new server tests and original smoke. Record Linux-only existing security-test baseline.
+- [x] Fresh whole-branch review under requesting-code-review; fix material new findings with tests. Commit final documentation and report hashes and deployment prerequisites.
+
+## Completion evidence (2026-11-01)
+
+- 54 terminal/API/CLI/TUI/compatibility tests passed, including the original web smoke with its external readiness stub.
+- Real loopback HTTPS handshake rejects untrusted CA and accepts the configured CA; actual Waitress proxy middleware rejects forged TLS headers from an untrusted source.
+- Final installer run uses the documented `--source terminal`, a path containing spaces, a private temporary config directory and the generated launcher.
+- Wheel and sdist built successfully; no production deployment or real Slurm writes were performed.
+- Fresh independent whole-branch review identified two material new-code findings: ambiguous local pip source and stale authenticated screens after expiry under a modal. Both have RED→GREEN regression tests and are fixed.
+- Review boundaries: real Slurm behavior, live HTTPS deployment and Linux-only helper privilege checks require the target environment. Existing helper security tests retain the previously observed macOS UID/GID limitation. No existing cluster policy was modified.

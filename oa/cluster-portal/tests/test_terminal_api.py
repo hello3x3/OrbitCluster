@@ -250,3 +250,39 @@ def test_stale_password_snapshot_cannot_issue_token(portal):
     db.user_set_password(old["id"], auth.hash_password("ReplacedPass123"))
     assert issue(db, old) is None
     db.close()
+
+
+def test_browser_cookie_attached_to_terminal_does_not_create_session(portal):
+    token = login(portal).get_json()["data"]["token"]
+    c = portal.test_client()
+    with c.session_transaction() as session:
+        db = DB(appmod.DB_PATH)
+        session.update(uid=db.user_by_name("bob")["id"], epoch=0, csrf="browser")
+        db.close()
+    response = c.post(PREFIX + "/profile/name", data={"display_name": "Terminal Alice"},
+        base_url="https://localhost", headers={"Authorization": "Bearer " + token})
+    assert response.status_code == 200 and "Set-Cookie" not in response.headers
+    profile = call(portal, "GET", "/profile", token).get_json()["data"]
+    assert profile["display_name"] == "Terminal Alice"
+
+
+def test_waitress_only_trusts_explicit_tls_proxy(portal, monkeypatch):
+    from waitress.proxy_headers import proxy_headers_middleware
+    from werkzeug.test import Client
+    spec = importlib.util.spec_from_file_location("terminal_run", HERE.parent / "run.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    monkeypatch.setitem(siteconf.CONF, "TRUSTED_PROXY", "127.0.0.1")
+    proxy = proxy_headers_middleware(portal, **runner.proxy_settings())
+    client = Client(proxy)
+    data = {"username": "alice", "password": "TestPass123"}
+    trusted = client.post(PREFIX + "/auth/login", json=data,
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"}, headers={"X-Forwarded-Proto": "https"})
+    assert trusted.status_code == 200
+    spoofed = client.post(PREFIX + "/auth/login", json=data,
+        environ_overrides={"REMOTE_ADDR": "10.0.0.5"}, headers={"X-Forwarded-Proto": "https"})
+    assert spoofed.status_code == 403
+    assert client.get("/login", environ_overrides={"REMOTE_ADDR": "10.0.0.5"}).status_code == 200
+    monkeypatch.setitem(siteconf.CONF, "TRUSTED_PROXY", "*")
+    with pytest.raises(ValueError):
+        runner.proxy_settings()

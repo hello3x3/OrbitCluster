@@ -50,3 +50,40 @@ def test_existing_web_smoke_with_fully_isolated_readiness_stub():
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout[-1000:] + result.stderr[-2000:]
     assert "SMOKE_OK" in result.stdout
+
+
+def test_real_https_login_requires_trusted_ca(portal, tmp_path, monkeypatch):
+    import shutil
+    import threading
+    import pytest
+    from werkzeug.serving import make_server
+    from orbitcluster.config import Settings
+    from orbitcluster.client import NetworkError
+    openssl = shutil.which("openssl")
+    if not openssl:
+        pytest.skip("openssl is unavailable")
+    cert, key = tmp_path / "test-ca.crt", tmp_path / "test-server.key"
+    generated = subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(key), "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+        "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], capture_output=True)
+    assert generated.returncode == 0
+    try:
+        server = make_server("127.0.0.1", 0, portal, ssl_context=(str(cert), str(key)))
+    except (PermissionError, SystemExit):
+        pytest.skip("sandbox denies local sockets; run with network permission")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    try:
+        base = {"server": f"https://127.0.0.1:{server.server_port}", "config_dir": tmp_path / "tls-client", "timeout": 3}
+        with Client(Settings.load(base, environ={})) as untrusted:
+            with pytest.raises(NetworkError):
+                untrusted.login("alice", "TestPass123")
+        with Client(Settings.load({**base, "ca_bundle": str(cert)}, environ={})) as trusted:
+            result = trusted.login("alice", "TestPass123")
+            assert result["username"] == "alice"
+            assert trusted.identity()["expires_at"] == result["expires_at"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
