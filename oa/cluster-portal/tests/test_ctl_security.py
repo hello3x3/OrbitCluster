@@ -475,6 +475,62 @@ def main():
     check("账户管理不写账户级 GrpTRES（契约：只按单用户上限）",
           "set GrpTRES" not in src and "grptres=gres" not in src)
 
+
+    # ---- 安全文件/镜像边界（保存失败不误删旧镜像、软链不跟随）----
+    print("== 8) 安全文件/镜像边界 ==")
+    _d = tempfile.mkdtemp(prefix="ctlsec-files-")
+    _target = os.path.join(_d, "old.sqsh")
+    with open(_target, "w") as fh:
+        fh.write("OLD-IMAGE")
+    _part = _target + ".part"
+    _tmp = _target + ".tmp"
+    with open(_part, "w") as fh:
+        fh.write("PART")
+    with open(_tmp, "w") as fh:
+        fh.write("TMP")
+    mod._cleanup_partial(_target)
+    check("清理半成品不删除旧完整镜像",
+          open(_target).read() == "OLD-IMAGE" and not os.path.exists(_part)
+          and not os.path.exists(_tmp))
+    _target2 = os.path.join(_d, "old2.sqsh")
+    with open(_target2, "w") as fh:
+        fh.write("OLD2")
+    _empty = _target2 + ".part"
+    open(_empty, "w").close()
+    try:
+        mod._replace_partial_checked(_empty, _target2)
+        _die = False
+    except SystemExit:
+        _die = True
+    check("空导出结果不覆盖旧镜像", _die and open(_target2).read() == "OLD2"
+          and not os.path.exists(_empty))
+    # 注释写入：预置同名软链不能让 root 跟随
+    _d2 = tempfile.mkdtemp(prefix="ctlsec-note-")
+    _victim = os.path.join(_d2, "victim")
+    with open(_victim, "w") as fh:
+        fh.write("VICTIM")
+    _img = os.path.join(_d2, "x.sqsh")
+    open(_img, "w").close()
+    _np = mod._note_path(_img)
+    os.symlink(_victim, _np)
+    mod._write_note(_img, note="hello")
+    check("镜像注释不跟随 .json 软链", open(_victim).read() == "VICTIM"
+          and not os.path.islink(_np) and "hello" in open(_np).read())
+    # 读注释也不跟随
+    _d3 = tempfile.mkdtemp(prefix="ctlsec-note2-")
+    _v2 = os.path.join(_d3, "victim2")
+    with open(_v2, "w") as fh:
+        fh.write("{}")
+    _img2 = os.path.join(_d3, "y.sqsh")
+    open(_img2, "w").close()
+    os.symlink(_v2, mod._note_path(_img2))
+    check("读取镜像注释拒绝软链", mod._read_note(_img2) == {})
+    # 父目录软链不能绕出用户家目录
+    _linkdir = os.path.join(HOME, "linkdir")
+    os.symlink("/etc", _linkdir)
+    _fd, _err = mod._open_user_file("alice", os.path.join(_linkdir, "passwd"))
+    check("打开用户文件拒绝父目录软链", _fd is None and bool(_err), _err)
+
     if FAIL:
         print("\n有 %d 项失败: %s" % (len(FAIL), ", ".join(FAIL)))
         return 1

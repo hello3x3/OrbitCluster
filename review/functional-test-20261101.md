@@ -102,6 +102,23 @@
   - 两个 1 卡作业并发时，第一个 RUNNING，第二个 PENDING，原因 `QOSMaxGRESPerUser`；
 - 测试结束清理，无 qa 用户/账户/作业残留。
 
+## 3.2 安全/数据完整性修复回归（2026-11-01）
+
+本轮按“可信实验室成员”前提先修以下问题，并补了本地回归：
+
+- **套餐编辑/停用假成功**：修正 `db.update_plan` 的 `updated_at`/`id` 参数顺序；
+  已用真实 HTTP 验证 edit + toggle 落库，随后删除测试套餐。
+- **覆盖保存失败误删旧镜像**：`_cleanup_partial` 不再删除 `target`；导出先写 `.part`，
+  校验非空后才原子替换；本地测试覆盖“失败保留旧镜像 / 空结果不覆盖”。
+- **密码文件改密不吊销旧会话**：`pwfile.sync_once` 只在密码真正变化时
+  `user_bump_session_epoch`；真机验证：改密码文件后，旧 Cookie 访问 `/profile` 返回 302 登录。
+- **root 助手路径 TOCTOU**：`_open_user_file` 改为目录 fd + `O_NOFOLLOW|O_DIRECTORY`
+  逐级打开；`_ensure_user_dir` / 镜像目录也改为 dirfd 方式，不再 lstat 后再 chown 路径。
+- **镜像注释软链写入**：`_write_note` 用 `mkstemp` + `os.replace`，`_read_note` 用
+  `O_NOFOLLOW` 打开；本地测试覆盖 `.json` / `.json.tmp` 软链不跟随。
+
+本地 `make test`：`CTL_SECURITY_OK` + `SMOKE_OK`。
+
 ## 4. 本轮未覆盖
 
 - 保存镜像/到期自动保存（保存 9.1G 容器需要较长异步时间）；

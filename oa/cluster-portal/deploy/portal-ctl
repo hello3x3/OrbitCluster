@@ -373,52 +373,108 @@ def _link_free_chain(username, path):
 
 
 def _open_user_file(username, path, flags=os.O_RDONLY):
-    """在用户家目录内安全打开一个普通文件，返回 (fd, err)。"""
-    err = _link_free_chain(username, path)
-    if err:
-        return None, err
+    """在用户家目录内安全打开一个普通文件，返回 (fd, err)。
+
+    用目录 fd 逐级 openat(O_NOFOLLOW|O_DIRECTORY)，最后一级再 O_NOFOLLOW；
+    不再采用 lstat 检查后再 open(path) 的写法 —— 父目录在检查后被替换的 TOCTOU
+    窗口会留在原地。属主判断用 fstat(fd)，针对真正打开的那个 inode。
+    """
+    home = os.path.realpath(user_home(username))
+    p = os.path.abspath(path)
+    if p != home and not p.startswith(home.rstrip("/") + os.sep):
+        return None, "%s 不在用户家目录 %s 之内" % (p, home)
+    rel = os.path.relpath(p, home)
+    if rel == ".":
+        return None, "拒绝打开用户家目录本身"
+    segs = rel.split(os.sep)
+    dir_fd = None
     try:
-        st = os.lstat(path)
+        # 家目录本身也只接受真实目录（O_NOFOLLOW 拒绝家目录被替换成软链）
+        dir_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for seg in segs[:-1]:
+            nfd = os.open(seg, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                          dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = nfd
+        fd = os.open(segs[-1], flags | os.O_NOFOLLOW, dir_fd=dir_fd)
     except OSError as e:
-        return None, "读取失败：%s" % e
+        return None, "打开失败：%s" % e
+    finally:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+    st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
         return None, "不是普通文件，拒绝访问"
     uid = _uid_of(username)
     if uid is not None and st.st_uid not in (uid, 0):
+        os.close(fd)
         return None, "文件属主异常（uid=%s），拒绝访问" % st.st_uid
+    return fd, None
+
+
+def _open_dir_beneath(root, path, create_mode=None):
+    """从 root 开始逐级 openat(O_NOFOLLOW|O_DIRECTORY) 到 path，返回目录 fd。
+
+    绝不对最终目录做 "lstat 检查后再 chown(path)"：父目录可在检查后被替换成软链，
+    root 的 chown 会跟随软链改到任意目标。这里所有路径段都用目录 fd + O_NOFOLLOW。
+    """
+    root_real = os.path.realpath(root)
+    p = os.path.abspath(path)
+    if p != root_real and not p.startswith(root_real.rstrip("/") + os.sep):
+        raise OSError("路径不在 %s 之内：%s" % (root, path))
+    rel = os.path.relpath(p, root_real)
+    segs = [] if rel == "." else rel.split(os.sep)
+    fd = os.open(root_real, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        return os.open(path, flags | os.O_NOFOLLOW), None
-    except OSError as e:
-        return None, "打开失败：%s" % e
+        for seg in segs:
+            try:
+                nfd = os.open(seg, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            except FileNotFoundError:
+                if create_mode is None:
+                    raise
+                os.mkdir(seg, create_mode, dir_fd=fd)
+                nfd = os.open(seg, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return fd
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def _ensure_user_dir(username, uid, path, mode):
-    """在用户家目录内创建/校正一个目录（拒绝软链）。"""
-    err = _link_free_chain(username, path)
-    if err:
-        die("初始化目录失败：%s" % err)
-    if os.path.lexists(path):
-        st = os.lstat(path)
-        if not stat.S_ISDIR(st.st_mode):
-            die("初始化目录失败：%s 已存在但不是目录（疑似符号链接）" % path)
-    else:
-        os.mkdir(path, mode)
-    os.chown(path, int(uid), int(uid))
-    os.chmod(path, mode)
+    """在用户家目录内创建/校正一个目录（目录 fd 逐级 O_NOFOLLOW，拒绝软链/竞态）。"""
+    try:
+        fd = _open_dir_beneath(user_home(username), path, create_mode=mode)
+    except OSError as e:
+        die("初始化目录失败：%s" % e)
+    try:
+        os.fchown(fd, int(uid), int(uid))
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
 
 
 def _ensure_dir_outside_home(path, uid, gid, mode):
     """在 root 拥有的目录树里（如 /share/images/<user>）创建/校正子目录，拒绝软链。"""
-    if os.path.islink(path):
-        die("%s 是符号链接，拒绝使用" % path)
-    if os.path.lexists(path):
-        st = os.lstat(path)
-        if not stat.S_ISDIR(st.st_mode):
-            die("%s 已存在但不是目录" % path)
-    else:
-        os.mkdir(path, mode)
-    os.chown(path, int(uid), int(gid))
-    os.chmod(path, mode)
+    try:
+        fd = _open_dir_beneath(IMAGES_ROOT, path, create_mode=mode)
+    except OSError as e:
+        die("%s 创建/校正失败：%s" % (path, e))
+    try:
+        os.fchown(fd, int(uid), int(gid))
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
 
 
 def _check_regular_outside_home(path, allowed_uids):
@@ -2493,9 +2549,10 @@ def _note_path(image_path):
 
 
 def _read_note(image_path):
-    """读镜像的同名 json；不存在/不是合法 JSON 时返回 {}（坏文件不该让列表挂掉）。"""
+    """读镜像的同名 json；不存在/是软链/不是合法 JSON 时返回 {}。"""
     try:
-        with open(_note_path(image_path), "r", encoding="utf-8") as fh:
+        fd = os.open(_note_path(image_path), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -2503,18 +2560,32 @@ def _read_note(image_path):
 
 
 def _write_note(image_path, **fields):
-    """合并写镜像的同名 json（原子替换；文件 644，与镜像同目录）。"""
+    """合并写镜像的同名 json（随机临时文件 + 原子替换；文件 644，与镜像同目录）。
+
+    不能使用固定的 <name>.json.tmp 再 open(..., "w")：个人镜像目录属主是用户，
+    用户可预先放一个同名软链，让 root 跟随写入任意文件。mkstemp 用 O_EXCL 创建
+    新文件，os.replace 替换目录项本身，不跟随目标软链。
+    """
     data = _read_note(image_path)
     data.update({k: v for k, v in fields.items() if v is not None})
     data.setdefault("name", os.path.basename(image_path)[:-5]
                     if image_path.lower().endswith(".sqsh") else os.path.basename(image_path))
     data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    tmp = _note_path(image_path) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
-        fh.write("\n")
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, _note_path(image_path))
+    note_path = _note_path(image_path)
+    fd, tmp = tempfile.mkstemp(prefix=".portal-note-", suffix=".tmp",
+                               dir=os.path.dirname(note_path))
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, note_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return data
 
 
@@ -2768,7 +2839,7 @@ def cmd_save_image(username, job_id, name, force, note=None):
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
-        os.replace(tmp_target, target)
+        _replace_partial_checked(tmp_target, target)
     elif uid == "0":
         # 用户名 root：计算节点写 NFS 被 root_squash，先导出到节点本地再 scp 回 admin
         local_tmp = "/scratch/.portal-save-%d-%s.sqsh" % (job_id, name)
@@ -2786,14 +2857,14 @@ def cmd_save_image(username, job_id, name, force, note=None):
         if r1.returncode != 0:
             _cleanup_partial(target)
             die("镜像回传 admin 失败: %s" % (r1.stderr.strip()[-300:] or r1.stdout.strip()[-300:]))
-        os.replace(tmp_target, target)
+        _replace_partial_checked(tmp_target, target)
     else:
         r = ssh_node(node, _as_user_argv(username, home, export_argv), timeout=timeout)
         chunks.append((r.stdout or "") + (r.stderr or ""))
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
-        os.replace(tmp_target, target)
+        _replace_partial_checked(tmp_target, target)
 
     try:
         size = os.path.getsize(target)
@@ -2817,13 +2888,29 @@ def cmd_save_image(username, job_id, name, force, note=None):
 
 
 def _cleanup_partial(target):
-    """删除导出失败/中断留下的半成品（admin 上真实 root，/share 为本地盘）。"""
-    for p in (target, target + ".tmp", target + ".part"):
+    """删除导出失败/中断留下的半成品（admin 上真实 root，/share 为本地盘）。
+
+    绝不能删 target 本身：覆盖保存时 target 是旧完整镜像，导出失败必须保留它。
+    """
+    for p in (target + ".tmp", target + ".part"):
         try:
-            if os.path.exists(p):
+            if os.path.lexists(p):
                 os.remove(p)
         except OSError:
             pass
+
+
+def _replace_partial_checked(tmp_target, target):
+    """校验 .part 非空后再原子替换；空/失败不会碰旧 target。"""
+    try:
+        size = os.path.getsize(tmp_target)
+    except OSError:
+        size = 0
+    if size <= 0:
+        _cleanup_partial(target)
+        die("镜像导出结果为空文件（导出被中断？），请重试")
+    os.replace(tmp_target, target)
+    return size
 
 
 # ----------------------------------------------------------------------------

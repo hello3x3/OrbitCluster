@@ -1383,7 +1383,7 @@ def main():
         n0 = dbp.q1("SELECT COUNT(*) n FROM plans")["n"]
     finally:
         dbp.close()
-    # root 的正路仍然通：新增 + 删除
+    # root 的正路仍然通：新增 + 编辑 + 启停 + 删除
     tokp = csrf_of(croot, "/admin/plans")
     r = croot.post("/admin/plans/add", data={
         "_csrf": tokp, "name": "冒烟套餐X", "description": "smoke",
@@ -1397,12 +1397,63 @@ def main():
         pid = row["id"]
     finally:
         dbp.close()
+    # 编辑必须真正落库（历史 bug：update_plan 的 updated_at/id 参数顺序反了，
+    # SQL 更新 0 行但接口仍返回成功）
+    r = croot.post("/admin/plans/%d/edit" % pid, data={
+        "_csrf": tokp, "name": "冒烟套餐Y", "description": "smoke2",
+        "gpus": "0", "gpu_model": "", "cpus": "3", "mem_gb": "6", "maxtime_h": "12"})
+    assert r.get_json()["ok"], r.get_json()
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        row = dbp.q1("SELECT name,cpus,mem_gb FROM plans WHERE id=?", (pid,))
+        assert row["name"] == "冒烟套餐Y" and row["cpus"] == 3 and row["mem_gb"] == 6, \
+            dict(row)
+    finally:
+        dbp.close()
+    # 停用/启用也必须真正落库
+    r = croot.post("/admin/plans/%d/toggle" % pid, data={"_csrf": tokp})
+    assert r.get_json()["ok"], r.get_json()
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        assert dbp.q1("SELECT enabled FROM plans WHERE id=?", (pid,))["enabled"] == 0
+    finally:
+        dbp.close()
+    r = croot.post("/admin/plans/%d/toggle" % pid, data={"_csrf": tokp})
+    assert r.get_json()["ok"], r.get_json()
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        assert dbp.q1("SELECT enabled FROM plans WHERE id=?", (pid,))["enabled"] == 1
+    finally:
+        dbp.close()
     tokp = csrf_of(croot, "/admin/plans")
     r = croot.post("/admin/plans/%d/delete" % pid, data={"_csrf": tokp})
     assert r.get_json()["ok"], r.get_json()
     dbp = _DB(appmod.DB_PATH)
     try:
         assert dbp.q1("SELECT COUNT(*) n FROM plans")["n"] == n0, "删除后套餐数应还原"
+    finally:
+        dbp.close()
+
+    # 密码文件同步：只有密码真的变化才 bump session_epoch（改密后旧 Cookie 必须失效）
+    dbp = _DB(appmod.DB_PATH)
+    try:
+        row_a = dbp.user_by_name("alice")
+        old_hash = row_a["passwd"]
+        old_epoch = int(row_a["session_epoch"] or 0)
+        with open(os.environ["PORTAL_PASSWD_FILE"], "w", encoding="utf-8") as f:
+            f.write("alice:SmokeNewPwd88\n")
+        st1 = pwfile.sync_once(dbp)
+        row1 = dbp.user_by_name("alice")
+        assert st1["changed"] == 1 and int(row1["session_epoch"] or 0) == old_epoch + 1, \
+            (st1, dict(row1))
+        assert appmod.authlib.verify_password("SmokeNewPwd88", row1["passwd"])
+        st2 = pwfile.sync_once(dbp)
+        row2 = dbp.user_by_name("alice")
+        assert st2["changed"] == 0 and int(row2["session_epoch"] or 0) == old_epoch + 1, \
+            (st2, dict(row2))
+        # 恢复测试库
+        dbp.exec("UPDATE users SET passwd=?, session_epoch=? WHERE id=?",
+                 (old_hash, old_epoch, row_a["id"]))
     finally:
         dbp.close()
 

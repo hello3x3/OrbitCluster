@@ -215,8 +215,9 @@ class DB:
                 sets.append("%s=?" % k)
                 args.append(v)
         if sets:
-            args.append(pid)
+            # SQL 是 SET <cols>, updated_at=? WHERE id=?；args 顺序必须与占位符一致
             args.append(_now())
+            args.append(pid)
             self.exec("UPDATE plans SET %s, updated_at=? WHERE id=?" % ",".join(sets), args)
 
     def plan_instances(self, pid):

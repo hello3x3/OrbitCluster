@@ -179,7 +179,13 @@ def sync_once(db):
         if row is None:
             unknown.append(user)
             continue
+        # 只有明文密码真的变化才更新哈希并吊销该用户旧会话；
+        # 避免启动时/无关行改动把所有人的 session_epoch 都 +1。
+        from . import auth
+        if auth.verify_password(pwd, row["passwd"] or ""):
+            continue
         db.user_set_password(row["id"], _hash_pwd(pwd))
+        db.user_bump_session_epoch(row["id"])
         changed += 1
     return {"changed": changed, "unknown": unknown, "malformed": malformed,
             "signature": _content_signature(data)}
