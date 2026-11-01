@@ -615,6 +615,21 @@ def main():
             dict(row_adminauto)
     finally:
         dbx_admin.close()
+    # 管理员可以代自己（目的是超过套餐 maxtime 的长任务）；但不能代其他管理员
+    c.get("/logout")
+    login(c, "adminauto", "AdminAuto99")
+    tgs = c.get("/api/apply-targets").get_json()
+    assert any(x["username"] == "adminauto" for x in tgs), \
+        "管理员自己的 OS 账号应出现在代申请目标里: %s" % tgs
+    c.get("/logout")
+    login(c, "admin", "AdminPass123")
+    tgs = c.get("/api/apply-targets").get_json()
+    assert all(x["username"] != "adminauto" for x in tgs), \
+        "普通管理员不能把另一个管理员作为代申请目标: %s" % tgs
+    # 创建管理员账号仍必须回到 root 会话
+    c.get("/logout")
+    login(c, "root", "RootPass1234")
+    tok = csrf_of(c, "/admin/users")
     # 管理员 + 仅门户账号：不建 OS、不设配额，库里的 quota 存「不限」
     r = c.post("/admin/users/create", data={
         "_csrf": tok, "username": "pureadm", "display_name": "纯门户管理员",

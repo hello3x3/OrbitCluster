@@ -2204,14 +2204,27 @@ def create_app(testing=False):
         return _json_ok(msg)
 
     # ------------------------------------------------------------------ 管理员代申请资源
+    def _can_proxy_target(actor, target):
+        """代申请候选人：有 OS 账号的普通用户；管理员只能代“自己”，不能代别的管理员。
+
+        管理员本人也可能需要超过套餐 maxtime 的长任务，所以允许 self-proxy；
+        但不能把 root/其他管理员作为 target，否则普通管理员可借 root 身份提交作业。
+        """
+        if target["os_mode"] not in ("provision", "existing"):
+            return False
+        if target["role"] == "user":
+            return True
+        return target["role"] == "admin" and actor and target["id"] == actor["id"]
+
     @app.route("/api/apply-targets")
     @admin_required
     def api_apply_targets():
-        """管理员代申请的候选人：有集群 OS 账号的普通用户及其端口池。"""
+        """管理员代申请的候选人：有集群 OS 账号的普通用户 + 当前管理员自己。"""
         db = get_db()
+        actor = get_user_row()
         out = []
         for u in db.users_all():
-            if u["role"] != "user" or u["os_mode"] not in ("provision", "existing"):
+            if not _can_proxy_target(actor, u):
                 continue
             ports = []
             for p in db.ports_for(u["id"]):
@@ -2256,8 +2269,9 @@ def create_app(testing=False):
         if not (3 <= len(task_name) <= 10):
             return _json_err("任务名称须为 3-10 个字符")
         target = db.user_by_id(user_id)
-        if not target or target["role"] != "user" or target["os_mode"] not in ("provision", "existing"):
-            return _json_err("请选择有效的普通用户（有集群 OS 账号）作为申请对象")
+        if not target or not _can_proxy_target(actor, target):
+            return _json_err("请选择有效的普通用户（有集群 OS 账号）作为申请对象；"
+                             "管理员只能代自己，不能代其他管理员")
         dup = db.instance_name_taken(target["id"], task_name)
         if dup:
             return _json_err(dup_task_msg(dup, task_name))
