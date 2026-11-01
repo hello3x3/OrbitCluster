@@ -1,0 +1,12 @@
+# Supply both variables before starting Caddy. Keep port 80 for the current portal.
+# ORBIT_TERMINAL_ADDRESS=https://<cluster-IP-or-DNS>:8443
+# ORBIT_PORTAL_UPSTREAM=127.0.0.1:80
+# caddy run --config terminal.Caddyfile.example --adapter caddyfile
+{
+    auto_https disable_redirects
+}
+
+{$ORBIT_TERMINAL_ADDRESS} {
+    tls internal
+    reverse_proxy {$ORBIT_PORTAL_UPSTREAM}
+}

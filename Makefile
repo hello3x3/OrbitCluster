@@ -32,7 +32,7 @@ SET     ?=
 SET_ARGS  := $(foreach kv,$(SET),-s '$(kv)')
 
 .DEFAULT_GOAL := render
-.PHONY: render out print reset sites check test clean help _need_conf
+.PHONY: render out print reset sites check test test-terminal clean help _need_conf
 
 # ---- 默认目标：就地替换到当前仓库 --------------------------------------------
 render: _need_conf
@@ -74,6 +74,10 @@ test:
 	   fi
 
 # ---- 清理 --------------------------------------------------------------------
+PYTHON ?= python3
+test-terminal:
+	@$(PYTHON) -m pytest oa/cluster-portal/tests/test_terminal_api.py oa/cluster-portal/tests/test_terminal_integration.py terminal/tests -q
+
 clean:
 	@rm -rf provision/out provision/out-*
 	@echo "==> 已清掉 provision/out*"
