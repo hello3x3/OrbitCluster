@@ -636,6 +636,10 @@ def main():
     # 非 root 管理员的页面上不应出现「管理员」角色选项
     r = c.get("/admin/users")
     assert b'value="admin"' not in r.data, "非 root 管理员的建号表单不该提供管理员选项"
+    # 开通表单只允许单选一个集群账户（默认账户即所选），不再有 multiple/default_account 双下拉
+    assert not re.search(rb'<select name="accounts"[^>]*multiple', r.data), \
+        "开通表单的集群账户应改为单选"
+    assert b'name="default_account"' not in r.data, "单选后不应再显示独立默认账户下拉"
     # 「门户记录 ≠ OS」告警不应误报（以上账号都是刚对齐的）
     r = c.get("/admin/users")
     assert b"badge-warn" not in r.data, "配额一致性告警误报"

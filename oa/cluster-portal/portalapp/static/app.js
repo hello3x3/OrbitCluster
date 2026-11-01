@@ -1089,7 +1089,7 @@
     const quotaLabel = document.getElementById("create-quota-label");
     const pureNote = document.getElementById("create-pure-admin-note");
     const acctRow = document.getElementById("create-acctrow");
-    if (!accts || !defSel) return;
+    if (!accts) return;
 
     function syncRoleAndOsMode() {
       const role = roleSel ? roleSel.value : "user";
@@ -1108,9 +1108,13 @@
     }
 
     function selected() {
-      return Array.from(accts.selectedOptions).map(o => o.value);
+      // 创建表单现在是单选；保留数组形式给后端/校验使用
+      if (accts.multiple) return Array.from(accts.selectedOptions).map(o => o.value);
+      return accts.value ? [accts.value] : [];
     }
     function syncDefault() {
+      // 单选时默认账户就是所选账户，不再维护独立下拉
+      if (!defSel) return;
       const vals = selected();
       const prev = defSel.value;
       defSel.innerHTML = vals.length
@@ -1138,7 +1142,7 @@
         accts.focus();
         return;
       }
-      if (vals.length && vals.indexOf(defSel.value) < 0) {
+      if (defSel && vals.length && vals.indexOf(defSel.value) < 0) {
         ev.preventDefault();
         toast("默认账户必须包含在已选的集群账户中", "err");
         defSel.focus();
