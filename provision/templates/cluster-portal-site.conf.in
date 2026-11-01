@@ -45,11 +45,6 @@ IMAGES_MOUNT=@@IMAGES_MOUNT@@
 # 分区名。预留：当前代码按 sinfo 自动探测，填了也不改调度行为。
 PARTITION=@@PARTITION@@
 
-# GPU 已下线的节点（逗号/空格分隔）。这些节点仍可接 CPU 任务；
-# 门户提交 GPU 作业时会自动加 --exclude，并拒绝显式指定这些节点跑 GPU。
-# 例：GPU_EXCLUDE_NODES=3090-00
-GPU_EXCLUDE_NODES=@@GPU_EXCLUDE_NODES@@
-
 # 透传给用户容器的额外共享盘（NAS/数据集）。可写多行，一行一项。
 # 格式 <宿主路径>[:<容器内路径>][:ro|rw]，默认 ro；宿主机上必须真的挂好（见 01-部署手册 2.2/2.3）。
 # ⚠️ 只能在这里配，绝不接受请求参数 —— 门户 web 在威胁模型里是不可信组件。

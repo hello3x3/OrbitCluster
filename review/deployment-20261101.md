@@ -393,31 +393,6 @@ cpu/mem 等，没有 gres/gpu。QoS 的 `MaxTRESPerUser=gres/gpu=N` 因此无法
 门户“自动建号”真实成功（四台 UID 一致、家目录、配额、Slurm 关联均落地）。
 portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写。
 
-### 2.20 3090-00 GPU 下线（只接 CPU 任务）
-
-**需求**：3090-00 不再接收 GPU 作业，但仍可接收 CPU 作业。
-
-**实现**（门户提交路径）：
-
-- `/etc/cluster-portal/site.conf` 增加：
-  ```ini
-  GPU_EXCLUDE_NODES=3090-00
-  ```
-- root 助手提交 GPU 作业时自动追加 `--exclude=3090-00`；
-- 用户显式选择 3090-00 + 非 0 卡时，助手直接拒绝并提示“GPU 已下线”；
-- `gpus=0` 的 CPU 作业不受影响，可正常指定 3090-00；
-- 生成器同步支持：`cluster.conf` 的 `GPU_EXCLUDE_NODES` → `site.conf`。
-
-**真机验证**：
-
-- GPU + 3090-00：拒绝，未提交作业；
-- CPU + 3090-00：提交成功并 RUNNING（随后取消）；
-- GPU 自动调度：命令带 `--exclude=3090-00`，实际落到 3090-01（随后取消）；
-- 测试作业全部取消，队列空，3090-00 节点 IDLE。
-
-> 注意：这是门户提交路径的约束；直接 `sbatch/srun` 的管理员仍可绕过。
-> 若要在 Slurm 层强制，需要把 3090-00 从 GPU 分区移出并单独建 CPU 分区。
-
 ## 3. 最终验收
 
 ### Slurm
@@ -550,7 +525,6 @@ cluster-portal             active
 - `oa/cluster-portal/deploy/install.sh`：`ReadWritePaths` 增加 `/etc`（useradd/groupadd 需要）
 - `oa/cluster-portal/deploy/portal-ctl`：cap=0 用 `-1` 清限额；默认账户查询修正
 - 功能测试报告：[review/functional-test-20261101.md](functional-test-20261101.md)，本轮 65/65 通过
-- 3090-00 GPU 下线：`GPU_EXCLUDE_NODES=3090-00`（GPU 作业排除；CPU 仍可用）
 
 部署完成后已执行 `make reset` + `make clean`，仓库回到模板状态；
 本次源码/文档修复与部署记录随后提交。`make test` 通过。

@@ -475,19 +475,6 @@ def main():
     check("账户管理不写账户级 GrpTRES（契约：只按单用户上限）",
           "set GrpTRES" not in src and "grptres=gres" not in src)
 
-    # ---- GPU 下线节点：GPU 作业排除/拒绝，CPU 作业不受影响 ----
-    print("== 7.1) GPU 下线节点 ==")
-    _old_ex = mod.SITE.get("GPU_EXCLUDE_NODES")
-    mod.SITE["GPU_EXCLUDE_NODES"] = "3090-00, 3090-04"
-    check("解析 GPU_EXCLUDE_NODES", mod.gpu_exclude_nodes() == ["3090-00", "3090-04"],
-          mod.gpu_exclude_nodes())
-    if _old_ex is None:
-        mod.SITE.pop("GPU_EXCLUDE_NODES", None)
-    else:
-        mod.SITE["GPU_EXCLUDE_NODES"] = _old_ex
-    check("GPU 作业提交会加 --exclude", "--exclude=" in src and "gpu_exclude_nodes" in src)
-    check("显式指定下线节点跑 GPU 会被拒绝", "GPU 已下线" in src)
-
 
     # ---- 安全文件/镜像边界（保存失败不误删旧镜像、软链不跟随）----
     print("== 8) 安全文件/镜像边界 ==")
