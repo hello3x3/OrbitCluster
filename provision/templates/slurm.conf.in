@@ -40,6 +40,9 @@ PartitionName=@@PARTITION@@ Nodes=ALL Default=YES MaxTime=INFINITE State=UP
 AccountingStorageType=accounting_storage/slurmdbd
 AccountingStorageHost=@@MGR_NAME@@
 AccountingStoragePort=6819
+# 让会计层注册 gres/gpu TRES；否则 QoS 的 MaxTRESPerUser=gres/gpu=N 会报
+# "no TRES known by type gres/gpu"，门户的“单用户卡数上限”无法生效。
+AccountingStorageTRES=gres/gpu
 JobAcctGatherType=jobacct_gather/linux
 JobAcctGatherFrequency=30
 

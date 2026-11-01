@@ -368,6 +368,31 @@ PermissionError: [Errno 13] Permission denied:
 
 > 以后手工 rsync 部署代码后，记得补 `chmod -R a+rX /opt/cluster-portal`，或直接重跑 `install.sh`。
 
+### 2.18 账户 QoS 报 `no TRES known by type gres/gpu`
+
+**现象**：通过门户新建账户时 `accounts-sync` 失败并回滚：
+```text
+设置 QoS acct-be 失败: sacctmgr: error: slurmdb_format_tres_str: no TRES known by type gres/gpu
+```
+**根因**：`slurm.conf` 没有 `AccountingStorageTRES=gres/gpu`；`sacctmgr show tres` 里只有
+cpu/mem 等，没有 gres/gpu。QoS 的 `MaxTRESPerUser=gres/gpu=N` 因此无法解析。
+
+**解决**：四台 `slurm.conf` 增加 `AccountingStorageTRES=gres/gpu`，重启 slurmdbd/slurmctld/slurmd；
+`sacctmgr show tres` 出现 `gres|gpu`；账户创建与单用户卡数上限恢复正常。
+
+### 2.19 门户沙箱阻止 `useradd/groupadd` 写 `/etc`
+
+**现象**：门户建普通用户报
+```text
+集群建号失败：管理节点 3090-00 建号失败: groupadd: cannot lock /etc/group; try again later.
+```
+**根因**：systemd 单元 `ProtectSystem=strict` + `ReadWritePaths=/var/lib/... /etc/cluster-portal /share`
+没有放开 `/etc`；root 助手继承 portal 沙箱，`groupadd/useradd` 无法创建锁文件、更新账号库。
+
+**解决**：单元改为 `ReadWritePaths=/var/lib/cluster-portal /etc /share`，重启门户；
+门户“自动建号”真实成功（四台 UID 一致、家目录、配额、Slurm 关联均落地）。
+portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写。
+
 ## 3. 最终验收
 
 ### Slurm
@@ -496,6 +521,10 @@ cluster-portal             active
 - 四台 `/etc/ssh/sshd_config.d/10-portal-only.conf`：`AllowUsers root zju`；3090-00 root key → 计算节点 root 免密
 - `install.sh`：`BindReadOnlyPaths` 按 `/share` 实际块设备动态生成（不再写死 `/dev/sda`）
 - 当前 portal 单元：`BindReadOnlyPaths=/dev/md0`（修复配额列静默为空）
+- `provision/templates/slurm.conf.in`：增加 `AccountingStorageTRES=gres/gpu`
+- `oa/cluster-portal/deploy/install.sh`：`ReadWritePaths` 增加 `/etc`（useradd/groupadd 需要）
+- `oa/cluster-portal/deploy/portal-ctl`：cap=0 用 `-1` 清限额；默认账户查询修正
+- 功能测试报告：[review/functional-test-20261101.md](functional-test-20261101.md)，本轮 65/65 通过
 
 部署完成后已执行 `make reset` + `make clean`，仓库回到模板状态；
 本次源码/文档修复与部署记录随后提交。`make test` 通过。

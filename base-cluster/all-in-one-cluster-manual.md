@@ -1317,6 +1317,9 @@ cat >> /etc/slurm/slurm.conf <<'CONF'
 AccountingStorageType=accounting_storage/slurmdbd
 AccountingStorageHost=<ADMIN>
 AccountingStoragePort=6819
+# 注册 gres/gpu TRES；没有它，QoS MaxTRESPerUser=gres/gpu=N 会报
+# "no TRES known by type gres/gpu"，账户的“单用户卡数上限”无法生效。
+AccountingStorageTRES=gres/gpu
 JobAcctGatherType=jobacct_gather/linux
 JobAcctGatherFrequency=30
 CONF
@@ -1457,6 +1460,10 @@ CONF
 > `--account=<账户>` 选中哪个账户，作业就用哪个账户的 QoS。
 
 **参数作用表：**
+
+> **前置**：`slurm.conf` 必须有 `AccountingStorageTRES=gres/gpu`（生成器已包含）。
+> 没有它，`sacctmgr show tres` 里没有 `gres/gpu`，所有 `MaxTRESPerUser=gres/gpu=N`
+> 都会报 `no TRES known by type gres/gpu`，账户的“单用户卡数上限”无法生效。
 
 | 参数/字段 | 作用 | 当前值 |
 |---|---|---|

@@ -1819,17 +1819,25 @@ def _qos_apply(name, priority, cap, preempt=None):
         return False, "QoS %s 的 Priority 必须在 %d-%d（收到 %s）" % (
             qos, QOS_PRIORITY_MIN, QOS_PRIORITY_MAX, priority)
     specs = ["Priority=%d" % priority]
+    cur_max = ""
+    if cap <= 0:
+        qm = _qos_map()
+        if qm is None:
+            return False, "查询 QoS %s 失败（slurmdbd 不可用？）" % qos
+        cur_max = (qm.get(qos) or {}).get("max_tres_per_user", "")
     if cap > 0:
         specs.append("MaxTRESPerUser=gres/gpu=%d" % cap)
-    else:
-        specs.append("MaxTRESPerUser=")
+    elif cur_max:
+        # Slurm 文档约定：清除 TRES 限额用 -1。空值在 26.05 上可能返回 0 但实际
+        # 不清除（会留下旧上限），所以这里直接用 -1。
+        specs.append("MaxTRESPerUser=gres/gpu=-1")
     if preempt is not None:
         specs.append("Preempt=%s" % (",".join(preempt) if preempt else ""))
     r = run(["sacctmgr", "-i", "modify", "qos", qos, "set"] + specs, timeout=60)
-    if r.returncode != 0 and cap <= 0:
-        # Slurm 文档约定：清除 TRES 限额用 -1（空值/0 在不同版本里语义不一致）
+    if r.returncode != 0 and cap <= 0 and cur_max:
+        # 兼容少数版本：-1 不被接受时，再退化为空值
         specs2 = [s for s in specs if not s.startswith("MaxTRESPerUser=")]
-        specs2.append("MaxTRESPerUser=gres/gpu=-1")
+        specs2.append("MaxTRESPerUser=")
         r = run(["sacctmgr", "-i", "modify", "qos", qos, "set"] + specs2, timeout=60)
     if r.returncode != 0:
         return False, "设置 QoS %s 失败: %s" % (

@@ -151,7 +151,7 @@ RestartSec=3
 # 注意：不要开 NoNewPrivileges —— web 需经 sudoers 白名单调 root 助手 portal-ctl
 PrivateTmp=true
 # ---- 沙箱加固（纵深防御）------------------------------------------------
-# 门户只应写「数据目录 + 密码文件 + /share 集群数据区」；应用代码只读。
+# 门户只应写「数据目录 + 密码文件 + /share 集群数据区 + /etc 账号库」；应用代码只读。
 # 这样即使门户被攻破，也无法篡改自己的代码（与 install.sh 里的属主设置互为双保险）。
 # /run、/dev、/proc、/sys 以及 PrivateTmp 提供的 /tmp 仍可写，sudo 不受影响。
 #
@@ -163,8 +163,15 @@ PrivateTmp=true
 #   注意 sudo→portal-ctl 的 root 子进程**继承同一挂载命名空间**，所以这里放宽是必须的，
 #   不是"反正 root 能写"。SHARE_HOME/IMAGES_ROOT 在 portal-ctl 里固定为 /share/*，
 #   若将来改到别处，这里要跟着加。
+#
+# ⚠ /etc 必须整体可写（不能只列 /etc/cluster-portal）：门户开通普通用户时，
+#   portal-ctl 以 root 调 add-user.sh → groupadd/useradd，需要创建/更新
+#   /etc/group、/etc/passwd、/etc/shadow、/etc/gshadow 及其 .lock 临时文件。
+#   ProtectSystem=strict 下不放开 /etc 会报
+#   "groupadd: cannot lock /etc/group; try again later."（这是实测踩过的坑）。
+#   portal 进程本身仍是非 root，写不了 /etc；只有 sudo 白名单里的 root 助手能写。
 ProtectSystem=strict
-ReadWritePaths=$DATA_DIR /etc/cluster-portal /share
+ReadWritePaths=$DATA_DIR /etc /share
 ProtectHome=read-only
 PrivateDevices=yes
 # ⚠ PrivateDevices=yes 会把 /share 对应的块设备从沙箱的 /dev 里摘掉，而
