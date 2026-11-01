@@ -37,6 +37,12 @@ DEFAULTS = {
     "SEED_PLANS": "",
     "IMAGES_MOUNT": "/share/images",
     "PARTITION": "",
+    "TERMINAL_TOKEN_DAYS": "7",
+    "TERMINAL_REQUIRE_HTTPS": "1",
+    "TERMINAL_LOGIN_MAX_ATTEMPTS": "5",
+    "TERMINAL_LOGIN_IP_MAX_ATTEMPTS": "50",
+    "TERMINAL_LOGIN_WINDOW_S": "300",
+    "TRUSTED_PROXY": "",
 }
 
 

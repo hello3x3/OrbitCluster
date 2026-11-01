@@ -2740,7 +2740,11 @@ def create_app(testing=False):
     with app.app_context():
         db = DB(DB_PATH)
         init_db(db)
+        from .terminal_auth import init_schema as init_terminal_schema
+        init_terminal_schema(db)
         db.close()
+    from .terminal_api import register_terminal_api
+    register_terminal_api(app, get_db)
     from . import pwfile
     pwfile.start(DB_PATH)  # 密码文件监听（PORTAL_PASSWD_SYNC=0 可关闭）
     if not EXPIRY_DISABLED:
