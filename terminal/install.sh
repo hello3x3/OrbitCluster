@@ -1,134 +1,59 @@
 #!/usr/bin/env bash
-# User-level OrbitCluster installer. No sudo or shell startup changes.
+# Native OrbitCluster CLI bootstrap. No Python, pip, Git or sudo.
 set -euo pipefail
-
-usage() {
-  cat <<'EOF'
-OrbitCluster 用户终端安装器（Python >=3.10；无需 sudo）
-用法：bash install.sh [选项]
-  --source PATH         安装本地 terminal/ 源码目录或 wheel
-  --server URL          配置集群 HTTP / HTTPS 地址
-  --allow-http          明确允许 HTTP（仅可信内网；会明文传输凭证）
-  --ca-bundle FILE      配置管理员提供的内部 CA 证书
-  --install-dir DIR     用户级安装目录（默认 ~/.local/share/orbitcluster）
-  --bin-dir DIR         启动器目录（默认 ~/.local/bin）
-  --python PATH         使用指定 Python >=3.10
-  --repository URL      Git 仓库 URL（默认 OrbitCluster GitHub 仓库）
-  --ref REF             远端分支、标签或提交（默认 codex/frontend-optimization）
-  --help                显示帮助
-环境变量：ORBIT_INSTALL_SOURCE / ORBIT_INSTALL_DIR / ORBIT_INSTALL_BIN_DIR /
-ORBIT_INSTALL_PYTHON / ORBIT_INSTALL_REPOSITORY / ORBIT_INSTALL_REF。
-pip 镜像沿用 PIP_INDEX_URL；客户端配置位置可用 ORBIT_CONFIG_DIR 覆盖。
-EOF
+usage() { cat <<'HELP'
+OrbitCluster CLI 安装器（macOS / Linux / WSL）
+用法：bash install.sh --server http://集群地址 [--install-dir DIR] [--bin-dir DIR] [--config-dir DIR] [--ca-bundle FILE]
+默认支持 HTTP；--require-https 可明确要求 HTTPS。Windows 原生请使用 install.ps1。
+安装包仅从指定门户下载；安装过程不访问 GitHub 或 Python 包索引。
+HELP
 }
-
-source_path=${ORBIT_INSTALL_SOURCE:-}
-install_dir=${ORBIT_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/orbitcluster}
-bin_dir=${ORBIT_INSTALL_BIN_DIR:-$HOME/.local/bin}
-python_bin=${ORBIT_INSTALL_PYTHON:-}
-repository=${ORBIT_INSTALL_REPOSITORY:-https://github.com/hello3x3/OrbitCluster.git}
-ref=${ORBIT_INSTALL_REF:-codex/frontend-optimization}
-server=
-ca_bundle=
-allow_http=0
-
+server=; install_dir=; bin_dir=; config_dir=; ca=; strict=0; version=0.2.0
 while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --help|-h) usage; exit 0 ;;
-    --allow-http) allow_http=1; shift ;;
-    --source|--server|--ca-bundle|--install-dir|--bin-dir|--python|--repository|--ref)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
-        printf '缺少参数值：%s\n' "$1" >&2; exit 2
-      fi
-      case "$1" in
-        --source) source_path=$2 ;;
-        --server) server=$2 ;;
-        --ca-bundle) ca_bundle=$2 ;;
-        --install-dir) install_dir=$2 ;;
-        --bin-dir) bin_dir=$2 ;;
-        --python) python_bin=$2 ;;
-        --repository) repository=$2 ;;
-        --ref) ref=$2 ;;
-      esac
-      shift 2 ;;
-    *) printf '未知参数：%s\n' "$1" >&2; exit 2 ;;
-  esac
+ case "$1" in
+  --help|-h) usage; exit 0;;
+  --require-https) strict=1; shift;;
+  --allow-http) strict=0; shift;;
+  --server|--install-dir|--bin-dir|--config-dir|--ca-bundle)
+   [ "$#" -ge 2 ] && [ -n "$2" ] || { printf '缺少参数值：%s\n' "$1" >&2; exit 2; }
+   case "$1" in --server) server=$2;; --install-dir) install_dir=$2;; --bin-dir) bin_dir=$2;; --config-dir) config_dir=$2;; --ca-bundle) ca=$2;; esac; shift 2;;
+  *) printf '未知参数：%s\n' "$1" >&2; exit 2;;
+ esac
 done
-
-case "$server" in
-  http://*) if [ "$allow_http" != 1 ]; then
-    printf 'HTTP 地址需要 --allow-http；仅用于可信内网。\n' >&2; exit 2
-  fi ;;
-esac
-
-if [ -z "$python_bin" ]; then
-  for candidate in python3 python3.13 python3.12 python3.11 python3.10 python; do
-    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3,10))' 2>/dev/null; then
-      python_bin=$(command -v "$candidate")
-      break
-    fi
-  done
-fi
-if [ -z "$python_bin" ] || ! "$python_bin" -c 'import sys; sys.exit(sys.version_info < (3,10))'; then
-  printf '请先安装 Python >=3.10，或使用 --python 指定路径。\n' >&2; exit 1
-fi
-
-# Running a checked-out installer defaults to its matching local source.
-installer_file=${BASH_SOURCE[0]:-}
-if [ -z "$source_path" ] && [ -f "$installer_file" ]; then
-  installer_dir=$(cd "$(dirname "$installer_file")" && pwd)
-  if [ -f "$installer_dir/pyproject.toml" ]; then source_path=$installer_dir; fi
-fi
-if [ -z "$source_path" ]; then
-  case "$repository" in git+*) ;; *) repository="git+$repository" ;; esac
-  source_path="$repository@$ref#subdirectory=terminal"
-fi
-# pip treats a bare name such as `terminal` as an index requirement. Resolve
-# existing paths before passing them across the installer/pip boundary.
-if [ -d "$source_path" ]; then
-  source_path=$(cd "$source_path" && pwd -P)
-elif [ -f "$source_path" ]; then
-  source_path="$(cd "$(dirname "$source_path")" && pwd -P)/$(basename "$source_path")"
-fi
-
-mkdir -p "$install_dir" "$bin_dir"
-install_dir=$(cd "$install_dir" && pwd)
-bin_dir=$(cd "$bin_dir" && pwd)
-venv_dir="$install_dir/venv"
-printf '正在安装 OrbitCluster 到 %s\n' "$install_dir"
-if ! "$python_bin" -m venv "$venv_dir"; then
-  printf '无法创建虚拟环境；Debian/Ubuntu 请先安装对应 python3-venv 包。\n' >&2
-  exit 1
-fi
-"$venv_dir/bin/python" -m pip install --disable-pip-version-check --upgrade -- "$source_path"
-
-# Generate shell quoting using Python: spaces, quotes and $ in paths stay literal.
-"$python_bin" - "$venv_dir/bin/python" "$bin_dir/orbit" <<'PY'
-import os, pathlib, shlex, sys, tempfile
-executable, target = sys.argv[1], pathlib.Path(sys.argv[2])
-marker = '# OrbitCluster user terminal launcher'
-if target.is_symlink() or (target.exists() and marker not in target.read_text(errors='replace')[:150]):
-    raise SystemExit('启动器路径已被其它程序占用，请用 --bin-dir 指定其它目录：' + str(target))
-fd, temp = tempfile.mkstemp(prefix='.orbit-install-', dir=target.parent)
-try:
-    with os.fdopen(fd, 'w') as fh:
-        fh.write('#!/bin/sh\n' + marker + '\nexec ' + shlex.quote(executable) + ' -m orbitcluster "$@"\n')
-    os.chmod(temp, 0o755)
-    os.replace(temp, target)
-finally:
-    if os.path.exists(temp): os.unlink(temp)
-PY
-
-if [ "$allow_http" = 1 ]; then
-  printf '已允许 HTTP：密码和令牌将明文传输，请仅在可信内网使用。\n' >&2
-  "$bin_dir/orbit" config set allow_http true >/dev/null
-fi
-if [ -n "$ca_bundle" ]; then "$bin_dir/orbit" config set ca_bundle "$ca_bundle" >/dev/null; fi
-if [ -n "$server" ]; then "$bin_dir/orbit" config set server "$server" >/dev/null; fi
-"$bin_dir/orbit" --version
-printf '\n安装完成。运行：%s tui\n' "$bin_dir/orbit"
-case ":${PATH:-}:" in
-  *":$bin_dir:"*) printf '也可以直接运行：orbit tui\n' ;;
-  *) printf '若要直接使用 orbit，请把 %s 加入 PATH。安装器未修改 shell 配置。\n' "$bin_dir" ;;
-esac
-if [ -z "$server" ]; then printf '首次启动可填写服务器地址，或执行 orbit config set server https://你的集群地址。\n'; fi
+case "$server" in http://*|https://*) ;; *) printf '请提供完整 HTTP / HTTPS 服务地址。\n' >&2; exit 2;; esac
+case "$server" in *\?*|*\#*|*\@*|*[[:space:]]*|*\\*) printf '服务地址格式无效。\n' >&2; exit 2;; esac
+if [ "$strict" = 1 ] && [[ "$server" != https://* ]]; then printf '当前安装要求 HTTPS。\n' >&2; exit 2; fi
+server=${server%/}
+printf '[1/5] 检测操作系统和处理器\n'
+case "$(uname -s)" in Darwin) platform=darwin;; Linux) platform=linux;; *) printf '此脚本支持 macOS、Linux 和 WSL；Windows 原生请使用 PowerShell 安装器。\n' >&2; exit 2;; esac
+case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=amd64;; *) printf '暂未提供当前处理器的安装包。\n' >&2; exit 2;; esac
+for tool in curl tar mktemp; do command -v "$tool" >/dev/null || { printf '缺少系统工具：%s\n' "$tool" >&2; exit 2; }; done
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+artifact="orbit-$version-$platform-$arch.tar.gz"
+fetch=(curl --fail --show-error --progress-bar --connect-timeout 15 --max-time 300 --max-redirs 0)
+if [ -n "$ca" ] && [[ "$server" == https://* ]]; then fetch+=(--cacert "$ca"); fi
+printf '[2/5] 从门户下载 %s\n' "$artifact"
+"${fetch[@]}" "$server/terminal/downloads/$artifact" -o "$work/client.tar.gz"
+"${fetch[@]}" "$server/terminal/downloads/$artifact.sha256" -o "$work/digest"
+printf '[3/5] 校验下载文件\n'
+read -r expected _ < "$work/digest"
+[[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || { printf '校验文件无效，安装未执行。\n' >&2; exit 1; }
+if command -v shasum >/dev/null; then actual=$(shasum -a 256 "$work/client.tar.gz"); elif command -v sha256sum >/dev/null; then actual=$(sha256sum "$work/client.tar.gz"); else printf '系统缺少 SHA256 校验工具。\n' >&2; exit 2; fi
+[ "${actual%% *}" = "$expected" ] || { printf 'SHA256 校验失败，原安装保持不变。\n' >&2; exit 1; }
+# Only one regular executable is accepted. No archive path/link may escape work/.
+[ "$(tar -tzf "$work/client.tar.gz")" = orbit ] && [[ "$(tar -tvzf "$work/client.tar.gz")" == -* ]] || { printf '安装包内容不正确。\n' >&2; exit 1; }
+printf '[4/5] 解压并检查客户端\n'
+tar -xzf "$work/client.tar.gz" -C "$work"
+chmod 755 "$work/orbit"
+[ "$("$work/orbit" --version)" = "orbit $version" ] || { printf '客户端版本检查失败。\n' >&2; exit 1; }
+args=(setup --server "$server")
+[ -z "$install_dir" ] || args+=(--install-dir "$install_dir")
+[ -z "$bin_dir" ] || args+=(--bin-dir "$bin_dir")
+[ -z "$config_dir" ] || args+=(--config-dir "$config_dir")
+[ -z "$ca" ] || args+=(--ca-bundle "$ca")
+[ "$strict" = 0 ] || args+=(--require-https)
+printf '[5/5] 安装到当前用户目录并保存服务地址\n'
+"$work/orbit" "${args[@]}"
+printf '\n安装完成。运行 orbit login --username 你的用户名，然后 orbit instances list --json。\n'
+printf '若命令不在 PATH，请使用指定 bin-dir 下的 orbit（默认 ~/.local/bin/orbit）。\n'
+printf '卸载：orbit uninstall；清理登录和配置：orbit uninstall --purge。\n'
