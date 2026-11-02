@@ -12,7 +12,7 @@
 
 ```bash
 bash terminal/install.sh --source terminal \
-  --server 'https://你的集群地址:8443' --ca-bundle /path/to/cluster-ca.crt
+  --server 'https://你的集群地址' --ca-bundle /path/to/cluster-ca.crt
 ```
 
 如果证书由系统已信任的 CA 签发，省略 `--ca-bundle`。安装后运行：
@@ -31,7 +31,7 @@ bash terminal/install.sh --source terminal \
 curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/codex/user-terminal/terminal/install.sh \
   -o /tmp/orbitcluster-install.sh
 bash /tmp/orbitcluster-install.sh --ref codex/user-terminal \
-  --server 'https://你的集群地址:8443' --ca-bundle /path/to/cluster-ca.crt
+  --server 'https://你的集群地址' --ca-bundle /path/to/cluster-ca.crt
 ```
 
 `--install-dir`、`--bin-dir`、`--python` 可改变安装位置和 Python。`--repository`、`--ref` 可用于内部镜像或发布标签。pip 下载源沿用 `PIP_INDEX_URL`。更新时重新运行安装命令；卸载只需移除本工具安装目录和带 OrbitCluster 标记的启动器，登录配置可单独保留或清除。
@@ -101,7 +101,7 @@ orbit logout
 优先级：**命令参数 > ORBIT_* 环境变量 > config.json > 默认值**。代码不写死服务器 IP。
 
 ```bash
-orbit config set server https://你的集群地址:8443
+orbit config set server https://你的集群地址
 orbit config set ca_bundle /path/to/cluster-ca.crt
 orbit config set timeout 120
 orbit config set poll_seconds 5
@@ -150,7 +150,7 @@ TRUSTED_PROXY=127.0.0.1
 Waitress 不直接终止 TLS。提供了 [Caddy 示例](../oa/cluster-portal/deploy/terminal.Caddyfile.example)，可在新端口上增加 HTTPS 入口，保留现有 HTTP 端口和网页行为：
 
 ```bash
-export ORBIT_TERMINAL_ADDRESS='https://你的集群地址:8443'
+export ORBIT_TERMINAL_ADDRESS='https://你的集群地址'
 export ORBIT_PORTAL_UPSTREAM='127.0.0.1:80'
 caddy run --config oa/cluster-portal/deploy/terminal.Caddyfile.example --adapter caddyfile
 ```

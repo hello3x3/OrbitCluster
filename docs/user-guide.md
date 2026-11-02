@@ -98,7 +98,7 @@ cat ~/.ssh/id_ed25519.pub
     -o "$install_script" &&
   bash "$install_script" \
     --ref 344116330a2568d5c909c5fcc07b54a682e9b944 \
-    --server 'https://管理员提供的地址:8443'
+    --server 'https://管理员提供的地址'
 )
 ```
 

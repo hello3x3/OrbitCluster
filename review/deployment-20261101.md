@@ -485,9 +485,9 @@ portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写�
 **上线内容**：
 
 - 合并 `codex/frontend-optimization`（包含 `codex/user-terminal` 的终端 API、CLI/TUI、认证与 HTTPS 部署）；
-- 网页保留原 HTTP 80 入口，同时新增 Caddy HTTPS 8443 入口；
+- 网页保留原 HTTP 80 入口，同时新增 Caddy HTTPS 443 入口；
 - 终端 API：`/api/terminal/v1/*`，Bearer 令牌，默认 7 天，不自动续期；
-- Caddy 使用内部 CA，HTTPS 地址：`https://10.71.106.251:8443`。
+- Caddy 使用内部 CA，HTTPS 地址：`https://10.71.106.251`。
 
 **服务端配置**：
 
@@ -508,7 +508,7 @@ TRUSTED_PROXY=127.0.0.1
     auto_https disable_redirects
 }
 
-https://10.71.106.251:8443 {
+https://10.71.106.251 {
     tls internal
     reverse_proxy 127.0.0.1:80
 }
@@ -526,7 +526,7 @@ https://10.71.106.251:8443 {
 
 **验证**：
 
-- `https://10.71.106.251:8443/login` 返回 200；
+- `https://10.71.106.251/login` 返回 200；
 - HTTP 终端 API 返回 403 `https_required`；
 - HTTPS 终端登录返回 7 天令牌，`/auth/me` 返回 200；
 - 本机 CLI 使用 Caddy CA 完成 `orbit login`、`whoami --json`、`plans --json`；
