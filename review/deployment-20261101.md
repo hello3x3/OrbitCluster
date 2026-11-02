@@ -480,6 +480,58 @@ portal 进程本身仍是非 root，只有 sudo 白名单的 root 助手能写�
 - 重启得到新的随机端口（本地回归覆盖）；
 - `make test`：`CTL_SECURITY_OK` + `SMOKE_OK`。
 
+### 2.25 用户终端功能上线（frontend-optimization）
+
+**上线内容**：
+
+- 合并 `codex/frontend-optimization`（包含 `codex/user-terminal` 的终端 API、CLI/TUI、认证与 HTTPS 部署）；
+- 网页保留原 HTTP 80 入口，同时新增 Caddy HTTPS 8443 入口；
+- 终端 API：`/api/terminal/v1/*`，Bearer 令牌，默认 7 天，不自动续期；
+- Caddy 使用内部 CA，HTTPS 地址：`https://10.71.106.251:8443`。
+
+**服务端配置**：
+
+```ini
+TERMINAL_TOKEN_DAYS=7
+TERMINAL_REQUIRE_HTTPS=1
+TERMINAL_LOGIN_MAX_ATTEMPTS=5
+TERMINAL_LOGIN_IP_MAX_ATTEMPTS=50
+TERMINAL_LOGIN_WINDOW_S=300
+TRUSTED_PROXY=127.0.0.1
+```
+
+`/etc/caddy/Caddyfile`：
+
+```caddy
+{
+    admin off
+    auto_https disable_redirects
+}
+
+https://10.71.106.251:8443 {
+    tls internal
+    reverse_proxy 127.0.0.1:80
+}
+```
+
+**CA 分发**：
+
+- Caddy 内部 CA 根证书复制到：
+  - `/etc/cluster-portal/terminal-ca.crt`
+  - `/share/orbitcluster-terminal-ca.crt`（供用户复制）
+- 终端客户端安装时使用：
+  ```bash
+  orbit config set ca_bundle /本机路径/orbitcluster-terminal-ca.crt
+  ```
+
+**验证**：
+
+- `https://10.71.106.251:8443/login` 返回 200；
+- HTTP 终端 API 返回 403 `https_required`；
+- HTTPS 终端登录返回 7 天令牌，`/auth/me` 返回 200；
+- 本机 CLI 使用 Caddy CA 完成 `orbit login`、`whoami --json`、`plans --json`；
+- `make test`（SMOKE_OK）和 `make test-terminal`（54 passed）通过。
+
 ## 3. 最终验收
 
 ### Slurm
