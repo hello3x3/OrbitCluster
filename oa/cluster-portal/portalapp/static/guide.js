@@ -16,7 +16,9 @@ function update() {
     command.value = ''; copy.disabled = true; status.textContent = e.message; status.classList.add('error');
   }
 }
-if (['http:', 'https:'].includes(location.protocol)) server.value = location.origin;
+const configuredServer = document.getElementById('terminal-installer')?.dataset.publicUrl || '';
+if (configuredServer) server.value = configuredServer;
+else if (['http:', 'https:'].includes(location.protocol)) server.value = location.origin;
 if (/Win/i.test(navigator.userAgentData?.platform || navigator.platform)) platform.value = 'windows';
 for (const field of [server, ca, platform]) field.addEventListener('input', update);
 function legacyCopy() {

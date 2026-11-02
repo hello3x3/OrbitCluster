@@ -46,6 +46,7 @@ IMAGES_MOUNT=@@IMAGES_MOUNT@@
 PARTITION=@@PARTITION@@
 
 # 终端独立令牌：从签发起固定有效，不自动续期；不改变网页 Cookie 策略。
+TERMINAL_PUBLIC_URL=
 TERMINAL_DOWNLOAD_DIR=
 TERMINAL_TOKEN_DAYS=7
 # 实验室内网默认允许 HTTP；需要强制 HTTPS 时明确设为 1。

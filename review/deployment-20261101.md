@@ -543,6 +543,37 @@ https://10.71.106.251 {
 - 真机验证：HTTP/HTTPS 页面 200，`/status` 集群占用、`/status/active` 活跃资源/截止时间、
   HTTPS 终端登录均正常。
 
+### 2.27 原生 Go CLI / 下载分发 / 新集群视图
+
+**合并内容**：`codex/frontend-optimization` 最新提交（`718107e`），包含：
+
+- 终端客户端改为 **Go 0.2.0 单文件 CLI**，不再依赖 Python/TUI；
+- 门户新增 `/terminal/install.sh`、`/terminal/install.ps1`、`/terminal/downloads/*`、
+  `/terminal/manifest.json`、`/terminal/skill.md`；
+- 构建并部署六平台安装包（macOS/Linux/Windows，amd64/arm64）到
+  `/opt/cluster-portal/terminal-downloads`；
+- 新集群占用页（分区/GPU 型号分组）、独立活跃资源页、左侧分组导航；
+- `portal-ctl cluster-status` 部署到 `/usr/local/sbin/portal-ctl`。
+
+**HTTPS 适配**：
+
+- 新分支代码默认允许实验室 HTTP，但线上仍显式保持：
+  ```ini
+  TERMINAL_REQUIRE_HTTPS=1
+  TERMINAL_PUBLIC_URL=https://10.71.106.251
+  ```
+- 快速入门/终端工具页面使用 `TERMINAL_PUBLIC_URL` 生成安装命令，避免从 HTTP 页面
+  生成无法使用的 HTTP 终端命令；
+- Caddy 仍为 `https://10.71.106.251`（443），不使用 8443。
+
+**验证**：
+
+- 门户 `/terminal/manifest.json` 六个平台均 `available: true`；
+- 从门户下载 Linux CLI，SHA256 校验通过，`orbit 0.2.0` 启动；
+- 门户安装脚本端到端安装成功，`orbit login` / `whoami --json` 正常；
+- Caddy/portal active，443/80 监听正常；
+- `make test`：SMOKE_OK；Go CLI `go test ./...` 通过；合并前分支 Python/安装测试 50 passed。
+
 ## 3. 最终验收
 
 ### Slurm

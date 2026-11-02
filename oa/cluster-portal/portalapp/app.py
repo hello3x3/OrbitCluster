@@ -447,7 +447,8 @@ def create_app(testing=False):
 
     @app.route("/guide")
     def guide_page():
-        return render_template("guide.html", terminal_install_ref=TERMINAL_INSTALL_REF)
+        return render_template("guide.html", terminal_install_ref=TERMINAL_INSTALL_REF,
+                               terminal_public_url=siteconf.get("TERMINAL_PUBLIC_URL", ""))
 
     @app.route("/guide/development")
     def development_guide():
@@ -455,7 +456,8 @@ def create_app(testing=False):
 
     @app.route("/guide/terminal")
     def terminal_guide():
-        return render_template("terminal_guide.html", terminal_install_ref=TERMINAL_INSTALL_REF)
+        return render_template("terminal_guide.html", terminal_install_ref=TERMINAL_INSTALL_REF,
+                               terminal_public_url=siteconf.get("TERMINAL_PUBLIC_URL", ""))
 
     # ------------------------------------------------------------------ 认证
     @app.route("/login", methods=["GET", "POST"])
