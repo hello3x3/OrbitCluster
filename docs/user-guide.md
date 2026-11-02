@@ -46,6 +46,21 @@ cat ~/.ssh/id_ed25519.pub
 
 任务停止后名称仍被记录占用；删除这条已结束记录后，才可以再次使用该名称。
 
+## 运行环境与存储
+
+基础容器已预装 Miniconda，路径为 `/opt/miniconda3`。进入容器后使用：
+
+```bash
+source /opt/miniconda3/etc/profile.d/conda.sh
+conda --version
+conda create -n myenv python=3.11
+conda activate myenv
+```
+
+不需要在家目录重复安装 Miniconda。Conda 环境建议创建在容器内的 `/opt/miniconda3` 下；需要长期保留时，将容器保存为个人镜像。
+
+**家目录 `/share/home/<用户名>` 建议只存放代码和小型配置。** 不要把大型数据集、conda 环境、checkpoint 或大量结果文件放在 home：它走 NFS 并计入你的磁盘配额。需要的数据直接从只读 NAS（`/mnt/nas/...`）读取，不要整份复制到 home；代码和少量重要文件会随 home 持久保存。
+
 ## 保存环境与结束任务
 
 安装了软件、修改了容器环境，想下次继续使用时：

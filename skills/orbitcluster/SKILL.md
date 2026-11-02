@@ -28,6 +28,12 @@ HTTP 默认支持，适用于用户的实验室内网；HTTP 会明文传输凭�
 
 让用户本人在真实终端执行 `orbit login --username 用户名` 隐藏输入密码。不要索取聊天中的密码，不读取、复制或输出 `auth.json`，不使用浏览器 Cookie。通过 `orbit whoami --json` 检查身份；凭证默认七天，按返回时间到期，由用户重新登录，无自动续期。新 CLI 可读取旧版按服务地址隔离的配置与凭证。
 
+## 容器环境与存储
+
+- 基础容器已预装 Miniconda，路径 `/opt/miniconda3`；执行 `source /opt/miniconda3/etc/profile.d/conda.sh` 后使用 `conda`。不要建议用户在家目录重复安装 Miniconda。
+- 家目录 `/share/home/<用户名>` 只放代码和小型配置；提醒用户不要把大型数据集、conda 环境、checkpoint 或大量结果放在 home（NFS + 配额）。
+- 数据优先从只读 NAS `/mnt/nas/...` 直接读取，不要整份复制到 home。代码和少量重要文件放 home 持久保存；容器内环境需要长期保留时保存个人镜像。
+
 ## 查询与申请
 
 优先使用 `--json`。成功写 stdout，错误写 stderr。先查询实际可用项，不猜套餐、镜像或账户：

@@ -7,6 +7,7 @@
     <h2>平台使用指南</h2>
     <a href="#getting-started">首次使用</a>
     <a href="#apply-connect">申请与连接</a>
+    <a href="#environment">运行环境与存储</a>
     <a href="#save-stop">保存与结束任务</a>
     <a href="#images">管理镜像</a>
     <a href="#quota-profile">集群、额度与资料</a>
@@ -60,6 +61,18 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
       </figure>
       <p>任务停止后名称仍被记录占用；删除已结束记录后，才可以再次使用该名称。</p>
     </section>
+    <section class="guide-section" id="environment">
+      <h2>运行环境与存储</h2>
+      <p>基础容器已预装 Miniconda，位置是 <code>/opt/miniconda3</code>。进入容器后可直接使用：</p>
+      <pre><code>source /opt/miniconda3/etc/profile.d/conda.sh
+conda --version
+conda create -n myenv python=3.11
+conda activate myenv</code></pre>
+      <p>不需要在自己的家目录里再安装一份 Miniconda。Conda 环境建议建在容器内的 <code>/opt/miniconda3</code> 下；需要长期保留时，把容器保存为个人镜像。</p>
+      <p><strong>家目录 <code>/share/home/&lt;用户名&gt;</code> 建议只存放代码和小型配置</strong>。不要在 home 里保存大型数据集、conda 环境、checkpoint 或大量结果文件；这些内容会占用你的 NFS 配额，也会影响节点性能。</p>
+      <p>需要的数据请直接从只读 NAS 挂载（<code>/mnt/nas/...</code>）读取，不要把整个数据集复制到 home。代码和少量重要文件放在 home 会持久保留；容器内安装的软件环境请用「保存镜像」保留。</p>
+    </section>
+
     <section class="guide-section" id="save-stop">
       <h2>保存环境与结束任务</h2>
       <p>安装软件或修改环境后，想下次继续使用时：</p>

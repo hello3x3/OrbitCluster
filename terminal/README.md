@@ -23,6 +23,12 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 
 也可直接下载门户提供的 macOS、Linux、Windows 压缩包，解压得到一个 `orbit`/`orbit.exe`。便携文件无需安装；删除该文件即可移除程序，配置另行清理。
 
+## 容器环境与存储
+
+基础容器已预装 Miniconda：`/opt/miniconda3`。进入容器后 `source /opt/miniconda3/etc/profile.d/conda.sh` 即可使用 conda；不需要在 home 再安装一份。
+
+`/share/home/<用户名>` 只建议存放代码和小型配置，不要放大型数据集、conda 环境、checkpoint 或大量结果（NFS + 配额）。数据从只读 NAS `/mnt/nas/...` 读取，容器环境需要长期保留时保存个人镜像。
+
 ## 登录与 agent
 
 ```bash
