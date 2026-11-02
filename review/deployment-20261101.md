@@ -532,6 +532,17 @@ https://10.71.106.251 {
 - 本机 CLI 使用 Caddy CA 完成 `orbit login`、`whoami --json`、`plans --json`；
 - `make test`（SMOKE_OK）和 `make test-terminal`（54 passed）通过。
 
+### 2.26 第二次美化/集群视图上线
+
+- 合并 `codex/frontend-optimization` 新提交（`e341d55`），保留 HTTPS 443/Caddy 配置；
+- 新增左侧分组导航、集群占用情况按分区/GPU 型号展示、独立「门户内活跃资源」页；
+- `portal-ctl` 新增并部署 `cluster-status`（显式解析 GresUsed，保留长 GPU 分配计数）；
+- 新分支带来的终端 HTTP 选项保留在代码中，但线上仍使用
+  `TERMINAL_REQUIRE_HTTPS=1`，终端地址保持 `https://10.71.106.251`；
+- `make test`：SMOKE_OK；`make test-terminal`：66 passed；
+- 真机验证：HTTP/HTTPS 页面 200，`/status` 集群占用、`/status/active` 活跃资源/截止时间、
+  HTTPS 终端登录均正常。
+
 ## 3. 最终验收
 
 ### Slurm
