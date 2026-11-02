@@ -11,6 +11,7 @@
     <a href="#save-stop">保存与结束任务</a>
     <a href="#images">管理镜像</a>
     <a href="#quota-profile">集群、额度与资料</a>
+    <a href="#roles">角色权限对照</a>
     <a href="#terminal">安装终端工具</a>
     <a href="#faq">常见问题</a>
   </nav>
@@ -105,6 +106,30 @@ conda activate myenv</code></pre>
       </ul>
       <p>额度、套餐、账户归属和账号状态由管理员维护。上限不足或账户不可用时，请联系管理员。</p>
     </section>
+    <section class="guide-section" id="roles">
+      <h2>角色权限对照</h2>
+      <p>下表只比较<b>普通用户</b>和<b>非 root 的平台管理员</b>；root 超级管理员不在此表，root 专属能力不向普通管理员开放。</p>
+      <div class="guide-table"><table class="table">
+        <thead><tr><th>功能</th><th>普通用户</th><th>管理员（非 root）</th></tr></thead>
+        <tbody>
+          <tr><td>登录、个人资料、SSH 公钥、改密码</td><td>✅</td><td>✅</td></tr>
+          <tr><td>自助申请资源</td><td>✅</td><td>✅（需有同名 OS 账号；纯门户管理员不能申请）</td></tr>
+          <tr><td>管理自己的资源：连接、日志、停机、重启、删除</td><td>✅</td><td>✅</td></tr>
+          <tr><td>查看公共镜像和自己的镜像</td><td>✅</td><td>✅</td></tr>
+          <tr><td>管理自己的个人镜像：注释、改名、删除</td><td>✅</td><td>✅</td></tr>
+          <tr><td>查看集群占用、活跃资源和自己的额度</td><td>✅</td><td>✅</td></tr>
+          <tr><td>代申请资源</td><td>—</td><td>✅ 可代普通用户，也可代自己；不能代其他管理员</td></tr>
+          <tr><td>开通普通用户</td><td>—</td><td>✅</td></tr>
+          <tr><td>重置/停用/删除普通用户、修改普通用户配额</td><td>—</td><td>✅</td></tr>
+          <tr><td>授予/撤销管理员、创建管理员账号</td><td>—</td><td>—（root 专属）</td></tr>
+          <tr><td>管理账户/QoS/优先级/单用户卡数上限、账户成员</td><td>—</td><td>—（root 专属）</td></tr>
+          <tr><td>管理资源套餐</td><td>—</td><td>—（root 专属）</td></tr>
+          <tr><td>管理公共镜像或他人的个人镜像</td><td>—</td><td>—（root 专属）</td></tr>
+        </tbody>
+      </table></div>
+      <p class="small muted">管理员不能管理其他管理员或 root，也不能停用/删除其他管理员；这些操作由 root 或 OS root 完成。普通用户只能操作自己的资源和个人镜像。</p>
+    </section>
+
     {% include '_terminal_guide.html' %}
     <section class="guide-section" id="faq">
       <h2>常见问题</h2>
