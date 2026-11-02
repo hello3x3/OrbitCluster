@@ -26,4 +26,15 @@ The existing `tests/test_ctl_security.py` was also attempted. With macOS's defau
 
 ## Review
 
-Fresh whole-branch review pending. Formal red-box guide screenshots will be added only after the user confirms the redesigned pages.
+Fresh whole-branch reviewer checked `3441163..79be5e1` against the spec and plan: no critical, important or minor finding; ready for user review. Independently reran the two guide route tests and generated-shell checks successfully.
+
+Review boundaries: no production-cluster/TLS exercise, no claim that the existing macOS CTL test passes, and no formal guide screenshots. These remain outside this local preview stage; Linux verification is required before deployment, and screenshots require user page approval.
+
+The macOS ownership limitation was independently reproduced on an owned temporary file: UID 501, GID 20, group 501 absent; `os.chown(path, 501, 501)` is denied. This matches the unchanged helper's ownership operation. No permission policy was relaxed.
+
+## Implementation choices
+
+- Keep the pure install-command generator in `guide-install.mjs`, separate from browser bindings in `guide.js`, so actual generated shell can be tested without a fake DOM. Cost: one additional small module.
+- Commit styles and guide together (`79be5e1`) because navigation links depend on the new guide route. Cost: a coarser commit boundary; every committed checkout remains runnable.
+
+Formal red-box guide screenshots will be added only after the user confirms the redesigned pages.
