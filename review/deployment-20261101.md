@@ -559,7 +559,7 @@ https://10.71.106.251 {
 
 - 新分支代码默认允许实验室 HTTP，但线上仍显式保持：
   ```ini
-  TERMINAL_REQUIRE_HTTPS=1
+  TERMINAL_REQUIRE_HTTPS=0
   TERMINAL_PUBLIC_URL=https://10.71.106.251
   ```
 - 快速入门/终端工具页面使用 `TERMINAL_PUBLIC_URL` 生成安装命令，避免从 HTTP 页面
@@ -573,6 +573,26 @@ https://10.71.106.251 {
 - 门户安装脚本端到端安装成功，`orbit login` / `whoami --json` 正常；
 - Caddy/portal active，443/80 监听正常；
 - `make test`：SMOKE_OK；Go CLI `go test ./...` 通过；合并前分支 Python/安装测试 50 passed。
+
+### 2.28 终端 HTTP 放行（实测修正）
+
+用户用允许 HTTP 的 CLI 访问真实服务器时收到 `403 https_required`。核对确认：
+
+- `/etc/cluster-portal/site.conf` 原为 `TERMINAL_REQUIRE_HTTPS=1`；
+- systemd 没有 `PORTAL_TERMINAL_REQUIRE_HTTPS` 环境覆盖；
+- 按要求改为 `TERMINAL_REQUIRE_HTTPS=0` 并重启 `cluster-portal`。
+
+验证（真实服务器，不是本地假服务）：
+
+- HTTP `/api/terminal/v1/auth/login`：200；
+- HTTPS 同一接口：200；
+- 门户下载的 Linux `orbit 0.2.0` 使用 `--server http://10.71.106.251` 完成
+  `login` + `whoami --json`；
+- 测试令牌全部撤销；
+- Caddy 的 443 HTTPS 仍保留，两种入口都可用。
+
+> 安全提示：`TERMINAL_REQUIRE_HTTPS=0` 会让 HTTP 终端登录的密码和 Bearer 令牌明文传输，
+> 仅适用于可信实验室内网；能走 `https://10.71.106.251` 时应优先使用 HTTPS。
 
 ## 3. 最终验收
 
