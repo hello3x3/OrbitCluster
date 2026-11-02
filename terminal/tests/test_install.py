@@ -35,7 +35,7 @@ elif args[:2] == ['-m', 'pip']:
     if not source.is_absolute() or not (source / 'pyproject.toml').is_file():
         raise SystemExit(22)
 elif args[:2] == ['-m', 'orbitcluster']:
-    print('orbit 0.1.0')
+    print('orbit 0.1.1')
 else:
     os.execv(sys.executable, [sys.executable] + args)
 ''')
