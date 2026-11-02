@@ -297,3 +297,25 @@ E2E_BASE=http://<ADMIN>:80 .venv-test/bin/python tests/e2e_live.py
 #       ssh 进容器见卡、CPU+GPU 同节点并发、日志、停机、端口复用、停用/启用、集群状态、
 #       镜像分组(公共/个人)、保存镜像(真实 enroot export)、到期自动保存+自动停机
 ```
+
+## 侧边栏、集群视图与资产占位页
+
+左侧导航默认展开，可按组折叠；个人资料和退出位于右上角头像菜单。原有 `/my`、`/images`、`/apply`、`/profile` 及任务接口不变。
+
+- `/status`：全部实际 Slurm 分区的占用情况，按 GPU 型号分组；同一物理节点的全局计数去重。新的只读 `portal-ctl cluster-status` 不改变原 `sinfo` 或调度行为。升级时应同步安装新 helper；无需变更 sudo 权限。
+- `/status/active`：门户内活跃资源，原有上海时间截止信息保留。代申请成功跳转该页。
+- `/assets/datasets`、`/assets/models`：共有资产前端占位，明确显示“功能待完善”。按当前需求没有目录扫描、统计 API 或定时任务。
+- `/assets/images`：复用现有镜像页面及权限；普通用户只管理自己的镜像，root 保持原管理范围。
+- `/guide`、`/guide/development`、`/guide/terminal`：公开的入门、开发和终端文档。
+
+终端 skill 在仓库 `skills/orbitcluster/SKILL.md`；终端文档内有安装步骤和下载。部署所需静态文档已打包进 portalapp/static/docs；更新仓库原理页或 skill 后运行：
+
+```bash
+python3 oa/cluster-portal/scripts/bundle_docs.py
+```
+
+该步骤只复制文档，不调用集群，也不安装定时任务。新增页面回归测试：
+
+```bash
+.venv-test/bin/python -m pytest oa/cluster-portal/tests/test_sidebar_cluster.py -q
+```

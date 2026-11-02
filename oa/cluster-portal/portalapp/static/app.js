@@ -649,7 +649,7 @@
         const d = await post("/admin/apply", new FormData(f));
         if (d.ok) {
           toast(d.msg || "代提交成功", "ok");
-          setTimeout(() => (location.href = "/status"), 1200);
+          setTimeout(() => (location.href = "/status/active"), 1200);
         } else { toast(d.error || "代提交失败", "err"); btn.disabled = false; }
       } catch (e) { toast(e.message || "网络错误", "err"); btn.disabled = false; }
     });

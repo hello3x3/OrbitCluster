@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}终端工具使用 - {{ portal_name }}{% endblock %}
+{% block content %}
+<article class="guide-content standalone-guide"><h1>终端工具使用</h1><p class="guide-intro">在终端完成用户登录、申请资源和日常操作，也可以交给 Codex 等 agent。</p>
+{% include '_terminal_guide.html' %}
+</article>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ url_for('static', filename='guide.js') }}?v=1"></script>{% endblock %}

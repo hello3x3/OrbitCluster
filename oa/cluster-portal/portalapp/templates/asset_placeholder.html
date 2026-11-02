@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ asset_title }} - {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div class="page-heading"><h1>{{ asset_title }}</h1><p class="muted">{{ asset_description }}</p></div><span class="st st-unknown">功能待完善</span></div>
+<div class="card"><h2>共有{{ asset_title }}</h2><p class="muted">后续将接入共有资产目录与每日空间统计，目前尚无后端数据。</p><div class="table-scroll"><table class="table"><thead><tr><th>名称</th><th>存放位置</th><th>空间占用</th><th>更新时间</th></tr></thead><tbody><tr><td colspan="4" class="empty asset-empty">功能待完善，尚未接入{{ asset_title }}数据</td></tr></tbody></table></div></div>
+{% endblock %}

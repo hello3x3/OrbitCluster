@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}平台开发文档 - {{ portal_name }}{% endblock %}
+{% block content %}
+<article class="guide-content standalone-guide">
+  <h1>平台开发文档</h1><p class="guide-intro">复用项目已有的系统原理与代码文档，了解平台的工作方式。</p>
+  <section class="guide-section"><h2>系统原理</h2><p>从网页申请到进入容器，串联门户、权限助手、Slurm、容器与共享存储。</p><p><a class="btn btn-primary" href="{{ url_for('static', filename='docs/architecture.html') }}" target="_blank" rel="noopener">打开系统原理图解</a></p><p class="muted small">来自项目现有 architecture/index.html，包含生命周期、权限边界、存储、镜像、网络、认证及部署生成器，支持离线阅读。</p></section>
+  <section class="guide-section"><h2>组件与代码入口</h2><div class="table-scroll"><table class="table"><thead><tr><th>组件</th><th>职责</th><th>代码入口</th></tr></thead><tbody>
+    <tr><td>网页门户</td><td>页面、用户操作与权限校验</td><td><code>oa/cluster-portal/portalapp/</code></td></tr>
+    <tr><td>权限助手</td><td>校验请求后调用 Slurm、系统账号与容器命令</td><td><code>oa/cluster-portal/deploy/portal-ctl</code></td></tr>
+    <tr><td>终端客户端</td><td>用户 TUI、CLI 与独立认证</td><td><code>terminal/</code></td></tr>
+    <tr><td>部署配置</td><td>用一份站点配置生成部署文件</td><td><code>provision/</code></td></tr>
+    <tr><td>Agent skill</td><td>安装与使用用户终端</td><td><code>skills/orbitcluster/SKILL.md</code></td></tr>
+  </tbody></table></div></section>
+  <section class="guide-section"><h2>继续阅读</h2><ul>
+    <li><a href="https://github.com/hello3x3/OrbitCluster/blob/codex/frontend-optimization/oa/cluster-portal/README.md">门户开发、部署与测试说明</a></li>
+    <li><a href="https://github.com/hello3x3/OrbitCluster/blob/codex/frontend-optimization/provision/README.md">站点配置与部署生成器</a></li>
+    <li><a href="{{ url_for('terminal_guide') }}">终端工具与 skill 安装</a></li>
+  </ul></section>
+</article>
+{% endblock %}

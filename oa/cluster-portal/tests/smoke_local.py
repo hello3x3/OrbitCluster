@@ -35,6 +35,14 @@ ctlmod.sinfo = lambda: {"ok": True, "partition": "gpu", "nodes": [
      "gres": "gpu:3060:1(S:0)", "gres_model": "3060",
      "gres_total": 1, "gres_used": 1, "gres_free": 0,
      "ip": "<GPU01_IP>"}]}
+# New read-only cluster view uses the same fake nodes, never a real helper.
+def _fake_cluster_status():
+    data = ctlmod.sinfo()
+    part = data.get("partition", "gpu")
+    return {"ok": data.get("ok", True), "partitions": [part],
+            "nodes": [dict(n, partitions=n.get("partitions") or [part]) for n in data.get("nodes", [])]}
+
+ctlmod.cluster_status = _fake_cluster_status
 ctlmod.job_state = lambda u, j: {"ok": True, "active": True, "state": "RUNNING",
                                  "node": "<GPU01>", "elapsed": "00:01:00", "name": "x"}
 ctlmod.kill = lambda u, j: {"ok": True, "job_id": j, "cancelled": True}
@@ -1301,6 +1309,8 @@ def main():
     assert b"16/16" in r.data, "CPU 空闲/总没渲染"
     assert b"23G/31G" in r.data, "内存 空闲/总没渲染（23741/1024≈23G，总量 31933/1024≈31G）"
     assert b"0/1" in r.data, "GPU 空闲/总没渲染（已用 1 / 总 1）"
+    r = c.get("/status/active")  # Navigation now separates occupancy from portal-active jobs.
+    assert r.status_code == 200
     assert "截止时间（上海）".encode() in r.data, "活跃资源应展示上海时间截止时间"
     assert appmod._deadline_cn({"started_at": "2026-11-01T10:00:00",
                                 "walltime": "04:00:00"}) == "2026-11-01 14:00"

@@ -1,78 +1,15 @@
 {% extends "base.html" %}
-{% block title %}集群状态 - {{ portal_name }}{% endblock %}
+{% block title %}集群占用情况 - {{ portal_name }}{% endblock %}
 {% block content %}
-<div class="page-head"><div class="page-heading"><h1>集群状态</h1><p class="muted">节点空闲资源与当前活跃任务</p></div>
-  <button class="btn btn-ghost" id="btn-refresh" type="button">刷新</button></div>
-
-<h2>节点（分区 {{ partition }}）</h2>
-<div class="card">
-  <table class="table">
-    <thead><tr><th>节点</th><th>状态</th><th>CPU（空闲/总）</th><th>内存（空闲/总）</th><th>GPU（空闲/总）</th></tr></thead>
-    <tbody>
-    {% for n in nodes %}
-      {# 用 .get()：老缓存 / 测试桩里的节点字典可能没有这些新字段，
-         缺字段时应当显示「—」，而不是让 Undefined 参与算术把整页 500 掉。 #}
-      {% set mem_free = n.get('mem_free_mb') %}
-      {% set gres_free = n.get('gres_free') %}
-      {% set gres_total = n.get('gres_total') or 0 %}
-      <tr>
-        <td class="mono">{{ n.name }}</td>
-        <td><span class="st st-{{ n.state|lower }}">{{ n.state }}</span></td>
-        <td>{{ n.cpus_idle }}/{{ n.cpus_total }}</td>
-        {# 内存：调度口径的空闲 = 总内存 − 已分配（不是 OS 的 free，口径见 portal-ctl 里的说明） #}
-        <td>{% if mem_free is not none %}{{ (mem_free/1024)|round|int }}G/{{ (n.mem_mb/1024)|round|int }}G{% else %}—{% endif %}</td>
-        <td class="mono" title="{{ n.gres }}">{% if gres_total and gres_free is not none %}{{ gres_free }}/{{ gres_total }}{% else %}—{% endif %}{% if n.get('gres_model') %} <span class="muted small">{{ n.gres_model }}</span>{% endif %}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="5" class="empty">无法获取节点状态（slurm 不可用？）</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<h2>门户内活跃资源（{{ active|length }}）</h2>
-<div class="card">
-  <table class="table">
-    <thead><tr><th>作业#</th><th>用户</th><th>资源</th><th>节点</th><th>端口</th><th>截止时间（上海）</th><th>状态</th></tr></thead>
-    <tbody>
-    {% for i in active %}
-      <tr>
-        <td class="mono">{{ i.job_id }}</td>
-        <td>{{ i.username }}</td>
-        <td>{{ i.res_name }} <span class="small muted">({{ i.plan_name }} · {{ i.image_name }})</span></td>
-        <td class="mono">{{ i.node_cn }}</td>
-        <td class="mono">{{ i.port }}</td>
-        <td class="small mono">{{ i.deadline_cn }}</td>
-        <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
-      </tr>
-    {% else %}
-      <tr><td colspan="7" class="empty">暂无活跃资源</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-{% if is_admin %}
-<h2>我的资源（管理员视图）</h2>
-{% else %}
-<h2>我的资源</h2>
-{% endif %}
-<div class="card">
-  <table class="table">
-    <thead><tr><th>作业#</th><th>资源</th><th>状态</th><th>节点</th><th>端口</th></tr></thead>
-    <tbody>
-    {% for i in mine %}
-      <tr>
-        <td class="mono">{{ i.job_id }}</td>
-        <td>{{ i.res_name }}</td>
-        <td><span class="st st-{{ i.state_key }}">{{ i.state_cn }}</span></td>
-        <td class="mono">{{ i.node_cn }}</td>
-        <td class="mono">{{ i.port }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="5" class="empty">暂无</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
+<div class="page-head"><div class="page-heading"><h1>集群占用情况</h1><p class="muted">按实际分区查看节点与 GPU 占用，同一物理节点在全局统计中只计一次</p></div><button class="btn btn-ghost" id="btn-refresh" type="button">刷新</button></div>
+{% if cluster_error %}<div class="alert alert-warn">{{ cluster_error }}，请稍后刷新或联系管理员检查集群状态读取服务。</div>{% endif %}
+{% if not cluster_error %}<div class="cluster-summary"><div><span class="muted">分区</span><strong>{{ partitions|length }}</strong></div><div><span class="muted">物理节点</span><strong>{{ overall.nodes }}</strong></div><div><span class="muted">GPU 占用 / 总量</span><strong>{{ overall.gpu_used if overall.gpu_used is not none else '—' }} / {{ overall.gres_total if overall.gres_total is not none else '—' }}</strong></div></div>{% endif %}
+{% for part in partitions %}
+<section class="card partition-card"><div class="partition-head"><h2>{{ part.name }} <span class="muted small">分区</span></h2><span class="small muted">{{ part.totals.nodes }} 个节点 · GPU 占用 {{ part.totals.gpu_used if part.totals.gpu_used is not none else '—' }} / {{ part.totals.gres_total if part.totals.gres_total is not none else '—' }}</span></div>
+{% if part.totals.gpu_percent is not none %}<div class="usage-track" role="progressbar" aria-label="{{ part.name }} 分区 GPU 已分配比例" aria-valuenow="{{ part.totals.gpu_percent }}" aria-valuemin="0" aria-valuemax="100"><span style="width:{{ part.totals.gpu_percent }}%"></span></div>{% endif %}
+{% for group in part.groups %}<h3 class="gpu-group-title">{{ group.name }}</h3><div class="table-scroll"><table class="table"><thead><tr><th>节点</th><th>状态</th><th>CPU（空闲/总）</th><th>内存（空闲/总）</th><th>GPU（空闲/总）</th></tr></thead><tbody>
+{% for n in group.nodes %}<tr><td class="mono">{{ n.name }}</td><td><span class="st st-{{ n.state|lower }}">{{ n.state }}</span></td><td>{{ n.cpus_idle }}/{{ n.cpus_total }}</td><td>{% if n.get('mem_free_mb') is not none %}{{ (n.mem_free_mb/1024)|round|int }}G/{{ (n.mem_mb/1024)|round|int }}G{% else %}—{% endif %}</td><td>{% if n.get('gres_total') and n.get('gres_free') is not none %}{{ n.gres_free }}/{{ n.gres_total }}{% else %}—{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>{% endfor %}
+</section>{% else %}<div class="card"><p class="empty">暂时没有可显示的分区节点信息</p></div>{% endfor %}
+<p class="muted small">空闲数量采用 Slurm 调度口径。离线节点不能申请；同一节点可能属于多个分区，各分区数量不可直接相加。</p>
 {% endblock %}
