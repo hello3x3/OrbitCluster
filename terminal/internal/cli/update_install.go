@@ -84,10 +84,10 @@ func installUpdatedBinary(source string, old, next installation) error {
 	}
 	defer release()
 	for i := range files {
-		if e = os.Rename(files[i].staged, files[i].path); e != nil {
+		if e = renameUpdateFile(files[i].staged, files[i].path); e != nil {
 			rollbackOK := true
 			for j := i - 1; j >= 0; j-- {
-				if os.Rename(files[j].backup, files[j].path) != nil {
+				if renameUpdateFile(files[j].backup, files[j].path) != nil {
 					rollbackOK = false
 				}
 			}

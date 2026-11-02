@@ -2,7 +2,12 @@
 
 package cli
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
+
+func renameUpdateFile(source, target string) error { return os.Rename(source, target) }
 
 func lockUpdateTargets(paths ...string) (func(), error) { return func() {}, nil }
 

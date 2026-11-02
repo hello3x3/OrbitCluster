@@ -100,13 +100,13 @@ func TestWindowsUpdateGuardChecksBothExecutablesBeforeMutation(t *testing.T) {
 		t.Fatal("target handle leaked after rejected launcher", e)
 	}
 	defer release()
-	// FILE_SHARE_DELETE must allow replacing both paths while the guards remain held.
+	// The Win32 POSIX rename must replace both paths while guards remain held.
 	for _, p := range []string{target, launcher} {
 		newPath := p + ".new"
 		if e := os.WriteFile(newPath, []byte("updated executable"), 0600); e != nil {
 			t.Fatal(e)
 		}
-		if e := os.Rename(newPath, p); e != nil {
+		if e := renameUpdateFile(newPath, p); e != nil {
 			t.Fatal("guard blocks its own atomic replacement", e)
 		}
 	}

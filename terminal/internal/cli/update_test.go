@@ -127,11 +127,11 @@ func TestNativeUpdateReplacesInstalledBinaryAndPreservesCredentials(t *testing.T
 	if updateErr != nil {
 		t.Fatal(updateErr, updateOutput)
 	}
+	var pending struct{ Data updateReport }
+	if e = json.Unmarshal([]byte(updateOutput), &pending); e != nil {
+		t.Fatal(e, updateOutput)
+	}
 	if runtime.GOOS == "windows" {
-		var pending struct{ Data updateReport }
-		if e = json.Unmarshal([]byte(updateOutput), &pending); e != nil {
-			t.Fatal(e, updateOutput)
-		}
 		deadline := time.Now().Add(15 * time.Second)
 		for {
 			log, _ := os.ReadFile(pending.Data.LogFile)
@@ -156,7 +156,8 @@ func TestNativeUpdateReplacesInstalledBinaryAndPreservesCredentials(t *testing.T
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("installed update did not finish", e, output)
+			log, _ := os.ReadFile(pending.Data.LogFile)
+			t.Fatal("installed update did not finish", e, output, string(log))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
