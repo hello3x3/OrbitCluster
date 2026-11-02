@@ -25,6 +25,8 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 
 ## 容器环境与存储
 
+本系统以容器为核心，每个资源是独立容器。容器拥有完整 root 权限：在容器内执行 `su -`，root 密码是 `218`；日常用普通用户，只有安装系统包或修改系统配置时才切换（该 root 仅限容器内，不是宿主机 root）。
+
 基础容器已预装 Miniconda：`/opt/miniconda3`。进入容器后 `source /opt/miniconda3/etc/profile.d/conda.sh` 即可使用 conda；不需要在 home 再安装一份。
 
 `/share/home/<用户名>` 只建议存放代码和小型配置，不要放大型数据集、conda 环境、checkpoint 或大量结果（NFS + 配额）。数据从只读 NAS `/mnt/nas/...` 读取，容器环境需要长期保留时保存个人镜像。

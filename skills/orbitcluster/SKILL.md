@@ -30,6 +30,7 @@ HTTP 默认支持，适用于用户的实验室内网；HTTP 会明文传输凭�
 
 ## 容器环境与存储
 
+- **本系统以容器为核心**：每个资源是独立容器；容器拥有完整 root 权限，容器内 `su -` 的 root 密码是 `218`（仅容器内，不是宿主机 root）。日常用普通用户，只有安装系统包/改系统配置时才切换。
 - 基础容器已预装 Miniconda，路径 `/opt/miniconda3`；执行 `source /opt/miniconda3/etc/profile.d/conda.sh` 后使用 `conda`。不要建议用户在家目录重复安装 Miniconda。
 - 家目录 `/share/home/<用户名>` 只放代码和小型配置；提醒用户不要把大型数据集、conda 环境、checkpoint 或大量结果放在 home（NFS + 配额）。
 - 数据优先从只读 NAS `/mnt/nas/...` 直接读取，不要整份复制到 home。代码和少量重要文件放 home 持久保存；容器内环境需要长期保留时保存个人镜像。
