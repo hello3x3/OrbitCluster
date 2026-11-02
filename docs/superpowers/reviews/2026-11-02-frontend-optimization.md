@@ -1,7 +1,7 @@
 # Frontend and text guide validation
 
 Branch: `codex/frontend-optimization`, based on `codex/user-terminal` at `3441163`.
-User confirmed blue emphasis on 2026-11-02; guide screenshots await page approval.
+User confirmed blue emphasis and subsequently accepted the overall page on 2026-11-02; requested brighter blue, a tighter header, responsive tables and GPT Image branding.
 
 ## Scope
 
@@ -9,7 +9,7 @@ User confirmed blue emphasis on 2026-11-02; guide screenshots await page approva
 - Presentation text changes remove decorative emoji and clarify automatic port allocation.
 - Existing server code changed only to add public GET `/guide` and its pinned client-release constant.
 - New isolated guide JavaScript validates input, quotes shell arguments and supports copy/fallback selection.
-- No existing routes, permissions, database schema, authentication lifetimes, request parameters, polling or cluster actions changed. No deployment or guide screenshots.
+- No existing routes, permissions, database schema, authentication lifetimes, request parameters, polling or cluster actions changed. No deployment. Guide screenshots were added in the approved refinement stage below.
 
 ## Verification (2026-11-02)
 
@@ -37,4 +37,14 @@ The macOS ownership limitation was independently reproduced on an owned temporar
 - Keep the pure install-command generator in `guide-install.mjs`, separate from browser bindings in `guide.js`, so actual generated shell can be tested without a fake DOM. Cost: one additional small module.
 - Commit styles and guide together (`79be5e1`) because navigation links depend on the new guide route. Cost: a coarser commit boundary; every committed checkout remains runnable.
 
-Formal red-box guide screenshots will be added only after the user confirms the redesigned pages.
+The user subsequently confirmed the page and requested refinements; approved guide screenshots are recorded below.
+
+## Approved refinement and guide illustrations
+
+- User feedback: “我觉得没什么问题”, followed by requests for brighter blue, compact/aligned header, adaptive tables and GPT Image logo/favicon.
+- Emphasis is now `#2563eb`, hover `#1d4ed8`; shared header/content gutter and 1480px maximum. Normal desktop header measured 57px including the border.
+- At 1920/1440/1280/1024px the resource table fits its container; at 768/390px only the table scrolls. Header and content left edges match at every checked width; all columns/actions remain. Duration/ID values stay intact.
+- Built-in GPT Image generated the symbol and horizontal logo. Transparent PNG/ICO assets are stored in `static/brand/`; exact prompts and provenance are in `docs/brand-assets.md`. Dynamic portal naming remains live text.
+- Three 2x screenshots from the actual local demo pages use red outlines only on click targets. Public guide images have alt text, intrinsic dimensions, lazy loading and original-size links. No real accounts/keys/cluster data were used.
+- Final checks after image integration: full pytest **56 passed** (12.86s); original webpage smoke **SMOKE_OK**; command execution checks passed; responsive and guide-copy browser checks passed; public images passed at 1440/1024/390/320px with no console errors. PNG/ICO loads and alpha channels checked.
+- Refinement self-review: only CSS, presentation templates and static assets changed after the earlier independent review; existing backend/business JavaScript unchanged. No additional permission or lifecycle changes. The Linux CTL check limitation above remains.

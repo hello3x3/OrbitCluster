@@ -27,6 +27,10 @@
       <pre><code>ssh-keygen -t ed25519
 cat ~/.ssh/id_ed25519.pub</code></pre>
       <p>如果提示已有同名密钥，保留原文件或换一个文件名。添加公钥后即可申请资源，SSH 端口由平台自动分配。</p>
+      <figure class="guide-figure">
+        <a href="{{ url_for('static', filename='guide/ssh-public-key.png') }}" target="_blank" rel="noopener" aria-label="放大添加公钥操作示意图"><img src="{{ url_for('static', filename='guide/ssh-public-key.png') }}" width="922" height="217" loading="lazy" alt="个人资料中的公钥输入框和添加公钥按钮，以红框标出"></a>
+        <figcaption>粘贴你自己的公钥，再点击“添加公钥”。图片可点击放大。</figcaption>
+      </figure>
     </section>
     <section class="guide-section" id="apply-connect">
       <h2>申请与连接</h2>
@@ -39,6 +43,10 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
         <tr><td>时长</td><td>不超过所选套餐上限</td></tr>
         <tr><td>节点</td><td>一般保留“自动分配”；需要指定机器时再选择</td></tr>
       </tbody></table></div>
+      <figure class="guide-figure">
+        <a href="{{ url_for('static', filename='guide/apply-task-image.png') }}" target="_blank" rel="noopener" aria-label="放大任务名称和镜像选择示意图"><img src="{{ url_for('static', filename='guide/apply-task-image.png') }}" width="762" height="389" loading="lazy" alt="申请资源页面中的任务名称和镜像选择框，以红框标出"></a>
+        <figcaption>填写任务名称、选择镜像，继续向下选择套餐和时长。</figcaption>
+      </figure>
       <p>提交后回到“我的资源”：</p>
       <ul>
         <li><strong>排队中</strong>：等待调度分配资源。</li>
@@ -46,6 +54,10 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
         <li><strong>运行中</strong>：点击“连接/详情”，复制 SSH 命令，在本机终端执行。</li>
       </ul>
       <p>连接时使用已登记公钥对应的私钥，平台密码不用于容器 SSH 登录。连接失败先打开“日志”查看启动信息和门户操作结果。</p>
+      <figure class="guide-figure" id="resource-actions-example">
+        <a href="{{ url_for('static', filename='guide/resource-actions.png') }}" target="_blank" rel="noopener" aria-label="放大任务操作位置示意图"><img src="{{ url_for('static', filename='guide/resource-actions.png') }}" width="1026" height="352" loading="lazy" alt="我的资源任务表，运行中任务右侧的连接详情、保存镜像和停机按钮以红框标出"></a>
+        <figcaption>在运行中任务右侧连接容器或保存镜像；确认保存成功后再停机。</figcaption>
+      </figure>
       <p>任务停止后名称仍被记录占用；删除已结束记录后，才可以再次使用该名称。</p>
     </section>
     <section class="guide-section" id="save-stop">
