@@ -594,6 +594,41 @@ https://10.71.106.251 {
 > 安全提示：`TERMINAL_REQUIRE_HTTPS=0` 会让 HTTP 终端登录的密码和 Bearer 令牌明文传输，
 > 仅适用于可信实验室内网；能走 `https://10.71.106.251` 时应优先使用 HTTPS。
 
+### 2.29 3090-00 GPU 资源下线（节点级）
+
+**操作**：
+
+- 先取消用户当前唯一运行作业 #52（4 卡，3090-00），队列清空；
+- `scontrol update NodeName=3090-00 Gres=gpu:0` 立即让调度器不再给该节点分配 GPU；
+- 修改四台 `/etc/slurm/slurm.conf`：3090-00 的 `NodeName` 行删除 `Gres=gpu:3090:4`；
+- 修改 3090-00 `/etc/slurm/gres.conf`：
+  ```text
+  AutoDetect=off
+  ```
+  防止 slurmd 重新自动发现 4 张物理卡；
+- 重启 `slurmctld` 和四台 `slurmd`，让持久配置生效；
+- **未修改门户代码**。
+
+**结果**：
+
+- 3090-00：`Gres=(null)`，`CfgTRES=cpu=40,mem=64037M,billing=40`，无 `gres/gpu`；
+- 3090-01/02/03 仍为 `Gres=gpu:3090:4`；
+- 3090-00 上 GPU 作业测试返回：
+  ```text
+  allocation failure: Requested node configuration is not available
+  ```
+- 3090-00 上 CPU 作业测试通过（`sbatch --test-only` 可排到该节点）；
+- 门户集群状态中 3090-00 的 GPU 显示为 `—`；
+- Caddy 443、门户 80、终端 API 均正常，队列为空。
+
+**回滚资料**：
+
+- `/root/slurm.conf.bak-gpu-offline`
+- `/root/gres.conf.bak-gpu-offline`
+
+> 注意：当前 `provision/render.sh` 生成器仍按 cluster.conf 把 3090-00 标为 4 卡；
+> 下次重新渲染会恢复 GPU 配置。若要长期保留，需要在生成器中增加“离线 GPU 节点”支持。
+
 ## 3. 最终验收
 
 ### Slurm
