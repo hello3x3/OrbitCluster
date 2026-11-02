@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=41">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=42">
 <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/nebula-favicon-32.png') }}?v=1">
 <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/nebula-favicon-16.png') }}?v=1">
 <link rel="shortcut icon" href="{{ url_for('static', filename='brand/nebula-favicon.ico') }}?v=1">
@@ -18,7 +18,7 @@
 {%- endmacro %}
 <div class="app-shell">
   <aside class="sidebar" id="sidebar" aria-label="主导航">
-    <div class="sidebar-brand"><a href="{{ url_for('home') }}"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-nebula-mark.png') }}" width="32" height="32" alt=""><span>{{ portal_name }}</span></a><button class="sidebar-close" type="button" data-sidebar-close aria-label="关闭导航">×</button></div>
+    <div class="sidebar-brand"><a href="{{ url_for('home') }}"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-nebula-mark.png') }}" width="48" height="48" alt=""><span>{{ portal_name }}</span></a><button class="sidebar-close" type="button" data-sidebar-close aria-label="关闭导航">×</button></div>
     <nav class="sidebar-nav" aria-label="平台导航">
       {% if cur_user %}
       <details class="nav-group" open><summary><span class="nav-emoji" aria-hidden="true">📋</span>任务</summary><div class="nav-group-links">

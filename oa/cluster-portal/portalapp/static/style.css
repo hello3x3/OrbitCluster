@@ -41,7 +41,7 @@ p { margin:8px 0 }
 .sidebar-brand { display:flex; align-items:center; gap:8px; min-height:80px; padding:20px 18px 16px }
 .sidebar-brand a { display:flex; align-items:center; gap:10px; min-width:0; color:var(--txt); font-size:17px; line-height:1.35; font-weight:600; text-decoration:none }
 .sidebar-brand a span { overflow-wrap:anywhere }
-.brand-mark { width:32px; height:32px; flex:none; object-fit:contain }
+.brand-mark { width:48px; height:48px; flex:none; object-fit:contain }
 .sidebar-nav { padding:0 12px 20px; flex:1 }
 .nav-group { margin:0 0 12px }
 .nav-group summary { display:flex; align-items:center; gap:10px; padding:10px; color:var(--muted); font-size:15px; font-weight:500; cursor:pointer; list-style:none }
