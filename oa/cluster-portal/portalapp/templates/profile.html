@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}个人资料 - {{ portal_name }}{% endblock %}
+{% block body_class %}profile-page{% endblock %}
 {% block content %}
 <div class="page-head">
   <h1>个人资料</h1>
   {% if not profile_ok %}
   <div class="alert alert-warn">
-    ⚠️ 你还需要：<b>至少 1 个 SSH 公钥</b> 才能申请资源。端口由平台自动分配。
+    你还需要：<b>至少 1 个 SSH 公钥</b> 才能申请资源。端口由平台自动分配。
   </div>
   {% endif %}
 </div>
@@ -14,7 +15,7 @@
 
 <div class="grid-2">
   <section class="card">
-    <h2>① SSH 登录公钥</h2>
+    <h2>SSH 登录公钥</h2>
     {% if is_admin and not can_os %}
     <div class="alert alert-warn">该门户账号（管理员）在集群上没有同名 Linux 账号，公钥无需在此登记；请用「代申请资源」帮用户提交。</div>
     {% else %}
@@ -52,7 +53,7 @@
 </div>
 
 <section class="card">
-  <h2>② 显示名</h2>
+  <h2>显示名</h2>
   <p class="muted">显示名会显示在门户右上角与管理员用户列表里，随时可改。</p>
   <form class="xform" data-url="{{ url_for('profile_name') }}">
     <div class="row">
@@ -66,7 +67,7 @@
 </section>
 
 <section class="card">
-  <h2>③ 修改登录密码</h2>
+  <h2>修改登录密码</h2>
   <form class="xform" data-url="{{ url_for('profile_password') }}">
     <div class="row">
       <label>原密码 <input type="password" name="old" required autocomplete="current-password"></label>

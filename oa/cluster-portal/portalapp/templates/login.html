@@ -3,7 +3,7 @@
 {% block body_class %}auth{% endblock %}
 {% block content %}
 <div class="auth-card">
-  <div class="auth-brand"><span class="dot"></span>{{ portal_name }}</div>
+  <div class="auth-brand">{{ portal_name }}</div>
   <h1>用户登录</h1>
   <p class="muted">新用户需由管理员开通账号后，凭初始密码登录。</p>
   <form method="post" action="{{ url_for('login') }}">
@@ -14,7 +14,8 @@
     <label>密码
       <input type="password" name="password" required autocomplete="current-password">
     </label>
-    <button class="btn btn-primary" type="submit">登 录</button>
+    <button class="btn btn-primary" type="submit">登录</button>
   </form>
+  <p class="auth-guide"><a href="{{ url_for('guide_page') }}">首次使用？查看平台使用指南</a></p>
 </div>
 {% endblock %}

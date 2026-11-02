@@ -333,6 +333,10 @@ def _secret():
         return fh.read().strip()
 
 
+# Published user-terminal release used by the public installation guide.
+TERMINAL_INSTALL_REF = "344116330a2568d5c909c5fcc07b54a682e9b944"
+
+
 def create_app(testing=False):
     app = Flask(__name__, template_folder=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "templates"),
@@ -437,6 +441,10 @@ def create_app(testing=False):
             "csrf_token": session.get("csrf", ""),
             "state_cn": STATE_CN,
         }
+
+    @app.route("/guide")
+    def guide_page():
+        return render_template("guide.html", terminal_install_ref=TERMINAL_INSTALL_REF)
 
     # ------------------------------------------------------------------ 认证
     @app.route("/login", methods=["GET", "POST"])

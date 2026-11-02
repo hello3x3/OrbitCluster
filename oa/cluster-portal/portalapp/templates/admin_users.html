@@ -9,7 +9,7 @@
 <div id="toast" class="toast" hidden></div>
 
 {% if created %}
-<section class="card" style="border:2px solid var(--warn,#c60)">
+<section class="card admin-warning">
   <h2>账号已创建（此口令只显示这一次）</h2>
   <p>用户 <b>{{ created.username }}</b> 创建成功{{ created.extra }}。{{ created.note }}</p>
   <pre class="cmd-preview">{{ created.password }}</pre>

@@ -80,16 +80,20 @@ cat ~/.ssh/id_ed25519.pub
 
 先向管理员获取 **HTTPS 服务地址**。使用内部 CA 时，还需要 CA 公共证书及其在本机的路径；它不是你的 SSH 密钥。
 
-网页安装区将根据填写的地址和可选证书路径生成安装命令。安装器下载自 OrbitCluster 仓库，独立安装在当前用户目录，不修改系统 Python。
+网页“平台使用指南 → 安装终端工具”会根据填写的地址和可选证书路径生成安装命令。安装器下载自 OrbitCluster 仓库，独立安装在当前用户目录，不修改系统 Python。
 
 下面是安装命令示例，将地址换成管理员提供的值。引用固定客户端提交，避免安装内容随开发分支变化：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/344116330a2568d5c909c5fcc07b54a682e9b944/terminal/install.sh \
-  -o /tmp/orbitcluster-install.sh
-bash /tmp/orbitcluster-install.sh \
-  --ref 344116330a2568d5c909c5fcc07b54a682e9b944 \
-  --server 'https://管理员提供的地址:8443'
+(
+  install_script="$(mktemp)" || exit 1
+  trap 'rm -f "$install_script"' EXIT
+  curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/344116330a2568d5c909c5fcc07b54a682e9b944/terminal/install.sh \
+    -o "$install_script" &&
+  bash "$install_script" \
+    --ref 344116330a2568d5c909c5fcc07b54a682e9b944 \
+    --server 'https://管理员提供的地址:8443'
+)
 ```
 
 需要内部 CA 时，在最后一条命令加上 `--ca-bundle '/本机路径/cluster-ca.crt'`。现有 HTTP 网页地址不能直接用于终端认证，服务端需先开通终端 API 与 HTTPS。
@@ -127,4 +131,4 @@ orbit --help
 
 ---
 
-编辑说明：本文件为指南文字初稿。正式页面会提供目录、安装命令生成与复制；页面经确认后，再补充带红框的操作截图，本阶段不放截图占位。
+编辑说明：文字已实现于 `/guide`，包含章节目录、安装命令生成与复制。等待页面确认后，再补充带红框的操作截图；本阶段没有截图占位。

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}平台使用指南 - {{ portal_name }}{% endblock %}
+{% block body_class %}guide-page{% endblock %}
+{% block content %}
+<div class="guide-layout">
+  <nav class="guide-toc" aria-label="指南章节">
+    <h2>平台使用指南</h2>
+    <a href="#getting-started">首次使用</a>
+    <a href="#apply-connect">申请与连接</a>
+    <a href="#save-stop">保存与结束任务</a>
+    <a href="#images">管理镜像</a>
+    <a href="#quota-profile">集群、额度与资料</a>
+    <a href="#terminal">安装终端工具</a>
+    <a href="#faq">常见问题</a>
+  </nav>
+  <article class="guide-content">
+    <h1>平台使用指南</h1>
+    <p class="guide-intro">申请计算资源、连接容器、保存实验环境。也可以使用终端工具，让 Codex 等 agent 完成同样的用户操作。</p>
+    <section class="guide-section" id="getting-started">
+      <h2>首次使用</h2>
+      <ol>
+        <li>向管理员获取账号和初始密码，连接实验室网络后<a href="{{ url_for('login') }}">登录平台</a>。</li>
+        <li>打开“个人资料”，修改初始密码。</li>
+        <li>添加连接容器的电脑上的 SSH 公钥：复制 <code>.pub</code> 文件的整行内容。<strong>只上传公钥，私钥留在自己电脑上。</strong></li>
+      </ol>
+      <p>还没有密钥时，在本机终端生成：</p>
+      <pre><code>ssh-keygen -t ed25519
+cat ~/.ssh/id_ed25519.pub</code></pre>
+      <p>如果提示已有同名密钥，保留原文件或换一个文件名。添加公钥后即可申请资源，SSH 端口由平台自动分配。</p>
+    </section>
+    <section class="guide-section" id="apply-connect">
+      <h2>申请与连接</h2>
+      <p>打开“申请资源”，按页面顺序填写：</p>
+      <div class="guide-table"><table class="table"><thead><tr><th>项目</th><th>怎么选</th></tr></thead><tbody>
+        <tr><td>任务名称</td><td>3–10 个字符，同一账号下不能重复，不区分大小写</td></tr>
+        <tr><td>账户</td><td>选择本次任务使用的账户；只有一个时自动使用</td></tr>
+        <tr><td>镜像</td><td>首次可选公共镜像；已有环境可选个人镜像</td></tr>
+        <tr><td>套餐</td><td>按实验需要选择 CPU、GPU 和内存规格</td></tr>
+        <tr><td>时长</td><td>不超过所选套餐上限</td></tr>
+        <tr><td>节点</td><td>一般保留“自动分配”；需要指定机器时再选择</td></tr>
+      </tbody></table></div>
+      <p>提交后回到“我的资源”：</p>
+      <ul>
+        <li><strong>排队中</strong>：等待调度分配资源。</li>
+        <li><strong>启动中</strong>：容器和 SSH 服务正在准备，稍后再连接。</li>
+        <li><strong>运行中</strong>：点击“连接/详情”，复制 SSH 命令，在本机终端执行。</li>
+      </ul>
+      <p>连接时使用已登记公钥对应的私钥，平台密码不用于容器 SSH 登录。连接失败先打开“日志”查看启动信息和门户操作结果。</p>
+      <p>任务停止后名称仍被记录占用；删除已结束记录后，才可以再次使用该名称。</p>
+    </section>
+    <section class="guide-section" id="save-stop">
+      <h2>保存环境与结束任务</h2>
+      <p>安装软件或修改环境后，想下次继续使用时：</p>
+      <ol>
+        <li>在运行中的资源上点击“保存镜像”，填写名称并确认。</li>
+        <li>等待资源行显示保存成功，打包可能需要几分钟。</li>
+        <li>在“我的镜像”确认新镜像已出现，再按需要停机。</li>
+      </ol>
+      <p class="alert alert-warn">保存的是容器文件系统，不保存进程、内存或挂载目录中的实验数据。重要数据请写入管理员指定的持久存储目录。</p>
+      <div class="guide-table"><table class="table"><thead><tr><th>操作</th><th>结果</th></tr></thead><tbody>
+        <tr><td>停机</td><td>取消当前作业、释放资源；<strong>不会先自动保存环境</strong></td></tr>
+        <tr><td>重新启动</td><td>按原参数和原镜像重新提交，端口重新分配；不恢复未保存的修改</td></tr>
+        <tr><td>删除</td><td>删除已结束资源记录和对应作业日志，不等同于删除个人镜像</td></tr>
+      </tbody></table></div>
+      <p>到期时平台会尝试保存一次 <code>auto_</code> 开头的镜像再停机，结果可在资源行和日志查看。自动保存可能因服务或空间问题失败，重要环境请提前主动保存。被抢占的作业不会先自动保存。</p>
+    </section>
+    <section class="guide-section" id="images">
+      <h2>管理镜像</h2>
+      <p>公共镜像由管理员维护，普通用户只读；个人镜像来自你保存的容器环境，计入存储配额。</p>
+      <p>个人镜像可以编辑注释、重命名和删除。镜像被排队任务使用时不能重命名；被排队或运行中的任务占用时不能删除。删除镜像后，引用它的旧资源无法再直接“重新启动”。</p>
+      <p>再次使用保存的环境：打开“申请资源”，在镜像下拉框的“我的镜像”分组选择它。</p>
+    </section>
+    <section class="guide-section" id="quota-profile">
+      <h2>集群、额度与资料</h2>
+      <ul>
+        <li><strong>集群状态</strong>：节点 CPU、内存、GPU 的空闲/总量，以及平台内活跃资源。空闲数量按调度系统口径显示。</li>
+        <li><strong>我的资源 → 我的配额 / 额度</strong>：磁盘用量、硬上限，以及账户的优先级和单用户 GPU 上限。</li>
+        <li><strong>个人资料</strong>：管理 SSH 公钥、显示名和平台密码。修改密码后，旧终端凭证失效，需要重新登录。</li>
+      </ul>
+      <p>额度、套餐、账户归属和账号状态由管理员维护。上限不足或账户不可用时，请联系管理员。</p>
+    </section>
+    <section class="guide-section" id="terminal">
+      <h2>安装终端工具</h2>
+      <p>支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上。使用原有平台账号登录，无需管理员权限安装。</p>
+      <p>先向管理员获取 <strong>HTTPS 服务地址</strong>。使用内部 CA 时，还需要 CA 公共证书及其本机路径；它不是 SSH 密钥。现有 HTTP 网页地址不能直接用于终端认证，服务端需先开通终端 API 与 HTTPS。</p>
+      <div id="terminal-installer" data-release-ref="{{ terminal_install_ref }}">
+        <div class="install-fields">
+          <label for="install-server">HTTPS 服务地址
+            <input id="install-server" type="url" placeholder="https://cluster.example.org:8443" autocomplete="off" spellcheck="false" aria-describedby="install-status">
+          </label>
+          <label for="install-ca">CA 公共证书路径 <span class="muted small">（可选，本机绝对路径）</span>
+            <input id="install-ca" placeholder="/本机路径/cluster-ca.crt" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <label for="install-command">安装命令</label>
+        <textarea id="install-command" class="install-command" readonly rows="8" spellcheck="false" aria-describedby="install-status"></textarea>
+        <div class="install-actions"><button id="install-copy" type="button" class="btn btn-primary" disabled>复制安装命令</button><span id="install-status" class="install-status" role="status">请填写 HTTPS 服务地址</span></div>
+        <noscript><p class="alert alert-info">启用 JavaScript 后可生成安装命令；也可按仓库中的 <a href="https://github.com/hello3x3/OrbitCluster/blob/{{ terminal_install_ref }}/terminal/README.md">终端安装说明</a>操作。</p></noscript>
+      </div>
+      <p class="small muted">输入只在当前页面生成命令，不会保存到服务器。安装器来自 OrbitCluster 仓库，使用固定发布版本，独立安装在当前用户目录，不修改系统 Python。</p>
+      <h3>登录与日常使用</h3>
+      <p>安装后启动，在终端输入平台用户名和密码：</p>
+      <pre><code>~/.local/bin/orbit tui</code></pre>
+      <p>认证默认固定有效七天，以登录后显示的到期时间为准；到期重新登录，不自动续期。退出 TUI 不会停止作业。</p>
+      <h3>交给 agent 操作</h3>
+      <p>先由你完成登录，再让 agent 调用命令：</p>
+      <pre><code>orbit login --username 你的用户名
+orbit instances list --json
+orbit images list --json
+orbit --help</code></pre>
+      <p>找不到 <code>orbit</code> 时，使用 <code>~/.local/bin/orbit</code>。不要把密码或本地 <code>auth.json</code> 发给 agent 或提交到仓库。写操作超时后，先查询结果，再决定是否重新提交。</p>
+    </section>
+    <section class="guide-section" id="faq">
+      <h2>常见问题</h2>
+      <dl class="guide-faq">
+        <dt>为什么不能提交申请？</dt><dd>确认已添加 SSH 公钥，任务名没有重复，时长不超过套餐上限，且所选账户仍有效。</dd>
+        <dt>为什么一直排队？</dt><dd>可能暂时没有满足套餐、节点或账户限制的资源。查看“集群状态”；不要反复提交相同任务。</dd>
+        <dt>SSH 连接不上？</dt><dd>确认资源已运行，使用最新“连接/详情”里的命令，网络能访问节点，并持有对应私钥。重新启动后端口会变化。</dd>
+        <dt>镜像保存失败？</dt><dd>先查资源日志和磁盘配额。确认保存成功前，不要把停机当作已保存。</dd>
+        <dt>终端登录过期？</dt><dd>重新执行 <code>orbit login</code>，或在 TUI 登录界面重新认证。调整本机时间不能延长有效期。</dd>
+      </dl>
+    </section>
+  </article>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ url_for('static', filename='guide.js') }}?v=1"></script>{% endblock %}

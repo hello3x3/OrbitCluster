@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=36">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=37">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -30,6 +30,7 @@
     <a href="{{ url_for('apply_page') }}"{% if ep == 'apply_page' %} class="active"{% endif %}>申请资源</a>
     <a href="{{ url_for('status_page') }}"{% if ep == 'status_page' %} class="active"{% endif %}>集群状态</a>
     <a href="{{ url_for('profile') }}"{% if ep in ('profile','profile_name','profile_password','profile_key_add','profile_port_add') %} class="active"{% endif %}>个人资料</a>
+    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>平台使用指南</a>
   </nav>
   <div class="userbox">
     <span class="who" title="{{ cur_user.username }}">
@@ -38,6 +39,11 @@
       {% if cur_role == 'admin' %}<em class="badge-admin">管理员</em>{% endif %}</span>
     <a class="btn btn-ghost btn-sm" href="{{ url_for('logout') }}">退出</a>
   </div>
+  {% else %}
+  <nav class="nav" aria-label="公开页面">
+    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>平台使用指南</a>
+  </nav>
+  <a class="btn btn-ghost btn-sm" href="{{ url_for('login') }}">登录</a>
   {% endif %}
 </header>
 
@@ -46,7 +52,7 @@
   <div class="flash-wrap">
     {% for cat, m in msgs %}
     <div class="flash flash-{{ cat }}"><span class="flash-text">{{ m }}</span>
-      <button class="flash-x" type="button" data-flash-close title="关闭">✕</button></div>
+      <button class="flash-x" type="button" data-flash-close title="关闭" aria-label="关闭提示">✕</button></div>
     {% endfor %}
   </div>
   {% endif %}
@@ -82,7 +88,7 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}?v=36"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=37"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

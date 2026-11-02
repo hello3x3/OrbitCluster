@@ -270,11 +270,11 @@
     const subBits = [i.plan_name, i.image_name].filter(Boolean);
     const sub = subBits.join(" · ");
     const saveLine = i.last_save
-      ? `<div class="small ${i.saving_now ? "" : (i.last_save.indexOf("失败") >= 0 || i.last_save.indexOf("异常") >= 0 ? "txt-err" : "muted")}">💾 ${esc(i.last_save)}</div>`
+      ? `<div class="small ${i.saving_now ? "" : (i.last_save.indexOf("失败") >= 0 || i.last_save.indexOf("异常") >= 0 ? "txt-err" : "muted")}">保存：${esc(i.last_save)}</div>`
       : "";
     // 启动失败（例如端口被占用）的原因：日志里定性后就一直显示，别让它一闪而过
     const errLine = i.startup_error
-      ? `<div class="small txt-err">⚠ ${esc(i.startup_error)}</div>`
+      ? `<div class="small txt-err">启动提示：${esc(i.startup_error)}</div>`
       : "";
     return `<tr data-id="${i.id}">
       <td class="mono">${esc(i.job_id)}</td>
