@@ -85,7 +85,8 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
     <section class="guide-section" id="quota-profile">
       <h2>集群、额度与资料</h2>
       <ul>
-        <li><strong>集群 → 集群占用情况</strong>：节点 CPU、内存、GPU 的空闲/总量，以及平台内活跃资源。空闲数量按调度系统口径显示。</li>
+        <li><strong>集群 → 集群占用情况</strong>：按分区和 GPU 型号查看节点 CPU、内存、GPU 的空闲/总量，采用 Slurm 调度口径。</li>
+        <li><strong>集群 → 门户内活跃资源</strong>：查看通过本门户提交的活跃任务及截止时间。</li>
         <li><strong>我的资源 → 我的配额 / 额度</strong>：磁盘用量、硬上限，以及账户的优先级和单用户 GPU 上限。</li>
         <li><strong>个人资料</strong>：管理 SSH 公钥、显示名和平台密码。修改密码后，旧终端凭证失效，需要重新登录。</li>
       </ul>

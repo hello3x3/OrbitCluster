@@ -15,7 +15,7 @@ Base: `a60e4fc` on `codex/frontend-optimization`.
 
 2026-11-02, local fake cluster only:
 
-- Full pytest: **62 passed**, 15.93s.
+- Full pytest after review fix: **73 passed**, 16.55s.
 - Existing webpage smoke: **SMOKE_OK**. Its Shanghai-deadline assertion now checks the separate `/status/active` page, retaining the same original assertion.
 - New tests first failed on missing routes/command, then passed; additional failure-path test first exposed a false healthy-empty cluster and passed after explicit command-status handling.
 - Generated installer shell checks: passed. New navigation JS syntax and Python compile checks: passed.
@@ -28,4 +28,12 @@ Base: `a60e4fc` on `codex/frontend-optimization`.
 
 Not deployed, no real Slurm query, no production storage access and no scheduled jobs installed. Install the updated `portal-ctl` together with the portal to enable all-partition lookup. The previously documented macOS UID/GID limitation in the old standalone CTL security script remains; it needs a Linux run before deployment. Existing helper security and write commands were not changed.
 
-Independent code review pending before final push.
+## Independent review and fix
+
+Review of `a60e4fc..554267e` found no critical issue and one important count-format issue. Fixed the new reader to request wide, explicitly delimited node/GRES fields and reject capped or malformed data as unknown. Strict parsing handles long model names, multiple GPU models, comma-containing IDX ranges and non-GPU resources without false free-GPU counts. Eleven new regression cases failed first, then passed; all 17 sidebar tests and the full 73-test suite passed.
+
+The formatting constraint was checked against the primary [Slurm sinfo documentation](https://slurm.schedmd.com/sinfo.html): `-O` has a maximum field width, unlike `-o`'s minimum width. The old `sinfo` command and its old parser remain unchanged to preserve the requested existing interface; older read endpoints can still have the pre-existing long-GRES limitation and should be addressed separately if desired.
+
+Reviewer found no other material permission, business-flow, mobile or skill packaging regression. Production Slurm/helper compatibility and the old macOS CTL security-script portability remain outside local validation. No deployment or production jobs performed.
+
+Final browser rerun passed all user/admin/root navigation and existing modals with zero document overflow or console errors. Quick-guide text now distinguishes the two cluster pages, and skill installation supports a custom CODEX_HOME.

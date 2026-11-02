@@ -30,9 +30,9 @@ orbit --help</code></pre>
       <p>找不到 <code>orbit</code> 时，使用 <code>~/.local/bin/orbit</code>。不要把密码或本地 <code>auth.json</code> 发给 agent 或提交到仓库。写操作超时后，先查询结果，再决定是否重新提交。</p>
       <h3>给 Codex 安装 OrbitCluster skill</h3>
       <p>skill 告诉 agent 如何使用用户端命令；平台账号仍由你在终端登录。将下面命令复制到本机终端，安装后重启 Codex。</p>
-      <pre><code>mkdir -p "$HOME/.codex/skills/orbitcluster"
+      <pre><code>mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/orbitcluster"
 curl -fsSL 'https://raw.githubusercontent.com/hello3x3/OrbitCluster/codex/frontend-optimization/skills/orbitcluster/SKILL.md' \
-  -o "$HOME/.codex/skills/orbitcluster/SKILL.md"</code></pre>
+  -o "${CODEX_HOME:-$HOME/.codex}/skills/orbitcluster/SKILL.md"</code></pre>
       <p>接着可让 Codex“使用 $orbitcluster 查看我的资源”或按你的要求申请任务。</p>
       <p><a href="{{ url_for('static', filename='docs/orbitcluster-SKILL.md') }}" download="SKILL.md">下载 SKILL.md</a> <span class="muted small">也可手动放到上述目录</span></p>
     </section>

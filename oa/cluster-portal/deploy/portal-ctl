@@ -740,6 +740,32 @@ def cmd_sinfo():
     out({"ok": True, "partition": part, "nodes": nodes})
 
 
+def _cluster_gpu_count(text):
+    """Strict count for the new dashboard; truncated/malformed GRES stays unknown."""
+    text = text.strip()
+    if text == "(null)":
+        return 0
+    if not text or len(text) >= 4096:
+        return None
+    token = re.compile(r"(?P<name>[A-Za-z0-9_.-]+)(?::[A-Za-z0-9_.-]+)?:(?P<count>\d+)(?:\([^()]*\))?")
+    total, position = 0, 0
+    while position < len(text):
+        match = token.match(text, position)
+        if match is None:
+            return None
+        if match.group("name").lower() == "gpu":
+            total += int(match.group("count"))
+        position = match.end()
+        if position == len(text):
+            return total
+        if text[position] != ",":
+            return None
+        position += 1
+        if position == len(text):
+            return None
+    return None
+
+
 def cmd_cluster_status():
     """All partitions for the read-only occupancy view. Legacy sinfo stays unchanged."""
     response = run(["sinfo", "-h", "-N", "-o", "%P|%N|%T|%C|%G|%m|%a"], timeout=30)
@@ -751,11 +777,15 @@ def cmd_cluster_status():
     ips = nodes_ips(list(dict.fromkeys(row[1] for row in fields)))
     allocated = _nodes_alloc_mem()
     used = {}
-    usage_raw = sh_out(["sinfo", "-h", "-N", "--Format=NodeList,GresUsed"], timeout=30)
+    # -O defaults to a maximum of 20 chars per field. Use explicit widths and
+    # delimiters; values reaching the cap or failing validation are unknown.
+    usage_raw = sh_out(["sinfo", "-h", "-N", "--Format=NodeList:256|,GresUsed:4096|"], timeout=30)
     for line in usage_raw.splitlines():
-        row = line.split(None, 1)
-        if len(row) == 2:
-            used[row[0]] = _gres_count(row[1])
+        row = line.split("|")
+        if len(row) == 3 and not row[2].strip():
+            name, usage = row[0].strip(), row[1].strip()
+            if name and len(name) < 256:
+                used[name] = _cluster_gpu_count(usage)
     partitions, nodes = [], {}
     for row in fields:
         part, name, state, cpus, gres, mem_raw, avail = row[:7]
@@ -772,13 +802,14 @@ def cmd_cluster_status():
             memory = int(mem_raw)
         except ValueError:
             memory = 0
-        total_gpu, used_gpu, mem_alloc = _gres_count(gres), used.get(name), allocated.get(name)
+        total_gpu, used_gpu, mem_alloc = _cluster_gpu_count(gres), used.get(name), allocated.get(name)
         nodes[name] = {"name": name, "partitions": [part], "state": state, "avail": avail,
                        "cpus_alloc": ca, "cpus_idle": ci, "cpus_other": co, "cpus_total": ct,
                        "mem_mb": memory, "mem_alloc_mb": mem_alloc,
                        "mem_free_mb": max(0, memory - mem_alloc) if mem_alloc is not None else None,
                        "gres": gres, "gres_model": _gres_model(gres), "gres_total": total_gpu,
-                       "gres_used": used_gpu, "gres_free": max(0, total_gpu - used_gpu) if used_gpu is not None else None,
+                       "gres_used": used_gpu, "gres_free": (0 if total_gpu == 0 else max(0, total_gpu - used_gpu)
+                                                          if total_gpu is not None and used_gpu is not None else None),
                        "ip": ips.get(name, "")}
     out({"ok": True, "partitions": partitions, "nodes": list(nodes.values())})
 

@@ -26,4 +26,4 @@ Reuse current quick guide. Extract the existing terminal section into a shared i
 - [x] Implement shared-asset placeholder pages, explicitly marked 功能待完善; no backend collector or scheduled job, per user clarification.
 - [x] Reuse documentation, package terminal skill and validate it.
 - [x] Run full pytest, webpage smoke, generated-install command checks, script syntax and browser checks for all roles at desktop/mobile, accordion/drawer/avatar, long text and empty/error states.
-- [ ] Refresh guide illustrations affected by navigation, record verification, commit and push the development branch without merging/deploying.
+- [x] Refresh guide illustrations affected by navigation, record verification, commit; push the development branch without merging/deploying as the final delivery step.
