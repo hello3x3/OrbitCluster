@@ -83,11 +83,11 @@ cat ~/.ssh/id_ed25519.pub
 
 ## 安装终端工具
 
-支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上，且能访问集群 HTTPS 地址。使用原有平台账号登录，无需管理员权限安装。
+支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上，且能访问集群服务地址（HTTP 或 HTTPS）。使用原有平台账号登录，无需管理员权限安装。
 
-先向管理员获取 **HTTPS 服务地址**。使用内部 CA 时，还需要 CA 公共证书及其在本机的路径；它不是你的 SSH 密钥。
+先向管理员获取 **HTTP 或 HTTPS 服务地址**。HTTP 需管理员已在服务端开启终端接口的 HTTP 访问；使用 HTTPS 内部 CA 时，还需要 CA 公共证书及其在本机的路径，它不是你的 SSH 密钥。
 
-网页“平台使用指南 → 安装终端工具”会根据填写的地址和可选证书路径生成安装命令。安装器下载自 OrbitCluster 仓库，独立安装在当前用户目录，不修改系统 Python。
+网页“平台使用指南 → 安装终端工具”会根据填写的地址和可选证书路径生成安装命令。HTTP 地址需先勾选“允许 HTTP”；安装器会保存该选择，后续无需重复加参数。安装器下载自 OrbitCluster 仓库，独立安装在当前用户目录，不修改系统 Python。
 
 下面是安装命令示例，将地址换成管理员提供的值。引用固定客户端提交，避免安装内容随开发分支变化：
 
@@ -95,15 +95,24 @@ cat ~/.ssh/id_ed25519.pub
 (
   install_script="$(mktemp)" || exit 1
   trap 'rm -f "$install_script"' EXIT
-  curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/344116330a2568d5c909c5fcc07b54a682e9b944/terminal/install.sh \
+  curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/8b0990ebf469a575636760de3ad177d56cd40645/terminal/install.sh \
     -o "$install_script" &&
   bash "$install_script" \
-    --ref 344116330a2568d5c909c5fcc07b54a682e9b944 \
+    --ref 8b0990ebf469a575636760de3ad177d56cd40645 \
     --server 'https://管理员提供的地址:8443'
 )
 ```
 
-需要内部 CA 时，在最后一条命令加上 `--ca-bundle '/本机路径/cluster-ca.crt'`。现有 HTTP 网页地址不能直接用于终端认证，服务端需先开通终端 API 与 HTTPS。
+需要内部 CA 时，在最后一条命令加上 `--ca-bundle '/本机路径/cluster-ca.crt'`。只有 HTTP 时，把服务地址换成实际地址（例如 `http://10.71.106.251`），并在 bash 安装命令末尾加 `--allow-http`，无需 CA 证书。服务器需已部署终端 API，并由管理员在 `/etc/cluster-portal/site.conf` 设置 `TERMINAL_REQUIRE_HTTPS=0` 后重启 `cluster-portal`；环境变量 `PORTAL_TERMINAL_REQUIRE_HTTPS` 有更高优先级。
+
+HTTP 会明文传输密码和令牌，仅在明确可信的内网使用。已有客户端先重新运行新安装器，再配置：
+
+```bash
+orbit config set allow_http true
+orbit config set server http://10.71.106.251
+```
+
+也可在 TUI 登录页填写 HTTP 地址并勾选“允许 HTTP”。这里的 IP 只是示例，替换为你的服务器地址。HTTP 开关不改变七天有效期、不启用自动续期，也不改变现有网页功能。
 
 安装后启动：
 

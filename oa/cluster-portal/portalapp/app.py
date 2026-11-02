@@ -334,7 +334,7 @@ def _secret():
 
 
 # Published user-terminal release used by the public installation guide.
-TERMINAL_INSTALL_REF = "344116330a2568d5c909c5fcc07b54a682e9b944"
+TERMINAL_INSTALL_REF = "8b0990ebf469a575636760de3ad177d56cd40645"
 
 
 def create_app(testing=False):

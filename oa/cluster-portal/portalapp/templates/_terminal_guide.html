@@ -1,19 +1,21 @@
     <section class="guide-section" id="terminal">
       <h2>安装终端工具</h2>
       <p>支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上。使用原有平台账号登录，无需管理员权限安装。</p>
-      <p>先向管理员获取 <strong>HTTPS 服务地址</strong>。使用内部 CA 时，还需要 CA 公共证书及其本机路径；它不是 SSH 密钥。现有 HTTP 网页地址不能直接用于终端认证，服务端需先开通终端 API 与 HTTPS。</p>
+      <p>使用管理员提供的 <strong>HTTP 或 HTTPS 服务地址</strong>，服务器需已部署终端 API。仅有 HTTP 时，管理员在 <code>/etc/cluster-portal/site.conf</code> 设置 <code>TERMINAL_REQUIRE_HTTPS=0</code> 并重启门户，用户在下方勾选允许 HTTP。使用 HTTPS 内部 CA 时，填写 CA 公共证书的本机路径；它不是 SSH 密钥。</p>
       <div id="terminal-installer" data-release-ref="{{ terminal_install_ref }}">
         <div class="install-fields">
-          <label for="install-server">HTTPS 服务地址
-            <input id="install-server" type="url" placeholder="https://cluster.example.org:8443" autocomplete="off" spellcheck="false" aria-describedby="install-status">
+          <label for="install-server">服务地址（HTTP / HTTPS）
+            <input id="install-server" type="url" placeholder="http://集群地址 或 https://集群地址" autocomplete="off" spellcheck="false" aria-describedby="install-status">
           </label>
+          <label class="install-http-option" for="install-allow-http"><input id="install-allow-http" type="checkbox"> 允许 HTTP（仅可信内网）</label>
+          <p id="install-http-notice" class="alert alert-info" hidden>HTTP 会明文传输密码和令牌。确认当前网络可信后再开启；认证仍固定七天有效，不自动续期。</p>
           <label for="install-ca">CA 公共证书路径 <span class="muted small">（可选，本机绝对路径）</span>
             <input id="install-ca" placeholder="/本机路径/cluster-ca.crt" autocomplete="off" spellcheck="false">
           </label>
         </div>
         <label for="install-command">安装命令</label>
         <textarea id="install-command" class="install-command" readonly rows="8" spellcheck="false" aria-describedby="install-status"></textarea>
-        <div class="install-actions"><button id="install-copy" type="button" class="btn btn-primary" disabled>复制安装命令</button><span id="install-status" class="install-status" role="status">请填写 HTTPS 服务地址</span></div>
+        <div class="install-actions"><button id="install-copy" type="button" class="btn btn-primary" disabled>复制安装命令</button><span id="install-status" class="install-status" role="status">请填写服务地址</span></div>
         <noscript><p class="alert alert-info">启用 JavaScript 后可生成安装命令；也可按仓库中的 <a href="https://github.com/hello3x3/OrbitCluster/blob/{{ terminal_install_ref }}/terminal/README.md">终端安装说明</a>操作。</p></noscript>
       </div>
       <p class="small muted">输入只在当前页面生成命令，不会保存到服务器。安装器来自 OrbitCluster 仓库，使用固定发布版本，独立安装在当前用户目录，不修改系统 Python。</p>

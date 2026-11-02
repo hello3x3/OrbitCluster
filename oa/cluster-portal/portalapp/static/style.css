@@ -301,6 +301,8 @@ select.multi-select option { padding:4px 8px }
 .guide-table { overflow-x:auto }
 .install-fields { margin:20px 0 12px }
 .install-fields input { max-width:none }
+.install-http-option { display:flex; align-items:center; gap:8px; margin:12px 0 }
+.install-http-option input { width:18px; height:18px; margin:0; flex-shrink:0 }
 .install-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:12px 0 20px }
 .install-status { color:var(--muted); font-size:13px; overflow-wrap:anywhere }
 .install-status.error { color:var(--err) }

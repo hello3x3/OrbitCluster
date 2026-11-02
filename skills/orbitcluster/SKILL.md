@@ -11,16 +11,20 @@ OrbitCluster 的用户命令是 `orbit`，交互界面是 `orbit tui`。以用�
 
 先检查 `orbit --version`；命令不在 PATH 时检查 `~/.local/bin/orbit`。安装需要 Python 3.10+，支持 macOS、Linux、WSL，无需 sudo。
 
-没有安装时，先向用户取得管理员提供的 HTTPS 服务地址和可选内部 CA 公共证书路径。不要猜测 HTTP 网页对应的 HTTPS 端口，不要关闭证书验证。使用项目安装器，替换下面的服务地址；内部 CA 可在 bash 命令末尾加 `--ca-bundle '/本机绝对路径/cluster-ca.crt'`：
+没有安装时，先向用户取得管理员提供的 HTTP 或 HTTPS 服务地址和可选内部 CA 公共证书路径。不要猜测 HTTP 网页对应的 HTTPS 端口，不要关闭 HTTPS 证书验证。使用项目安装器，替换下面的服务地址；内部 CA 可在 bash 命令末尾加 `--ca-bundle '/本机绝对路径/cluster-ca.crt'`：
 
 ```bash
 (
   install_script="$(mktemp)" || exit 1
   trap 'rm -f "$install_script"' EXIT
-  curl -fsSL 'https://raw.githubusercontent.com/hello3x3/OrbitCluster/344116330a2568d5c909c5fcc07b54a682e9b944/terminal/install.sh' -o "$install_script" &&
-  bash "$install_script" --ref 344116330a2568d5c909c5fcc07b54a682e9b944 --server 'https://管理员提供的地址'
+  curl -fsSL 'https://raw.githubusercontent.com/hello3x3/OrbitCluster/8b0990ebf469a575636760de3ad177d56cd40645/terminal/install.sh' -o "$install_script" &&
+  bash "$install_script" --ref 8b0990ebf469a575636760de3ad177d56cd40645 --server 'https://管理员提供的地址'
 )
 ```
+
+HTTP 地址需要用户明确选择：在上面的 bash 安装命令末尾加 `--allow-http`，服务地址替换为用户提供的 `http://...`，不加 `--ca-bundle`。HTTP 会明文传输密码和令牌，仅在用户确认可信的内网使用；用户已明确要求 HTTP 时无需重复确认。服务器需已部署终端 API，并由管理员设置 `TERMINAL_REQUIRE_HTTPS=0`；这个 skill 不代替管理员修改服务器。默认仍拒绝 HTTP，不自动降级或跟随重定向。
+
+已有旧客户端先重新执行新版本安装器。新版客户端可依次运行 `orbit config set allow_http true`、`orbit config set server http://用户提供的地址` 保存配置，也可在 TUI 登录页勾选“允许 HTTP”。
 
 让用户本人在其终端执行 `orbit login --username 用户名`，隐藏输入平台密码。不要索取聊天中的密码，不读取、复制或输出 `auth.json`，不使用浏览器 Cookie。已有登录可通过 `orbit whoami --json` 检查；凭证默认七天，以服务器返回的到期时间为准，到期由用户重新登录，不自动续期。
 
