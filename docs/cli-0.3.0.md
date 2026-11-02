@@ -57,3 +57,8 @@ Windows 在当前命令退出后执行，正在使用的其它终端会阻止替
 ## 验证记录
 
 本轮重新验证 0.3.0 的客户端构建、安装、版本清单、更新检查与交付包。上一轮相同功能的六平台验证见 [原生 CI](https://github.com/hello3x3/OrbitCluster/actions/runs/41471439262)。生产服务器未在本轮远程部署，需部署 0.3.0 交付包后再向用户发布新版本。
+
+- 0.3.0 的 Go 回归、52 项后端/安装测试及 JS 命令生成测试通过。
+- 本机真实客户端已升级为 `orbit 0.3.0`，配置保持不变，真实凭证未打开且元数据未改变；隔离门户下载、登录、检查更新至卸载的证据：`/private/tmp/orbit-cli-030-5q00ey8u/result.json`。
+- 交付包 `artifacts/orbitcluster-portal-cli-0.3.0.zip` 仅含当前六个平台归档，解压运行门户及网页冒烟通过，下载清单大小与 SHA256 均匹配；证据：`/private/tmp/orbit-delivery-030-so5b0hlc/result.json`。
+- 误标 0.1.2 的生成归档及交付 ZIP 已清理，不再作为当前发布包。
