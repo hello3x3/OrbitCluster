@@ -8,6 +8,10 @@ def main():
     root = Path(__file__).resolve().parents[3]
     output = root / 'oa/cluster-portal/portalapp/static/docs'
     output.mkdir(parents=True, exist_ok=True)
+    installers = root / 'oa/cluster-portal/portalapp/static/terminal'
+    installers.mkdir(parents=True, exist_ok=True)
+    for name in ['install.sh', 'install.ps1']:
+        shutil.copyfile(root / 'terminal' / name, installers / name)
     for source, name in [(root / 'architecture/index.html', 'architecture.html'),
                          (root / 'skills/orbitcluster/SKILL.md', 'orbitcluster-SKILL.md')]:
         shutil.copyfile(source, output / name)

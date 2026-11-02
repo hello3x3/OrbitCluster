@@ -4,6 +4,7 @@
   const toggle = document.getElementById('sidebar-toggle');
   const backdrop = document.getElementById('sidebar-backdrop');
   const account = document.getElementById('account-menu');
+  if (!sidebar || !toggle || !backdrop) return;
   const mobile = matchMedia('(max-width:900px)');
   function setOpen(open, restore = true) {
     open = Boolean(open && mobile.matches);

@@ -17,7 +17,7 @@ def setting_int(name, default, maximum=31536000):
 
 
 def require_https():
-    value = siteconf.get("TERMINAL_REQUIRE_HTTPS", "1")
+    value = siteconf.get("TERMINAL_REQUIRE_HTTPS", "0")
     if value not in ("0", "1"):
         raise ValueError("TERMINAL_REQUIRE_HTTPS 必须为 0 或 1")
     return value == "1"

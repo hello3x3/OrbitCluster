@@ -76,7 +76,9 @@ test:
 # ---- 清理 --------------------------------------------------------------------
 PYTHON ?= python3
 test-terminal:
-	@$(PYTHON) -m pytest oa/cluster-portal/tests/test_terminal_api.py oa/cluster-portal/tests/test_terminal_integration.py terminal/tests -q
+	@cd terminal && go test ./...
+	@$(PYTHON) -m pytest oa/cluster-portal/tests -q
+	@node oa/cluster-portal/tests/test_guide_commands.mjs
 
 clean:
 	@rm -rf provision/out provision/out-*

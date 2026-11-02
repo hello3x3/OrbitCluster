@@ -217,18 +217,20 @@ oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完�
 
 ## 本地开发与测试
 
-### 用户终端（TUI / agent CLI）
+### 用户命令行（agent CLI）
 
-`terminal/` 提供可独立安装的用户终端，支持交互界面及 `--json` 命令输出。使用门户账号在
-终端登录，服务器签发默认七天有效的独立令牌，到期重新登录；地址、有效期及 CA 均可配置。
-新增终端 API 与 HTTPS 入口需要先部署，网页原有认证和集群业务规则保持不变。
+`terminal/` 提供 Go 编写的独立 `orbit` 程序，没有 TUI，不需要用户安装 Python、Git 或其它语言依赖。
+在门户「使用文档 → 终端工具使用」复制安装命令，从本门户下载对应平台压缩包。
+支持 macOS、Linux、WSL、原生 Windows，显示下载进度并校验 SHA256。
+HTTP 默认可用；现有 Python 服务端和业务规则保留，认证固定七天、无自动续期。
 
 ```bash
-bash terminal/install.sh --source terminal
-~/.local/bin/orbit tui
+orbit login --username 你的用户名
+orbit instances list --json
+orbit uninstall
 ```
 
-安装、配置、HTTPS 部署和完整命令见 [terminal/README.md](terminal/README.md)。
+客户端命令、构建发布、HTTP 部署、更新和卸载见 [terminal/README.md](terminal/README.md)。
 
 ### 门户测试
 

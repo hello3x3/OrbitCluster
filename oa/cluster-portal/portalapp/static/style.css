@@ -36,11 +36,11 @@ p { margin:8px 0 }
 .empty { color:var(--muted); padding:24px 8px; text-align:center }
 .mono { background:transparent; border:0; padding:0; color:inherit }
 /* Application shell and navigation */
-.app-shell { display:grid; grid-template-columns:256px minmax(0,1fr); min-height:100dvh }
+.app-shell { display:grid; grid-template-columns:304px minmax(0,1fr); min-height:100dvh }
 .sidebar { position:sticky; top:0; height:100dvh; display:flex; flex-direction:column; background:var(--card); border-right:1px solid var(--line); overflow-y:auto; z-index:35 }
 .sidebar-brand { display:flex; align-items:center; gap:8px; min-height:80px; padding:20px 18px 16px }
-.sidebar-brand a { display:flex; align-items:center; gap:10px; min-width:0; color:var(--txt); font-size:17px; line-height:1.35; font-weight:600; text-decoration:none }
-.sidebar-brand a span { overflow-wrap:anywhere }
+.sidebar-brand a { display:flex; align-items:center; gap:8px; min-width:0; color:var(--txt); font-size:16px; line-height:1.35; font-weight:600; text-decoration:none }
+.sidebar-brand a span { white-space:nowrap }
 .brand-mark { width:48px; height:48px; flex:none; object-fit:contain }
 .sidebar-nav { padding:0 12px 20px; flex:1 }
 .nav-group { margin:0 0 12px }
@@ -236,6 +236,7 @@ textarea { resize:vertical; line-height:1.6 }
 .logbox-events { min-height:72px; max-height:26vh; margin:0 20px 16px }
 .modal .logbox { margin:0 20px }
 /* Login and profile */
+.auth-workspace { display:flex; flex-direction:column; min-height:100dvh; width:100% }
 body.auth { display:flex; flex-direction:column; min-height:100vh }
 body.auth main.container { flex:1; display:flex; align-items:center; justify-content:center; padding:48px 24px }
 .auth-card { width:100%; max-width:440px; background:var(--card); padding:32px; border:1px solid var(--line); border-radius:12px }
@@ -316,7 +317,7 @@ select.multi-select option { padding:4px 8px }
 /* Responsive layout keeps every column and action available. */
 @media(max-width:900px) {
   .app-shell { grid-template-columns:minmax(0,1fr) }
-  .sidebar { display:none; position:fixed; top:0; bottom:0; left:0; width:min(288px,86vw); box-shadow:var(--shadow-lg) }
+  .sidebar { display:none; position:fixed; top:0; bottom:0; left:0; width:min(304px,calc(100vw - 16px)); box-shadow:var(--shadow-lg) }
   body.sidebar-open .sidebar { display:flex }
   body.sidebar-open { overflow:hidden }
   .btn.sidebar-toggle { display:inline-flex }

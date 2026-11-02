@@ -103,6 +103,17 @@ else
   echo "  未提供站点目录 → 使用代码内置默认值（ssh 端口 2180、RTX 3060、内置套餐）"
 fi
 
+# Explicit settings are retained. Fresh/missing transport configuration defaults to lab HTTP.
+if ! grep -Eq '^[[:space:]]*TERMINAL_REQUIRE_HTTPS[[:space:]]*=' /etc/cluster-portal/site.conf 2>/dev/null; then
+  printf '\n# 实验室内网默认允许 HTTP；设为 1 可强制 HTTPS。\nTERMINAL_REQUIRE_HTTPS=0\n' >> /etc/cluster-portal/site.conf
+  chown root:root /etc/cluster-portal/site.conf
+  chmod 644 /etc/cluster-portal/site.conf
+fi
+echo "  终端传输：默认 HTTP/HTTPS 均可用；现有显式 HTTPS 限制与环境变量覆盖会保留。"
+if [ ! -d "$APP_DIR/terminal-downloads" ]; then
+  echo "  尚未附带 CLI 发布包；请将构建生成的 terminal-downloads/ 放到 $APP_DIR/terminal-downloads。"
+fi
+
 echo "==> [4d/8] 初始化会计账户（ACCOUNTS，幂等）"
 # 账户/每账户 QoS 必须先在 slurmdbd 里存在，门户建号才能给用户加关联；
 # 基础集群尚未就绪时这里只告警、不阻断安装（之后可手工重跑）。

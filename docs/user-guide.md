@@ -81,57 +81,36 @@ cat ~/.ssh/id_ed25519.pub
 
 额度、套餐、账户归属和账号状态由管理员维护。遇到上限不足或账户不可用，请联系管理员。
 
-## 安装终端工具
+## 安装命令行工具
 
-支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上，且能访问集群服务地址（HTTP 或 HTTPS）。使用原有平台账号登录，无需管理员权限安装。
+OrbitCluster CLI 面向用户和 agent，没有 TUI。支持 macOS、Linux、WSL 和原生 Windows，客户端无需 Python、pip、Git 或 Go。服务器仍沿用现有 Python 后端。
 
-先向管理员获取 **HTTP 或 HTTPS 服务地址**。HTTP 需管理员已在服务端开启终端接口的 HTTP 访问；使用 HTTPS 内部 CA 时，还需要 CA 公共证书及其在本机的路径，它不是你的 SSH 密钥。
+打开门户「使用文档 → 终端工具使用」，选择运行终端并点击“复制安装命令”。安装脚本和平台压缩包仅从你们门户下载，显示下载进度、SHA256 校验和安装结果。HTTP 默认支持，不再需要勾选开关。HTTP 明文传输密码和令牌，仅在实验室可信内网使用；HTTPS 仍校验证书。
 
-网页“平台使用指南 → 安装终端工具”会根据填写的地址和可选证书路径生成安装命令。HTTP 地址需先勾选“允许 HTTP”；安装器会保存该选择，后续无需重复加参数。安装器下载自 OrbitCluster 仓库，独立安装在当前用户目录，不修改系统 Python。
-
-下面是安装命令示例，将地址换成管理员提供的值。引用固定客户端提交，避免安装内容随开发分支变化：
-
-```bash
-(
-  install_script="$(mktemp)" || exit 1
-  trap 'rm -f "$install_script"' EXIT
-  curl -fsSL https://raw.githubusercontent.com/hello3x3/OrbitCluster/8b0990ebf469a575636760de3ad177d56cd40645/terminal/install.sh \
-    -o "$install_script" &&
-  bash "$install_script" \
-    --ref 8b0990ebf469a575636760de3ad177d56cd40645 \
-    --server 'https://管理员提供的地址'
-)
-```
-
-需要内部 CA 时，在最后一条命令加上 `--ca-bundle '/本机路径/cluster-ca.crt'`。只有 HTTP 时，把服务地址换成实际地址（例如 `http://10.71.106.251`），并在 bash 安装命令末尾加 `--allow-http`，无需 CA 证书。服务器需已部署终端 API，并由管理员在 `/etc/cluster-portal/site.conf` 设置 `TERMINAL_REQUIRE_HTTPS=0` 后重启 `cluster-portal`；环境变量 `PORTAL_TERMINAL_REQUIRE_HTTPS` 有更高优先级。
-
-HTTP 会明文传输密码和令牌，仅在明确可信的内网使用。已有客户端先重新运行新安装器，再配置：
-
-```bash
-orbit config set allow_http true
-orbit config set server http://10.71.106.251
-```
-
-也可在 TUI 登录页填写 HTTP 地址并勾选“允许 HTTP”。这里的 IP 只是示例，替换为你的服务器地址。HTTP 开关不改变七天有效期、不启用自动续期，也不改变现有网页功能。
-
-安装后启动：
-
-```bash
-~/.local/bin/orbit tui
-```
-
-在终端输入平台用户名和密码。认证默认固定有效七天，以登录后显示的到期时间为准；到期重新登录，不自动续期。退出 TUI 不会停止作业。
-
-需要让 agent 操作时，由你先完成登录，再让它调用命令：
+安装后本人在真实终端隐藏输入密码，再交给 agent 查询：
 
 ```bash
 orbit login --username 你的用户名
+orbit whoami --json
 orbit instances list --json
 orbit images list --json
 orbit --help
 ```
 
-如果提示找不到 `orbit`，使用 `~/.local/bin/orbit`。不要把密码或本地 `auth.json` 发给 agent 或提交到仓库。写操作超时后，先查询结果，再决定是否重新提交。
+认证固定七天，以服务器返回的到期时间为准；到期重新登录，无 Cookie、无自动续期。关闭 CLI 不会停止作业。macOS/Linux 启动器默认 `~/.local/bin/orbit`；Windows 默认 `%LOCALAPPDATA%\OrbitCluster\bin\orbit.exe`。找不到命令时用完整路径或将对应 bin 目录加入用户 PATH。
+
+更新时重新运行安装命令。卸载前可先注销服务器令牌：
+
+```bash
+orbit logout
+orbit uninstall
+# 同时清除本机配置与登录：
+orbit uninstall --purge
+```
+
+卸载默认保留配置，purge 只清除已知本机文件；不会停止任务或删除服务器数据。不要将密码或 `auth.json` 发给 agent 或提交到仓库。写请求超时先查询结果，再决定是否重试。
+
+服务器需部署终端 API 和客户端发布包。部署默认 `TERMINAL_REQUIRE_HTTPS=0`；如果服务器保留了旧的显式 HTTPS-only 配置或环境覆盖，需要管理员调整后重启门户。详细安装、平台区别与管理员发布步骤见 [terminal/README.md](../terminal/README.md)。
 
 ## 常见问题
 
@@ -143,7 +122,7 @@ orbit --help
 
 **镜像保存失败？** 先查资源日志和磁盘配额。确认保存成功前，不要把停机当作已保存。
 
-**终端登录过期？** 重新执行 `orbit login`，或在 TUI 登录界面重新认证。调整本机时间不能延长有效期。
+**终端登录过期？** 重新执行 `orbit login --username 你的用户名`。调整本机时间不能延长有效期。
 
 ---
 

@@ -5,28 +5,28 @@ description: 安装和使用 OrbitCluster 用户终端，查询或申请实验�
 
 # OrbitCluster 用户终端
 
-OrbitCluster 的用户命令是 `orbit`，交互界面是 `orbit tui`。以用户授权的现有平台账号操作；该 skill 不提供管理员能力。
+OrbitCluster 用户命令是 `orbit`，供用户与 agent 调用；没有 TUI，也不提供管理员能力。
 
 ## 安装与认证
 
-先检查 `orbit --version`；命令不在 PATH 时检查 `~/.local/bin/orbit`。安装需要 Python 3.10+，支持 macOS、Linux、WSL，无需 sudo。
+先检查 `orbit --version`，命令不在 PATH 时检查 `~/.local/bin/orbit`；原生 Windows 默认 `%LOCALAPPDATA%\OrbitCluster\bin\orbit.exe`。客户端独立运行，无需 Python、pip、Git 或 Go。
 
-没有安装时，先向用户取得管理员提供的 HTTP 或 HTTPS 服务地址和可选内部 CA 公共证书路径。不要猜测 HTTP 网页对应的 HTTPS 端口，不要关闭 HTTPS 证书验证。使用项目安装器，替换下面的服务地址；内部 CA 可在 bash 命令末尾加 `--ca-bundle '/本机绝对路径/cluster-ca.crt'`：
+安装脚本和对应平台压缩包仅从用户提供的门户地址下载。macOS/Linux/WSL 用 `/terminal/install.sh`（Bash），原生 Windows 用 `/terminal/install.ps1`（PowerShell）。门户 `/guide/terminal` 提供命令生成器。不要猜地址/HTTPS 端口，不要从别处 clone 仓库或临时 pip 安装替代包。
+
+macOS/Linux 示例，替换为用户提供的真实地址：
 
 ```bash
 (
-  install_script="$(mktemp)" || exit 1
-  trap 'rm -f "$install_script"' EXIT
-  curl -fsSL 'https://raw.githubusercontent.com/hello3x3/OrbitCluster/8b0990ebf469a575636760de3ad177d56cd40645/terminal/install.sh' -o "$install_script" &&
-  bash "$install_script" --ref 8b0990ebf469a575636760de3ad177d56cd40645 --server 'https://管理员提供的地址'
+  installer="$(mktemp)" || exit 1
+  trap 'rm -f "$installer"' EXIT
+  curl --fail --show-error --progress-bar 'http://用户提供的地址/terminal/install.sh' -o "$installer" &&
+  bash "$installer" --server 'http://用户提供的地址'
 )
 ```
 
-HTTP 地址需要用户明确选择：在上面的 bash 安装命令末尾加 `--allow-http`，服务地址替换为用户提供的 `http://...`，不加 `--ca-bundle`。HTTP 会明文传输密码和令牌，仅在用户确认可信的内网使用；用户已明确要求 HTTP 时无需重复确认。服务器需已部署终端 API，并由管理员设置 `TERMINAL_REQUIRE_HTTPS=0`；这个 skill 不代替管理员修改服务器。默认仍拒绝 HTTP，不自动降级或跟随重定向。
+HTTP 默认支持，适用于用户的实验室内网；HTTP 会明文传输凭证。HTTPS 正常校验证书，内部 CA 使用 `--ca-bundle '/本机证书路径'`，不跳过验证。安装器显示进度并校验 SHA256；下载缺包或失败时报告问题，不回退到 Git/Python 安装。服务器需要部署现有终端 API 和客户端发布包，skill 不代替管理员改配置。
 
-已有旧客户端先重新执行新版本安装器。新版客户端可依次运行 `orbit config set allow_http true`、`orbit config set server http://用户提供的地址` 保存配置，也可在 TUI 登录页勾选“允许 HTTP”。
-
-让用户本人在其终端执行 `orbit login --username 用户名`，隐藏输入平台密码。不要索取聊天中的密码，不读取、复制或输出 `auth.json`，不使用浏览器 Cookie。已有登录可通过 `orbit whoami --json` 检查；凭证默认七天，以服务器返回的到期时间为准，到期由用户重新登录，不自动续期。
+让用户本人在真实终端执行 `orbit login --username 用户名` 隐藏输入密码。不要索取聊天中的密码，不读取、复制或输出 `auth.json`，不使用浏览器 Cookie。通过 `orbit whoami --json` 检查身份；凭证默认七天，按返回时间到期，由用户重新登录，无自动续期。新 CLI 可读取旧版按服务地址隔离的配置与凭证。
 
 ## 查询与申请
 
@@ -60,8 +60,12 @@ orbit instances wait ID --until saved --timeout 1800 --json
 
 - 停机、删除资源/镜像/公钥、强制覆盖镜像等操作在用户已经授权后使用 `--yes`，不要把查询请求当作写操作授权。授权已经明确时无需重复询问。
 - 手动停机不会自动保存环境。用户需要保留修改时，先保存镜像并确认成功；保存不包含进程、内存和挂载数据。
-- 重启使用原镜像并重新分配 SSH 端口，不恢复未保存的修改。关闭 TUI 不会停止任务。
+- 重启使用原镜像并重新分配 SSH 端口，不恢复未保存的修改。退出 CLI 不会停止任务。
 - 写请求超时后先查询任务、镜像、日志，判断是否已成功，不盲目重试创建、重启或镜像导出。
 - 退出码 3 表示需登录，让用户在终端重新认证；2 是配置/参数问题，4 是网络问题，1 是业务拒绝或等待超时，0 成功。
 
 个人镜像、显示名、密码与 SSH 公钥的其他命令先读对应的 `--help`。资产页中的数据集和模型仓库目前是前端占位，不能声称已通过 CLI 查询或管理这些资产。
+
+## 更新与卸载
+
+更新使用同一门户安装命令。用户要求卸载时用 `orbit uninstall`，明确要求清除本机配置和登录时再加 `--purge`；已获用户授权的非交互执行加 `--yes --json`。`orbit logout` 撤销当前服务器令牌，卸载或本机清理不会停止集群任务或删除服务器资产。卸载默认保留本机配置，不扩展为删除其它目录。

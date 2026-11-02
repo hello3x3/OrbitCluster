@@ -89,3 +89,9 @@ provision/out-*/
 provision/REPLACEMENT-REPORT.md
 provision/.render-state/
 
+
+# Native CLI release artifacts
+/oa/cluster-portal/terminal-downloads/
+
+# Delivery archives (generated, not source)
+/artifacts/
