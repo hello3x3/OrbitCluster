@@ -30,7 +30,7 @@ HTTP 默认支持，适用于用户的实验室内网；HTTP 会明文传输凭�
 
 ## 查询与申请
 
-优先使用 `--json`。成功写 stdout，错误写 stderr。先查询实际可用项，不猜套餐、镜像或账户：
+默认文本已保留人和 agent 所需的资源上下文，可直接阅读；需要额外字段用 `--details`，需要精确解析 ID、判断布尔状态或批量处理时用 `--json`。原 JSON 数据字段保持兼容，登录额外返回顶层 `update` 版本检查结果。成功写 stdout，错误写 stderr。先查询实际可用项，不猜套餐、镜像或账户：
 
 ```bash
 orbit whoami --json
@@ -68,4 +68,6 @@ orbit instances wait ID --until saved --timeout 1800 --json
 
 ## 更新与卸载
 
-更新使用同一门户安装命令。用户要求卸载时用 `orbit uninstall`，明确要求清除本机配置和登录时再加 `--purge`；已获用户授权的非交互执行加 `--yes --json`。`orbit logout` 撤销当前服务器令牌，卸载或本机清理不会停止集群任务或删除服务器资产。卸载默认保留本机配置，不扩展为删除其它目录。
+登录成功会检查门户是否发布新版，只提醒，不自动安装。`orbit update --check --json` 只检查，无需登录、不下载包；用户要求更新时执行 `orbit update --json`，从同一门户下载并校验，保留配置与登录且不续期。Windows 返回 `scheduled` 时，等当前命令退出后用 `orbit --version` 确认；失败日志见 `log_file`。只有更新提醒时不要擅自安装。旧版没有 update 或便携版没有安装记录时使用原门户安装命令。
+
+用户要求卸载时用 `orbit uninstall`，明确要求清除本机配置和登录时再加 `--purge`；已获用户授权的非交互执行加 `--yes --json`。`orbit logout` 撤销当前服务器令牌，卸载或本机清理不会停止集群任务或删除服务器资产。卸载默认保留本机配置，不扩展为删除其它目录。

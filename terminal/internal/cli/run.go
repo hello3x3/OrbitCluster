@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +15,17 @@ import (
 	"time"
 )
 
-const Version = "0.2.0"
+// Version can be set by release tests using -ldflags -X; ordinary builds use VERSION.
+var Version string
+
+//go:embed VERSION
+var releaseVersion string
+
+func init() {
+	if Version == "" {
+		Version = strings.TrimSpace(releaseVersion)
+	}
+}
 
 type arguments struct {
 	Pos  []string
@@ -24,7 +35,7 @@ type arguments struct {
 
 func parse(args []string) (arguments, error) {
 	a := arguments{Val: map[string]string{}, Bool: map[string]bool{}}
-	boolean := strings.Fields("help version json yes password-stdin local force allow-http require-https purge")
+	boolean := strings.Fields("help version json details check preserve-config yes password-stdin local force allow-http require-https purge")
 	valued := strings.Fields("server ca-bundle config-dir request-timeout poll-seconds username device name instance plan image hours node account lines until timeout file install-dir bin-dir")
 	for i := 0; i < len(args); i++ {
 		v := args[i]
@@ -100,9 +111,11 @@ func help(pos []string) string {
   profile show | profile name NAME | profile password
   keys list | keys add --file PUBLIC_KEY.pub | keys delete ID
   config show | config set server|ca_bundle|timeout|poll_seconds|allow_http VALUE
+  update [--check]                   检查或更新 CLI，保留配置与登录
   uninstall [--purge] [--yes]        卸载客户端；purge 同时清理本机登录和配置
 
-全局参数可放在子命令后：--json --yes --server URL --config-dir DIR
+默认按列表/详情显示；--details 展开完整详情，--json 返回完整、兼容的机器数据。
+全局参数可放在子命令后：--details --json --yes --server URL --config-dir DIR
   --ca-bundle FILE --request-timeout 120 --poll-seconds 5 --require-https
 HTTP 默认可用；HTTPS 正常校验证书。无 Cookie、无自动续期、写请求不自动重试。
 JSON 成功写 stdout，失败写 stderr。退出码：0成功 1业务失败 2参数/配置 3需登录 4网络故障 130取消。
@@ -135,17 +148,24 @@ func Run(args []string, in io.Reader, out, errOut io.Writer) int {
 		}
 		return f.Exit
 	}
-	if a.Bool["json"] {
-		_ = json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": data})
-	} else {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		if d, ok := data.(map[string]any); ok {
-			if n, ok := d["expires_at"].(float64); ok {
-				d["expires_at_local"] = time.Unix(int64(n), 0).Local().Format(time.RFC3339)
-			}
+	var update *updateReport
+	if len(a.Pos) == 1 && a.Pos[0] == "login" {
+		if s, err := loadSettings(a); err == nil {
+			report := checkUpdate(s)
+			update = &report
 		}
-		_ = enc.Encode(data)
+	}
+	if a.Bool["json"] {
+		payload := map[string]any{"ok": true, "data": data}
+		if update != nil {
+			payload["update"] = update
+		}
+		_ = json.NewEncoder(out).Encode(payload)
+	} else {
+		writeText(out, a, data)
+		if update != nil {
+			writeUpdateNotice(out, *update)
+		}
 	}
 	return 0
 }
@@ -273,6 +293,9 @@ func execute(a arguments, in io.Reader, errOut io.Writer) (any, error) {
 			return s.public(), nil
 		}
 		return nil, configError("用法：orbit config show 或 orbit config set KEY VALUE")
+	}
+	if command == "update" {
+		return updateCLI(a, s, errOut)
 	}
 	known := map[string]bool{"login": true, "logout": true, "whoami": true, "plans": true, "nodes": true, "quota": true, "accounts": true, "instances": true, "images": true, "profile": true, "keys": true}
 	if !known[command] {
@@ -639,15 +662,15 @@ func validateArguments(a arguments) error {
 	if len(pos) > 1 && (key == "instances" || key == "images" || key == "profile" || key == "keys" || key == "config") {
 		key += " " + pos[1]
 	}
-	counts := map[string]int{"login": 1, "logout": 1, "whoami": 1, "plans": 1, "nodes": 1, "quota": 1, "accounts": 1, "setup": 1, "uninstall": 1, "config show": 2, "config set": 4, "instances list": 2, "instances create": 2, "images list": 2, "images save": 2, "images rename": 4, "images comment": 4, "images delete": 3, "profile show": 2, "profile name": 3, "profile password": 2, "keys list": 2, "keys add": 2, "keys delete": 3}
+	counts := map[string]int{"login": 1, "logout": 1, "whoami": 1, "plans": 1, "nodes": 1, "quota": 1, "accounts": 1, "setup": 1, "uninstall": 1, "update": 1, "config show": 2, "config set": 4, "instances list": 2, "instances create": 2, "images list": 2, "images save": 2, "images rename": 4, "images comment": 4, "images delete": 3, "profile show": 2, "profile name": 3, "profile password": 2, "keys list": 2, "keys add": 2, "keys delete": 3}
 	for _, k := range []string{"show", "logs", "connection", "stop", "restart", "delete", "save", "wait"} {
 		counts["instances "+k] = 3
 	}
 	if n, ok := counts[key]; !ok || len(pos) != n {
 		return configError("命令参数数量不正确或子命令不存在，请运行 orbit --help")
 	}
-	common := "server ca-bundle config-dir request-timeout poll-seconds json yes allow-http require-https help version"
-	extra := map[string]string{"login": "username device password-stdin", "logout": "local", "setup": "install-dir bin-dir", "uninstall": "purge", "instances create": "name plan image hours node account", "instances logs": "lines", "instances save": "name force", "instances wait": "until timeout", "images save": "instance name force", "keys add": "file"}
+	common := "server ca-bundle config-dir request-timeout poll-seconds json details yes allow-http require-https help version"
+	extra := map[string]string{"login": "username device password-stdin", "logout": "local", "setup": "install-dir bin-dir preserve-config", "uninstall": "purge", "update": "check", "instances create": "name plan image hours node account", "instances logs": "lines", "instances save": "name force", "instances wait": "until timeout", "images save": "instance name force", "keys add": "file"}
 	allowed := map[string]bool{}
 	for _, k := range strings.Fields(common + " " + extra[key]) {
 		allowed[k] = true

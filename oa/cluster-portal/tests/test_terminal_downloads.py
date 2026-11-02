@@ -25,6 +25,31 @@ def test_downloads_are_public_allowlisted_and_no_traversal(portal, tmp_path, mon
     assert client.get('/terminal/downloads/' + name).status_code == 404
 
 
+def test_manifest_exposes_verified_distribution_metadata_and_rejects_digest_symlink(portal, tmp_path, monkeypatch):
+    import hashlib
+    from portalapp import siteconf
+    from portalapp.terminal_downloads import ARTIFACTS, CLIENT_VERSION
+    root = tmp_path / 'release'; root.mkdir()
+    monkeypatch.setitem(siteconf.CONF, 'TERMINAL_DOWNLOAD_DIR', str(root))
+    name = sorted(ARTIFACTS)[0]
+    data = b'public client archive fixture'
+    (root / name).write_bytes(data)
+    checksum = hashlib.sha256(data).hexdigest()
+    digest = root / (name + '.sha256')
+    digest.write_text(checksum + '  ' + name + '\n')
+    response = portal.test_client().get('/terminal/manifest.json')
+    manifest = response.get_json()
+    item = next(a for a in manifest['artifacts'] if a['file'] == name)
+    assert manifest['version'] == CLIENT_VERSION
+    assert item['available'] and item['size'] == len(data) and item['sha256'] == checksum
+    assert response.headers['Cache-Control'] == 'no-store'
+    digest.unlink()
+    outside = tmp_path / 'outside'; outside.write_text(checksum)
+    digest.symlink_to(outside)
+    item = next(a for a in portal.test_client().get('/terminal/manifest.json').get_json()['artifacts'] if a['file'] == name)
+    assert item['available'] is False and 'sha256' not in item
+
+
 def test_login_shell_removed_and_docs_remain(portal):
     text = portal.test_client().get('/login').get_data(as_text=True)
     assert 'id="sidebar"' not in text and 'class="topbar"' not in text

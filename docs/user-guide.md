@@ -91,15 +91,26 @@ OrbitCluster CLI 面向用户和 agent，没有 TUI。支持 macOS、Linux、WSL
 
 ```bash
 orbit login --username 你的用户名
-orbit whoami --json
-orbit instances list --json
-orbit images list --json
+orbit whoami
+orbit instances list
+orbit images list
+orbit nodes --details
 orbit --help
 ```
 
 认证固定七天，以服务器返回的到期时间为准；到期重新登录，无 Cookie、无自动续期。关闭 CLI 不会停止作业。macOS/Linux 启动器默认 `~/.local/bin/orbit`；Windows 默认 `%LOCALAPPDATA%\OrbitCluster\bin\orbit.exe`。找不到命令时用完整路径或将对应 bin 目录加入用户 PATH。
 
-更新时重新运行安装命令。卸载前可先注销服务器令牌：
+默认结果会合并重复字段，保留 ID、状态、资源配置、时间与异常；`--details` 查看更多信息，`--json` 用于精确解析完整数据，日志保留真实换行。
+
+登录后会提示是否有新版，不自动安装。当前发布版本为 0.1.2，可以自行检查和更新，保留原配置和登录：
+
+```bash
+orbit update --check
+orbit update
+orbit --version
+```
+
+Windows 更新在当前命令退出后进行，其他终端正在使用时会等待；稍后用版本命令确认。旧版本没有 update 命令时，首次需要重新运行门户安装命令。卸载前可先注销服务器令牌：
 
 ```bash
 orbit logout

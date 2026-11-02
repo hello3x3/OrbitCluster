@@ -88,6 +88,37 @@ def test_native_cli_https_verification_and_explicit_http_restriction(portal, ser
     assert cli(orbit_binary, tmp_path, tls, 'login', '--username', 'alice', '--password-stdin', '--ca-bundle', str(cert), password='TestPass123\n')['ok']
 
 
+def test_native_text_output_contains_operational_context(portal, serve, orbit_binary, tmp_path, monkeypatch):
+    from portalapp import siteconf
+    monkeypatch.setitem(siteconf.CONF, 'TERMINAL_REQUIRE_HTTPS', '0')
+    server = serve()
+    env = {**os.environ, 'ORBIT_CONFIG_DIR': str(tmp_path / 'client'), 'ORBIT_SERVER': server,
+           'ORBIT_CA_BUNDLE': '', 'ORBIT_ALLOW_HTTP': '', 'COLUMNS': '100'}
+    def text(*args, password=None):
+        result = subprocess.run([str(orbit_binary), *args], input=password, capture_output=True, text=True, env=env, timeout=20)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'TestPass123' not in result.stdout + result.stderr
+        return result.stdout
+    login = text('login', '--username', 'alice', '--password-stdin', password='TestPass123\n')
+    assert '登录成功' in login and '到期时间' in login and '更新检查' in login
+    assert '可用套餐' in text('plans')
+    assert '公共镜像' in text('images', 'list')
+    created = cli(orbit_binary, tmp_path, server, 'instances', 'create', '--name', 'text-test', '--plan', '1', '--image', 'cuda12.8.0-devel-ubuntu24.04', '--hours', '1')['data']
+    iid = str(created['instance_id'])
+    raw = cli(orbit_binary, tmp_path, server, 'instances', 'list')['data']
+    listing = text('instances', 'list')
+    for value in ('text-test', iid, str(raw[0]['job_id']), 'GPU', 'CPU', 'GiB', '01:00:00'):
+        assert value in listing
+    assert 'state_key' not in listing and 'is_running' not in listing
+    assert len(listing.splitlines()) < len(json.dumps(raw, indent=2).splitlines()) / 2
+    detail = text('instances', 'show', iid, '--details')
+    assert 'cuda12.8.0-devel-ubuntu24.04.sqsh' in detail
+    assert '门户事件' in text('instances', 'logs', iid)
+    assert 'ssh' in text('instances', 'connection', iid)
+    assert '当前 CLI' in text('update', '--check')
+    text('logout')
+
+
 def test_existing_web_smoke_with_fully_isolated_readiness_stub():
     script = Path(__file__).with_name('smoke_local.py')
     code = ("import runpy; m=runpy.run_path(" + repr(str(script)) + "); "

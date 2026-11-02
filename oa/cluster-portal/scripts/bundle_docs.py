@@ -12,6 +12,7 @@ def main():
     installers.mkdir(parents=True, exist_ok=True)
     for name in ['install.sh', 'install.ps1']:
         shutil.copyfile(root / 'terminal' / name, installers / name)
+    shutil.copyfile(root / 'terminal/internal/cli/VERSION', installers / 'VERSION')
     for source, name in [(root / 'architecture/index.html', 'architecture.html'),
                          (root / 'skills/orbitcluster/SKILL.md', 'orbitcluster-SKILL.md')]:
         shutil.copyfile(source, output / name)

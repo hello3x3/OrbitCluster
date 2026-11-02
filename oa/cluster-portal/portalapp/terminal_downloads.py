@@ -1,10 +1,12 @@
 """Public, read-only distribution of the native CLI. No account data here."""
-import os
+import re
 from pathlib import Path
 from flask import abort, jsonify, send_file
 from . import siteconf
 
-CLIENT_VERSION = '0.2.0'
+CLIENT_VERSION = (Path(__file__).parent / 'static/terminal/VERSION').read_text().strip()
+if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', CLIENT_VERSION):
+    raise ValueError('CLI VERSION 必须为 major.minor.patch')
 TARGETS = [('darwin', 'arm64'), ('darwin', 'amd64'), ('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64'), ('windows', 'arm64')]
 ARTIFACTS = {f'orbit-{CLIENT_VERSION}-{system}-{arch}' + ('.zip' if system == 'windows' else '.tar.gz') for system, arch in TARGETS}
 ALLOWED = ARTIFACTS | {name + '.sha256' for name in ARTIFACTS}
@@ -15,6 +17,7 @@ def download_root():
 
 
 def register_downloads(app):
+    app.jinja_env.globals['terminal_cli_version'] = CLIENT_VERSION
     @app.get('/terminal/install.sh')
     def cli_install_shell():
         return send_file(Path(__file__).parent / 'static/terminal/install.sh', mimetype='text/plain', max_age=0)
@@ -29,8 +32,25 @@ def register_downloads(app):
 
     @app.get('/terminal/manifest.json')
     def cli_manifest():
-        root = download_root()
-        return jsonify(version=CLIENT_VERSION, artifacts=[dict(file=name, available=(root / name).is_file() and (root / (name + '.sha256')).is_file()) for name in sorted(ARTIFACTS)])
+        root = download_root().resolve()
+        artifacts = []
+        for system, arch in TARGETS:
+            name = f'orbit-{CLIENT_VERSION}-{system}-{arch}' + ('.zip' if system == 'windows' else '.tar.gz')
+            target, digest = root / name, root / (name + '.sha256')
+            item = dict(file=name, platform=system, arch=arch, available=False)
+            try:
+                if any(path.is_symlink() or not path.is_file() or path.resolve().parent != root for path in (target, digest)):
+                    artifacts.append(item)
+                    continue
+                checksum = digest.read_text()[:1024].split()[0]
+                if re.fullmatch(r'[a-fA-F0-9]{64}', checksum):
+                    item.update(available=True, sha256=checksum.lower(), size=target.stat().st_size)
+            except (OSError, UnicodeError, IndexError):
+                pass
+            artifacts.append(item)
+        response = jsonify(version=CLIENT_VERSION, artifacts=artifacts)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
 
     @app.get('/terminal/downloads/<name>')
     def cli_download(name):

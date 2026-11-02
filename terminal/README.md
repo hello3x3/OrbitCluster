@@ -1,4 +1,4 @@
-# OrbitCluster CLI
+# OrbitCluster CLI 0.1.2
 
 供用户和 agent 调用的独立命令行程序。没有 TUI；客户端使用 Go 标准库，无需 Python、pip、Git 或 Go 运行环境。服务器继续使用现有 Python 后端，资源和权限规则不变。
 
@@ -24,6 +24,18 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 也可直接下载门户提供的 macOS、Linux、Windows 压缩包，解压得到一个 `orbit`/`orbit.exe`。便携文件无需安装；删除该文件即可移除程序，配置另行清理。
 
 ## 登录与 agent
+
+默认输出供人和 agent 直接阅读：资源按项展示 ID、Slurm 作业号、状态、节点、账户、配置与时间，异常和保存结果单独列出；套餐、镜像、节点与账户按表格展示。日志保留真实换行，SSH 命令可直接复制。同一信息的网页派生字段不再重复显示。
+
+```bash
+orbit whoami
+orbit instances list
+orbit instances show 123
+orbit nodes --details
+orbit images list --details
+```
+
+`--details` 展开额外字段，不截断名称与路径。需要程序解析或完整原始数据时使用 `--json`；已有 `ok/data` 和数据字段保持兼容。登录成功的 JSON 额外提供顶层 `update` 检查结果，原 `data` 不变。文本不是程序解析的固定协议。
 
 ```bash
 orbit login --username 你的用户名
@@ -73,7 +85,17 @@ orbit config set allow_http false
 
 ## 更新与卸载
 
-更新：重新执行门户安装命令。下载或校验失败不会替换已有程序。旧 Python 客户端的已标记启动器可迁移到独立 CLI，保留配置和凭证，清理其专用虚拟环境。
+登录成功后自动检查门户发布的 CLI 版本，只提醒，不自动安装；检查超时或旧门户没有清单时仍保留登录成功。也可以随时检查或更新：
+
+```bash
+orbit update --check          # 只检查，不下载、不需要登录
+orbit update                 # 下载并更新当前用户的 CLI
+orbit update --check --json   # agent 读取结构化检查结果
+```
+
+更新只连接已配置门户，按数字比较 `major.minor.patch`，不会自动降级；当前版本为 **0.1.2**。只选择当前系统/架构的包，验证 SHA256、大小、单文件归档和实际程序版本。暂存程序与安装记录后再替换，失败尝试恢复原安装；配置和凭证文件不读取或改写，也不延长认证期限。临时 `--server` / `--config-dir` 仅影响此次下载，不改变安装默认配置。Windows 当前命令退出后更新，其它终端占用时等待至多五分钟；用 `orbit --version` 确认，失败日志路径会显示。
+
+首次安装本版、旧版本没有 `update`，或便携文件没有安装记录时，重新执行门户安装命令。此前开发构建标为 `0.2.0`，本次按平台发布编号统一为 `0.1.2`，需要安装一次本版；以后按版本号正常更新。旧 Python 客户端的已标记启动器仍可迁移，保留配置和凭证，清理其专用虚拟环境。
 
 ```bash
 orbit logout
@@ -94,6 +116,8 @@ orbit uninstall --purge --yes --json
 go test ./...
 go run ./cmd/release
 ```
+
+发布版本只有一个源文件 `terminal/internal/cli/VERSION`。后续例如从 `0.1.2` 升到 `0.1.3`，修改该文件，在仓库根目录运行 `python3 oa/cluster-portal/scripts/bundle_docs.py` 同步版本/安装器/skill，再运行 release builder 生成六个平台包并部署。门户从随包的 VERSION 读取版本，安装器从 `/terminal/manifest.json` 取当前发布版本，用户无需更换安装命令。清单携带平台、架构、文件名、可用性、大小及 SHA256；缺包不会提示可安装的更新。
 
 生成六个平台压缩包、SHA256 与 manifest 到 `oa/cluster-portal/terminal-downloads/`。发布包不含源码仓库或 Python 依赖。将这个目录随 `oa/cluster-portal` 一起交付，再执行原有 `deploy/install.sh`。源码部署前运行 `python3 oa/cluster-portal/scripts/bundle_docs.py` 同步安装脚本和 skill；这些是服务器/开发操作，不是用户安装步骤。
 

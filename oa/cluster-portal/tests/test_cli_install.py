@@ -19,7 +19,8 @@ def release(portal, serve, orbit_binary, tmp_path, monkeypatch):
     downloads = tmp_path / 'downloads'; downloads.mkdir()
     system = 'darwin' if platform.system() == 'Darwin' else 'linux'
     arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'amd64'
-    name = f'orbit-0.2.0-{system}-{arch}.tar.gz'
+    from portalapp.terminal_downloads import CLIENT_VERSION
+    name = f'orbit-{CLIENT_VERSION}-{system}-{arch}.tar.gz'
     archive = downloads / name
     with tarfile.open(archive, 'w:gz') as tar:
         tar.add(orbit_binary, arcname='orbit')

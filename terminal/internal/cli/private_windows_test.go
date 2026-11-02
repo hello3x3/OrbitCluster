@@ -56,6 +56,8 @@ func TestWindowsPowerShellInstallerUnicodeLifecycle(t *testing.T) {
 	name := "orbit-" + Version + "-windows-" + runtime.GOARCH + ".zip"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/terminal/manifest.json":
+			fmt.Fprintf(w, `{"version":%q}`, Version)
 		case "/terminal/downloads/" + name:
 			_, _ = w.Write(data)
 		case "/terminal/downloads/" + name + ".sha256":

@@ -223,10 +223,12 @@ oa/scripts/e2e_accounts.py       # 建号全流程（用保留 UID 段，测完�
 在门户「使用文档 → 终端工具使用」复制安装命令，从本门户下载对应平台压缩包。
 支持 macOS、Linux、WSL、原生 Windows，显示下载进度并校验 SHA256。
 HTTP 默认可用；现有 Python 服务端和业务规则保留，认证固定七天、无自动续期。
+当前发布版本为 0.1.2。默认输出整理为可读列表与详情，`--details` 展开，`--json` 保留机器接口；登录后提醒更新，`orbit update` 按需更新并保留配置与登录。
 
 ```bash
 orbit login --username 你的用户名
-orbit instances list --json
+orbit instances list
+orbit update --check
 orbit uninstall
 ```
 

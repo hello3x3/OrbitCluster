@@ -12,16 +12,20 @@ ROOT = PORTAL.parents[1]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output', type=Path, default=ROOT / 'artifacts/orbitcluster-portal-cli-0.2.0.zip')
+    parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     release = PORTAL / 'terminal-downloads'
     manifest = json.loads((release / 'manifest.json').read_text())
+    if args.output is None:
+        args.output = ROOT / f'artifacts/orbitcluster-portal-cli-{manifest["version"]}.zip'
     if len(manifest['artifacts']) != 6:
         raise SystemExit('先在 terminal/ 执行 go run ./cmd/release，生成六个平台发布包。')
+    release_files = {'manifest.json'}
     for item in manifest['artifacts']:
         path = release / item['file']
         if path.parent != release or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
             raise SystemExit('发布包校验失败：' + item['file'])
+        release_files.update((item['file'], item['file'] + '.sha256'))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     roots = {'portalapp', 'deploy', 'scripts', 'terminal-downloads'}
     files = {'README.md', 'requirements.txt', 'run.py', 'bootstrap.py'}
@@ -33,6 +37,8 @@ def main():
             if not path.is_file() or path.is_symlink() or any(part in blocked or part.startswith('.venv') for part in rel.parts):
                 continue
             if rel.parts[0] not in roots and str(rel) not in files:
+                continue
+            if rel.parts[0] == 'terminal-downloads' and (len(rel.parts) != 2 or rel.parts[1] not in release_files):
                 continue
             if path.suffix in {'.pyc', '.pyo', '.db', '.log'} or path.name in {'secret', 'users.passwd'}:
                 continue

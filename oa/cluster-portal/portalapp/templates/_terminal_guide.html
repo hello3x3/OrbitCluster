@@ -22,21 +22,26 @@
     <p>解压即可运行，无需安装其它语言环境。各平台使用对应压缩包；未发布的平台会明确提示。</p>
     <ul>
       {% for system, arch, label, ext in [('darwin','arm64','macOS · Apple 芯片','.tar.gz'),('darwin','amd64','macOS · Intel','.tar.gz'),('linux','amd64','Linux · x86_64','.tar.gz'),('linux','arm64','Linux · ARM64','.tar.gz'),('windows','amd64','Windows · x64','.zip'),('windows','arm64','Windows · ARM64','.zip')] %}
-      <li><a href="{{ url_for('cli_download', name='orbit-0.2.0-' ~ system ~ '-' ~ arch ~ ext) }}">{{ label }}</a></li>
+      <li><a href="{{ url_for('cli_download', name='orbit-' ~ terminal_cli_version ~ '-' ~ system ~ '-' ~ arch ~ ext) }}">{{ label }}</a></li>
       {% endfor %}
     </ul>
   </details>
   <h3>登录与 agent 使用</h3>
   <p>先由本人登录，密码隐藏输入，不发送给 agent：</p>
   <pre><code>orbit login --username 你的用户名
-orbit whoami --json
-orbit plans --json
-orbit images list --json
-orbit instances list --json
+orbit whoami
+orbit plans
+orbit images list
+orbit instances list
 orbit --help</code></pre>
+  <p>默认结果按列表和详情整理，保留资源 ID、状态、配置、时间和异常；<code>--details</code> 展开额外信息，<code>--json</code> 获取可精确解析的完整数据。日志保留真实换行，SSH 命令可直接复制。</p>
   <p>认证由服务器签发，固定七天，到期重新登录，不自动续期。不使用网页 Cookie。<code>--json</code> 成功结果写 stdout，错误写 stderr；写操作超时后先查询结果再决定是否重试。退出命令行不会停止作业。</p>
   <h3>更新与卸载</h3>
-  <p>更新：重新运行安装命令。卸载默认保留配置；需要清除本机配置和登录信息时加 <code>--purge</code>。这些操作不停止集群任务，不删除服务器数据。</p>
+  <p>当前门户发布 CLI <strong>{{ terminal_cli_version }}</strong>。登录成功会检查新版，只提醒，不自动安装；检查失败不会影响已完成的登录。更新从本门户下载、校验并保留配置与登录，不延长认证期限。</p>
+  <pre><code>orbit update --check   # 只检查
+orbit update           # 下载并更新
+orbit --version        # 确认版本</code></pre>
+  <p>Windows 在当前命令退出后更新；其它终端占用时等待，失败日志路径会显示。旧版本没有 update 或便携文件没有安装记录时，重新运行上面的安装命令。卸载默认保留配置；需要清除本机配置和登录信息时加 <code>--purge</code>。这些操作不停止集群任务，不删除服务器数据。</p>
   <pre><code>orbit logout
 orbit uninstall
 # 同时清除本机配置和登录信息：

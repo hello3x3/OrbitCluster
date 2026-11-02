@@ -172,8 +172,21 @@ func setup(a arguments) (any, error) {
 	if _, e := os.Lstat(target); e == nil && !known {
 		return nil, configError("安装目录内已有未知的 orbit 文件")
 	}
-	if e = privateRoot(s.Root); e != nil {
-		return nil, e
+	if a.Bool["preserve-config"] {
+		if !known {
+			return nil, configError("保留配置更新需要已验证的现有安装")
+		}
+		// Temporary server/config flags select only the update source. They must
+		// never change the installed client's persistent settings or credential root.
+		manifest.Config = old.Config
+		if e = installUpdatedBinary(current, old, manifest); e != nil {
+			return nil, e
+		}
+		return map[string]any{"version": Version, "launcher": launcher, "server": s.Server}, nil
+	} else {
+		if e = privateRoot(s.Root); e != nil {
+			return nil, e
+		}
 	}
 	if e = os.MkdirAll(root, 0755); e != nil {
 		return nil, configError("无法创建安装目录")
@@ -185,9 +198,11 @@ func setup(a arguments) (any, error) {
 		return nil, e
 	}
 	// Construct configuration from validated public settings. Existing auth.json is untouched.
-	config := map[string]any{"server": s.Server, "ca_bundle": s.CA, "allow_http": s.AllowHTTP, "timeout": s.Timeout, "poll_seconds": s.Poll}
-	if e = writeObject(s.Root, "config.json", config); e != nil {
-		return nil, e
+	if !a.Bool["preserve-config"] {
+		config := map[string]any{"server": s.Server, "ca_bundle": s.CA, "allow_http": s.AllowHTTP, "timeout": s.Timeout, "poll_seconds": s.Poll}
+		if e = writeObject(s.Root, "config.json", config); e != nil {
+			return nil, e
+		}
 	}
 	if e = writeObject(root, installMarker, manifest); e != nil {
 		return nil, e
