@@ -26,13 +26,16 @@ try {
  & curl.exe @fetch "$Server/terminal/downloads/$artifact.sha256" -o "$work\digest"
  if ($LASTEXITCODE -ne 0) {throw '校验文件下载失败。'}
  Write-Host '[3/5] 校验下载文件'
- $expected=((Get-Content "$work\digest" -Raw).Trim() -split '\s+')[0]
- if ($expected -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash "$work\client.zip" -Algorithm SHA256).Hash -ne $expected) {throw 'SHA256 校验失败，原安装保持不变。'}
- Add-Type -AssemblyName System.IO.Compression.FileSystem
+ $expected=([IO.File]::ReadAllText("$work\digest").Trim() -split '\s+')[0]
+ $sha=[Security.Cryptography.SHA256]::Create()
+ $stream=[IO.File]::OpenRead("$work\client.zip")
+ try {$actual=[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','').ToLowerInvariant()} finally {$stream.Dispose();$sha.Dispose()}
+ if ($expected -notmatch '^[a-fA-F0-9]{64}$' -or $actual -ne $expected) {throw 'SHA256 校验失败，原安装保持不变。'}
+ [Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
  $zip=[IO.Compression.ZipFile]::OpenRead("$work\client.zip")
  try {if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -ne 'orbit.exe') {throw '安装包内容不正确。'}} finally {$zip.Dispose()}
  Write-Host '[4/5] 解压并检查客户端'
- Expand-Archive -LiteralPath "$work\client.zip" -DestinationPath "$work\client"
+ [IO.Compression.ZipFile]::ExtractToDirectory("$work\client.zip","$work\client")
  $exe="$work\client\orbit.exe"
  if ((& $exe --version) -ne "orbit $Version" -or $LASTEXITCODE -ne 0) {throw '客户端版本检查失败。'}
  $arguments=@('setup','--server',$Server)
