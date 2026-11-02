@@ -1,4 +1,4 @@
-# OrbitCluster CLI 0.1.2
+# OrbitCluster CLI 0.3.0
 
 供用户和 agent 调用的独立命令行程序。没有 TUI；客户端使用 Go 标准库，无需 Python、pip、Git 或 Go 运行环境。服务器继续使用现有 Python 后端，资源和权限规则不变。
 
@@ -93,9 +93,9 @@ orbit update                 # 下载并更新当前用户的 CLI
 orbit update --check --json   # agent 读取结构化检查结果
 ```
 
-更新只连接已配置门户，按数字比较 `major.minor.patch`，不会自动降级；当前版本为 **0.1.2**。只选择当前系统/架构的包，验证 SHA256、大小、单文件归档和实际程序版本。暂存程序与安装记录后再替换，失败尝试恢复原安装；保留原配置，不读取或改写凭证文件，也不延长认证期限。临时 `--server` / `--config-dir` 仅影响此次下载，不改变安装默认配置。Windows 当前命令退出后更新，其它终端占用时等待至多五分钟；用 `orbit --version` 确认，失败日志路径会显示。
+更新只连接已配置门户，按数字比较 `major.minor.patch`，不会自动降级；当前版本为 **0.3.0**。只选择当前系统/架构的包，验证 SHA256、大小、单文件归档和实际程序版本。暂存程序与安装记录后再替换，失败尝试恢复原安装；保留原配置，不读取或改写凭证文件，也不延长认证期限。临时 `--server` / `--config-dir` 仅影响此次下载，不改变安装默认配置。Windows 当前命令退出后更新，其它终端占用时等待至多五分钟；用 `orbit --version` 确认，失败日志路径会显示。
 
-首次安装本版、旧版本没有 `update`，或便携文件没有安装记录时，重新执行门户安装命令。此前开发构建标为 `0.2.0`，本次按平台发布编号统一为 `0.1.2`，需要安装一次本版；以后按版本号正常更新。旧 Python 客户端的已标记启动器仍可迁移，保留配置和凭证，清理其专用虚拟环境。
+首次安装本版、旧版本没有 `update`，或便携文件没有安装记录时，重新执行门户安装命令。本版从 `0.2.0` 升级至 `0.3.0`。旧 `0.2.0` 没有 update 命令，需用门户安装器升级一次；此后可直接运行 `orbit update`。旧 Python 客户端的已标记启动器仍可迁移，保留配置和凭证，清理其专用虚拟环境。
 
 ```bash
 orbit logout
@@ -117,7 +117,7 @@ go test ./...
 go run ./cmd/release
 ```
 
-发布版本只有一个源文件 `terminal/internal/cli/VERSION`。后续例如从 `0.1.2` 升到 `0.1.3`，修改该文件，在仓库根目录运行 `python3 oa/cluster-portal/scripts/bundle_docs.py` 同步版本/安装器/skill，再运行 release builder 生成六个平台包并部署。门户从随包的 VERSION 读取版本，安装器从 `/terminal/manifest.json` 取当前发布版本，用户无需更换安装命令。清单携带平台、架构、文件名、可用性、大小及 SHA256；缺包不会提示可安装的更新。
+发布版本只有一个源文件 `terminal/internal/cli/VERSION`。后续例如从 `0.3.0` 升到 `0.3.1`，修改该文件，在仓库根目录运行 `python3 oa/cluster-portal/scripts/bundle_docs.py` 同步版本/安装器/skill，再运行 release builder 生成六个平台包并部署。门户从随包的 VERSION 读取版本，安装器从 `/terminal/manifest.json` 取当前发布版本，用户无需更换安装命令。清单携带平台、架构、文件名、可用性、大小及 SHA256；缺包不会提示可安装的更新。
 
 生成六个平台压缩包、SHA256 与 manifest 到 `oa/cluster-portal/terminal-downloads/`。发布包不含源码仓库或 Python 依赖。将这个目录随 `oa/cluster-portal` 一起交付，再执行原有 `deploy/install.sh`。源码部署前运行 `python3 oa/cluster-portal/scripts/bundle_docs.py` 同步安装脚本和 skill；这些是服务器/开发操作，不是用户安装步骤。
 

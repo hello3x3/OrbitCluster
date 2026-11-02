@@ -322,6 +322,6 @@ python3 oa/cluster-portal/scripts/bundle_docs.py
 
 ## CLI 版本发布与更新
 
-CLI 当前版本 0.1.2，以仓库 `terminal/internal/cli/VERSION` 为唯一来源；`bundle_docs.py` 会同步到门户静态资源。登录成功后客户端读取公开的 `/terminal/manifest.json` 检查版本，失败不影响登录，不自动更新。`orbit update --check` 只检查，`orbit update` 下载同一门户的当前平台包，校验后保留配置/凭证更新。
+CLI 当前版本 0.3.0，以仓库 `terminal/internal/cli/VERSION` 为唯一来源；`bundle_docs.py` 会同步到门户静态资源。登录成功后客户端读取公开的 `/terminal/manifest.json` 检查版本，失败不影响登录，不自动更新。`orbit update --check` 只检查，`orbit update` 下载同一门户的当前平台包，校验后保留配置/凭证更新。
 
 发布新版本时修改 VERSION，运行 `bundle_docs.py`，再在 `terminal/` 执行 `go run ./cmd/release`；将门户与生成的 `terminal-downloads/` 一起部署并重启。清单只会将有普通归档文件及合法 SHA256 文件的当前平台包标为可用，缺包时提醒“尚未发布”。安装器和网页下载链接自动使用门户版本，无需逐处修改版本字符串。
