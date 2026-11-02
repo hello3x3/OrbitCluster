@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=38">
-<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/favicon-32.png') }}?v=1">
-<link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/favicon-16.png') }}?v=1">
-<link rel="shortcut icon" href="{{ url_for('static', filename='brand/favicon.ico') }}?v=1">
-<link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='brand/apple-touch-icon.png') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=39">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/nebula-favicon-32.png') }}?v=1">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/nebula-favicon-16.png') }}?v=1">
+<link rel="shortcut icon" href="{{ url_for('static', filename='brand/nebula-favicon.ico') }}?v=1">
+<link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='brand/nebula-apple-touch-icon.png') }}?v=1">
 <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -16,7 +16,7 @@
   <div class="topbar-inner">
   {# 导航高亮：仅影响外观，不改动任何链接与权限判断 #}
   {% set ep = request.endpoint or '' %}
-  <div class="brand"><a href="{{ url_for('home') }}"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-mark.png') }}" width="28" height="28" alt="">{{ portal_name }}</a></div>
+  <div class="brand"><a href="{{ url_for('home') }}"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-nebula-mark.png') }}" width="32" height="32" alt="">{{ portal_name }}</a></div>
   {% if cur_user %}
   <nav class="nav">
     {% if cur_role == 'admin' %}
@@ -35,7 +35,7 @@
     <a href="{{ url_for('apply_page') }}"{% if ep == 'apply_page' %} class="active"{% endif %}>申请资源</a>
     <a href="{{ url_for('status_page') }}"{% if ep == 'status_page' %} class="active"{% endif %}>集群状态</a>
     <a href="{{ url_for('profile') }}"{% if ep in ('profile','profile_name','profile_password','profile_key_add','profile_port_add') %} class="active"{% endif %}>个人资料</a>
-    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>平台使用指南</a>
+    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>使用文档</a>
   </nav>
   <div class="userbox">
     <span class="who" title="{{ cur_user.username }}">
@@ -46,7 +46,7 @@
   </div>
   {% else %}
   <nav class="nav" aria-label="公开页面">
-    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>平台使用指南</a>
+    <a href="{{ url_for('guide_page') }}"{% if ep == 'guide_page' %} class="active"{% endif %}>使用文档</a>
   </nav>
   <a class="btn btn-ghost btn-sm" href="{{ url_for('login') }}">登录</a>
   {% endif %}
@@ -94,7 +94,7 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='app.js') }}?v=38"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=39"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

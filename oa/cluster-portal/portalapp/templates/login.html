@@ -2,8 +2,13 @@
 {% block title %}登录 - {{ portal_name }}{% endblock %}
 {% block body_class %}auth{% endblock %}
 {% block content %}
-<div class="auth-card">
-  <div class="auth-brand"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-mark.png') }}" width="28" height="28" alt="">{{ portal_name }}</div>
+<div class="auth-layout">
+  <div class="auth-intro">
+    <img class="auth-nebula" src="{{ url_for('static', filename='brand/orbitcluster-nebula-symbol.png') }}" width="240" height="240" alt="">
+    <p class="auth-name">{{ portal_name }}</p>
+    <p class="auth-purpose">申请计算资源，连接容器，保存实验环境</p>
+  </div>
+  <div class="auth-card">
   <h1>用户登录</h1>
   <p class="muted">新用户需由管理员开通账号后，凭初始密码登录。</p>
   <form method="post" action="{{ url_for('login') }}">
@@ -16,6 +21,7 @@
     </label>
     <button class="btn btn-primary" type="submit">登录</button>
   </form>
-  <p class="auth-guide"><a href="{{ url_for('guide_page') }}">首次使用？查看平台使用指南</a></p>
+  <p class="auth-guide"><a href="{{ url_for('guide_page') }}">首次使用？查看使用文档</a></p>
+  </div>
 </div>
 {% endblock %}

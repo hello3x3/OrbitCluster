@@ -36,7 +36,7 @@
 
 {% block content %}
 <div class="page-head">
-  <h1>我的资源</h1>
+  <div class="page-heading"><h1>我的资源</h1><p class="muted">计算任务、连接信息与环境保存</p></div>
   <div class="actions">
     {% if not profile_ok %}
     <a class="btn btn-warn" href="{{ url_for('profile') }}">请先添加 SSH 公钥</a>
@@ -47,12 +47,11 @@
 </div>
 
 <div class="alert alert-info">容器登录示例：<code id="ssh-hint">ssh -p &lt;端口&gt; {{ cur_user.username }}@&lt;真实节点IP&gt;</code>
-  （运行中的资源点「连接/详情」会给出<b>真实 IP</b> 的 SSH 命令，命令旁有「复制」按钮；
-   客户端需要持有你在门户登记的公钥对应的私钥）</div>
+  在运行中的任务上点击“连接/详情”，复制真实节点 IP 对应的命令；连接时使用已登记公钥对应的私钥。</div>
 
 {% if my_quota and my_quota.os_ok %}
-<div class="card">
-  <h2>我的配额 / 额度 <span class="muted small">（磁盘配额 = 集群 OS 实读；Slurm = sacctmgr 实读）</span></h2>
+<div class="card quota-card">
+  <h2>我的配额 / 额度 <span class="muted small">（磁盘用量与 Slurm 账户额度）</span></h2>
   <table class="table quota-table">
     <tr>
       <th style="width:180px">磁盘配额（/share）</th>
@@ -104,7 +103,8 @@
 <div class="alert alert-warn">{{ my_quota.note }}</div>
 {% endif %}
 
-<div class="card">
+<div class="card resource-card">
+  <h2>资源列表</h2>
   <table class="table" id="inst-table">
     <thead>
       <tr>

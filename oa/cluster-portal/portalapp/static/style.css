@@ -40,7 +40,7 @@ p { margin:8px 0 }
 .topbar-inner { display:flex; align-items:center; gap:16px; width:100%; max-width:var(--workspace-max); min-height:var(--topbar-h); margin:0 auto; padding:8px var(--gutter) }
 .brand { flex:none }
 .brand a { display:inline-flex; align-items:center; gap:8px; color:var(--txt); font-weight:600; font-size:16px; white-space:nowrap; text-decoration:none }
-.brand-mark { width:28px; height:28px; flex:none; object-fit:contain }
+.brand-mark { width:32px; height:32px; flex:none; object-fit:contain }
 .nav { display:flex; gap:4px; flex:1; flex-wrap:wrap; align-items:center; min-width:0 }
 .nav a { color:var(--muted); padding:6px 8px; border-radius:var(--radius-sm); font-size:13px; white-space:nowrap; text-decoration:none }
 .nav a:hover { color:var(--txt); background:var(--bg) }
@@ -57,6 +57,8 @@ p { margin:8px 0 }
 /* Workspace */
 .container { width:100%; max-width:var(--workspace-max); margin:0 auto; padding:28px var(--gutter) 12px; min-width:0 }
 .page-head { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 0 24px; flex-wrap:wrap }
+.page-heading { min-width:0 }
+.page-heading p { margin:6px 0 0; font-size:14px }
 .page-head>p { flex:1 1 100%; margin:0; line-height:1.65 }
 .page-head>.alert { flex:1 1 100%; margin:0 }
 .page-head .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
@@ -138,6 +140,8 @@ textarea { resize:vertical; line-height:1.6 }
 .card:has(.table) { overflow-x:auto }
 .quota-table tbody th { width:180px }
 .quota-table td { overflow-wrap:anywhere }
+.quota-card .quota-table td,.quota-card .quota-table th { padding-top:12px; padding-bottom:12px }
+.resource-card>h2 { margin-bottom:16px }
 #inst-table { width:100%; min-width:0; table-layout:auto }
 #inst-table th,#inst-table td { padding-left:10px; padding-right:10px }
 #inst-table td.small { white-space:normal }
@@ -208,6 +212,12 @@ textarea { resize:vertical; line-height:1.6 }
 body.auth { display:flex; flex-direction:column; min-height:100vh }
 body.auth main.container { flex:1; display:flex; align-items:center; justify-content:center; padding:48px 24px }
 .auth-card { width:100%; max-width:440px; background:var(--card); padding:32px; border:1px solid var(--line); border-radius:12px }
+.auth-layout { display:grid; grid-template-columns:minmax(0,320px) minmax(0,400px); align-items:center; gap:64px; width:100%; max-width:800px }
+.auth-intro { text-align:center; min-width:0 }
+.auth-nebula { display:block; width:240px; height:240px; max-width:100%; object-fit:contain; margin:0 auto 24px }
+.auth-name { color:var(--txt); font-size:24px; font-weight:500; overflow-wrap:anywhere }
+.auth-purpose { color:var(--muted); font-size:14px; margin:8px 0 0 }
+.auth-layout .auth-card { max-width:none }
 .auth-card h1 { margin-bottom:12px; font-size:28px }
 .auth-brand { display:flex; align-items:center; gap:8px; font-size:15px; font-weight:500; color:var(--muted); margin-bottom:24px; padding-bottom:20px; border-bottom:1px solid var(--line) }
 .auth-card form { margin-top:24px }
@@ -314,6 +324,11 @@ select.multi-select option { padding:4px 8px }
   input,select,textarea { font-size:16px }
   body.auth main.container { padding:24px 16px }
   .auth-card { padding:24px }
+  .auth-layout { grid-template-columns:minmax(0,1fr); gap:24px; max-width:440px }
+  .auth-intro { display:grid; grid-template-columns:64px minmax(0,1fr); align-items:center; column-gap:16px; text-align:left }
+  .auth-nebula { grid-row:1 / 3; width:64px; height:64px; margin:0 }
+  .auth-name { font-size:20px; margin:0 }
+  .auth-purpose { font-size:13px; margin:4px 0 0 }
 }
 @media(max-width:600px) {
   .cmd-row { flex-direction:column; align-items:stretch; gap:8px }

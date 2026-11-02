@@ -1,0 +1,21 @@
+{
+  "tool": "built-in GPT Image",
+  "selectedConcept": "C — orbital blue nebula",
+  "jobs": [
+    {
+      "name": "透明主标记",
+      "key": "mark",
+      "prompt": "Use case: background-extraction. The attached image is the USER-SELECTED OrbitCluster logo and the edit target. Remove ONLY its white background and white negative spaces, producing a genuine transparent alpha background. Preserve the exact blue nebula cloud, fine blue filaments, bright core, blue elliptical orbital ring sweeping from lower-left to upper-right, and the small blue satellite at the upper-right. Keep the original silhouette, proportions, angle, nebula texture and colors. No redesign, no new objects, no text, no tile, no additional glow, no dark background. Preserve subtle semi-transparent blue wisps without a white fringe. Square centered asset with modest equal clear margin. This is the final approved nebula-orbit symbol for a real web client."
+    },
+    {
+      "name": "小尺寸网页图标",
+      "key": "icon",
+      "prompt": "Use case: logo-brand, small-size adaptation of the USER-SELECTED reference. Make a faithful compact favicon adaptation of this blue NEBULA CORE + SINGLE DIAGONAL ORBIT + UPPER-RIGHT SATELLITE symbol. Keep the defining asymmetry, the diagonal orbit tilted lower-left to upper-right, irregular blue nebula core and one satellite at upper-right. Simplify ONLY internal cloud detail and remove tiny dust so the same identity reads at 16px and 32px. Bold clear royal-blue orbit, compact blue/cyan nebula mass with a recognizable bright center, a distinct solid blue satellite. Transparent background, transparent outer area, no app tile, no white square, no text, no extra rings, no generic planet, no new design concept. Square symbol fills about 84% of the canvas. Crisp edges and a strong silhouette suitable for a browser tab."
+    },
+    {
+      "name": "横版品牌 Logo",
+      "key": "logo",
+      "prompt": "Use case: logo-brand. Produce a final horizontal OrbitCluster brand lockup using the USER-SELECTED attached nebula/orbit symbol unchanged on the left, and the exact word 'OrbitCluster' on the right. Preserve the blue nebula texture, the single diagonal orbit and upper-right satellite of the reference; do not substitute a simpler icon. Text is a clear medium-weight humanist sans-serif in #20262D, spelled exactly OrbitCluster with capital O and C. Symbol height about 1.5 times capital-letter height, balanced gap and baseline. Wide horizontal composition, genuinely transparent background including inside the orbit, no white rectangle, no extra wording, no mockup, no shadows or added glow, no tagline. One complete lockup with safe modest transparent padding."
+    }
+  ]
+}

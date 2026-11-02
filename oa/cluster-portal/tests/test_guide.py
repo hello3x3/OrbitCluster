@@ -32,6 +32,7 @@ def test_public_guide_and_anchors_without_private_data(portal):
     assert "TestPass123" not in text
     assert "ssh-ed25519 AAAA" not in text
     assert client.get("/my").status_code == 302
+    assert client.get("/").location.endswith("/login")
     assert client.post("/guide").status_code == 405
 
 
@@ -41,6 +42,9 @@ def test_login_and_authenticated_navigation_link_to_guide(portal):
     response = client.post("/login", data={"_csrf": _csrf(client), "username": "alice", "password": "TestPass123"})
     assert response.status_code == 302
     client.get("/my")  # Consume the normal one-time login notice before comparing session state.
+    assert client.get("/").location.endswith("/my")
+    business_links = Links(client.get("/my").get_data(as_text=True)).hrefs
+    assert {"/my", "/images", "/apply", "/status", "/profile", "/guide"} <= set(business_links)
     before = dict(_session(client))
     assert client.get("/guide").status_code == 200
     assert dict(_session(client)) == before

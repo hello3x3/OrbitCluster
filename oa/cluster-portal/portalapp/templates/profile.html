@@ -3,7 +3,7 @@
 {% block body_class %}profile-page{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>个人资料</h1>
+  <div class="page-heading"><h1>个人资料</h1><p class="muted">SSH 公钥、显示名与登录密码</p></div>
   {% if not profile_ok %}
   <div class="alert alert-warn">
     你还需要：<b>至少 1 个 SSH 公钥</b> 才能申请资源。端口由平台自动分配。

@@ -1,5 +1,27 @@
 # OrbitCluster 品牌素材
 
+## 当前采用：C「轨道星核」
+
+用户于 2026-11-02 选定蓝色星云核心、单条斜向轨道及右上卫星点的方案。使用内置 GPT Image 完成透明背景处理、同源的小图标适配及横版字标；完整提示词见 [selected-nebula-prompts.json](selected-nebula-prompts.json)。图片格式/尺寸由 ImageMagick 导出，保持真实 alpha 通道。
+
+当前素材位于 `oa/cluster-portal/portalapp/static/brand/`：
+
+| 文件 | 用途 |
+|---|---|
+| `orbitcluster-nebula-reference.png` | 用户选定的白底原图 |
+| `orbitcluster-nebula-symbol-source.png` | 透明主标记原稿 |
+| `orbitcluster-nebula-symbol.png` | 512px，现有登录页品牌区 |
+| `orbitcluster-nebula-mark.png` | 256px，现有业务页公共顶栏 |
+| `orbitcluster-nebula-logo.png` | 横版 Logo，品牌素材交付 |
+| `nebula-icon-source.png` | 保留轨道与星核轮廓的小尺寸适配原稿 |
+| `nebula-favicon-16.png` / `nebula-favicon-32.png` | 浏览器标签图标 |
+| `nebula-favicon.ico` | 16/32/48/64px 兼容图标 |
+| `nebula-apple-touch-icon.png` | 180px 收藏图标 |
+
+网页继续使用真实文本显示配置的平台名称；业务首页、原有登录跳转及权限不变。“使用文档”只作为现有门户导航的一个栏目，仍使用 `/guide`，不是首页或独立应用。
+
+## 早期方向（归档，不再被页面引用）
+
 2026-11-02 按用户要求使用内置 **GPT Image / imagegen** 生成。不是 CLI/API fallback；不依赖额外 API key。
 
 形象：开放轨道与三个计算节点，呼应 Orbit 和 Cluster。强调色 `#2563eb`，辅助蓝 `#60a5fa`，文字 `#20262d`。全部为透明背景的 PNG 位图；不是 SVG 或矢量源文件。
