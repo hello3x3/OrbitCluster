@@ -46,4 +46,10 @@
 
 ## 最终验证记录
 
-待最终构建及多平台 CI 结束后补充精确结果。
+- `make test-terminal PYTHON=.venv-test/bin/python`：Go 测试通过，后端/安装回归 **50 passed**，JS 命令生成/引号/下载失败清理通过。
+- `go test -race ./...`、`go vet ./...` 通过；`go list -m all` 仅本模块，无第三方模块或客户端语言依赖。
+- [原生六平台 CI](https://github.com/hello3x3/OrbitCluster/actions/runs/41432093780)：Linux amd64/arm64、macOS Intel/Apple、Windows x64/ARM64 全部成功；Windows 包括 PowerShell 真实下载、SHA256、中文目录、私有 DACL 和卸载测试。
+- Windows 首轮 CI 暴露 PowerShell 模块未加载问题，改用系统 .NET 的 SHA256/解压接口后重新验证通过，不要求用户安装模块。
+- 本机最终验收证据：`/private/tmp/orbit-native-mac-dj298lo_` 的 `result.json`，五阶段日志和真实 PTY；真实 auth.json 未读取/改写，最终保留新版可用 CLI。
+- 浏览器：1440/1024/768/390/320px，标题单行、48px logo、登录无导航、HTTP 自动复制实际剪贴板、手动回退、Windows 命令生成、页面无横向溢出与脚本错误。
+- 解压交付包后，从交付目录导入门户，六个平台归档均可下载且 SHA256 匹配，原网页 **SMOKE_OK**；未混入运行时数据库、凭证或 secret。
