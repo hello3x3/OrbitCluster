@@ -47,6 +47,7 @@ PARTITION=@@PARTITION@@
 
 # 终端独立令牌：从签发起固定有效，不自动续期；不改变网页 Cookie 策略。
 TERMINAL_TOKEN_DAYS=7
+# 可信内网仅有 HTTP 时可设为 0；客户端仍需明确开启 allow_http。
 TERMINAL_REQUIRE_HTTPS=1
 TERMINAL_LOGIN_MAX_ATTEMPTS=5
 TERMINAL_LOGIN_IP_MAX_ATTEMPTS=50

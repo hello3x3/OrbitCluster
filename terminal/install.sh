@@ -7,13 +7,14 @@ usage() {
 OrbitCluster 用户终端安装器（Python >=3.10；无需 sudo）
 用法：bash install.sh [选项]
   --source PATH         安装本地 terminal/ 源码目录或 wheel
-  --server HTTPS_URL    配置集群 HTTPS 地址
+  --server URL          配置集群 HTTP / HTTPS 地址
+  --allow-http          明确允许 HTTP（仅可信内网；会明文传输凭证）
   --ca-bundle FILE      配置管理员提供的内部 CA 证书
   --install-dir DIR     用户级安装目录（默认 ~/.local/share/orbitcluster）
   --bin-dir DIR         启动器目录（默认 ~/.local/bin）
   --python PATH         使用指定 Python >=3.10
   --repository URL      Git 仓库 URL（默认 OrbitCluster GitHub 仓库）
-  --ref REF             远端分支或标签（默认 codex/user-terminal）
+  --ref REF             远端分支、标签或提交（默认 codex/frontend-optimization）
   --help                显示帮助
 环境变量：ORBIT_INSTALL_SOURCE / ORBIT_INSTALL_DIR / ORBIT_INSTALL_BIN_DIR /
 ORBIT_INSTALL_PYTHON / ORBIT_INSTALL_REPOSITORY / ORBIT_INSTALL_REF。
@@ -26,13 +27,15 @@ install_dir=${ORBIT_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/orbitclust
 bin_dir=${ORBIT_INSTALL_BIN_DIR:-$HOME/.local/bin}
 python_bin=${ORBIT_INSTALL_PYTHON:-}
 repository=${ORBIT_INSTALL_REPOSITORY:-https://github.com/hello3x3/OrbitCluster.git}
-ref=${ORBIT_INSTALL_REF:-codex/user-terminal}
+ref=${ORBIT_INSTALL_REF:-codex/frontend-optimization}
 server=
 ca_bundle=
+allow_http=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
+    --allow-http) allow_http=1; shift ;;
     --source|--server|--ca-bundle|--install-dir|--bin-dir|--python|--repository|--ref)
       if [ "$#" -lt 2 ] || [ -z "$2" ]; then
         printf '缺少参数值：%s\n' "$1" >&2; exit 2
@@ -51,6 +54,12 @@ while [ "$#" -gt 0 ]; do
     *) printf '未知参数：%s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+case "$server" in
+  http://*) if [ "$allow_http" != 1 ]; then
+    printf 'HTTP 地址需要 --allow-http；仅用于可信内网。\n' >&2; exit 2
+  fi ;;
+esac
 
 if [ -z "$python_bin" ]; then
   for candidate in python3 python3.13 python3.12 python3.11 python3.10 python; do
@@ -110,6 +119,10 @@ finally:
     if os.path.exists(temp): os.unlink(temp)
 PY
 
+if [ "$allow_http" = 1 ]; then
+  printf '已允许 HTTP：密码和令牌将明文传输，请仅在可信内网使用。\n' >&2
+  "$bin_dir/orbit" config set allow_http true >/dev/null
+fi
 if [ -n "$ca_bundle" ]; then "$bin_dir/orbit" config set ca_bundle "$ca_bundle" >/dev/null; fi
 if [ -n "$server" ]; then "$bin_dir/orbit" config set server "$server" >/dev/null; fi
 "$bin_dir/orbit" --version

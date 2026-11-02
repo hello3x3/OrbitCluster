@@ -40,8 +40,14 @@ def test_loopback_http_requires_explicit_opt_in(tmp_path):
     with pytest.raises(ConfigError):
         settings(tmp_path, server="http://127.0.0.1:8888")
     assert settings(tmp_path, server="http://127.0.0.1:8888", allow_http=True).allow_http
+    assert settings(tmp_path, server="http://10.0.0.1", allow_http=True).server == "http://10.0.0.1"
+
+
+@pytest.mark.parametrize("url", ["http://u:p@10.71.106.251", "http://10.71.106.251?token=x",
+                                  "http://10.71.106.251#x", "http://10.71.106.251\n/evil"])
+def test_http_opt_in_does_not_disable_url_validation(tmp_path, url):
     with pytest.raises(ConfigError):
-        settings(tmp_path, server="http://10.0.0.1", allow_http=True)
+        settings(tmp_path, server=url, allow_http=True)
 
 
 def test_credentials_private_atomic_and_scoped(tmp_path):
@@ -152,3 +158,23 @@ def test_api_rejection_with_http_200_is_failure(tmp_path):
         json={"ok": False, "error": "Invalid plan", "code": "operation_rejected"}))) as client:
         with pytest.raises(ApiError, match="Invalid plan"):
             client.request("POST", "/instances")
+
+
+@pytest.mark.parametrize("url", ["http://10.71.106.251", "http://cluster.internal:8000"])
+def test_http_opt_in_can_be_persisted_and_https_credentials_do_not_cross(tmp_path, url):
+    initial = Settings.load({"config_dir": tmp_path}, environ={})
+    initial.save({"allow_http": True, "server": url})
+    loaded = Settings.load({"config_dir": tmp_path}, environ={})
+    assert loaded.allow_http and loaded.server == url
+    store = CredentialStore(tmp_path)
+    store.save(url.replace('http://', 'https://'), credential())
+    assert store.get(url) is None
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "data": credential()})
+    with Client(loaded, transport=httpx.MockTransport(respond)) as client:
+        client.login('alice', 'secret')
+    assert str(requests[0].url).startswith(url + '/api/terminal/v1/')
+    assert 'cookie' not in requests[0].headers
+    assert 'Authorization' not in requests[0].headers

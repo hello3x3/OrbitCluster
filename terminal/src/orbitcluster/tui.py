@@ -96,17 +96,19 @@ class TextDialog(ModalScreen):
 
 
 class LoginScreen(Screen):
-    def __init__(self, server="", message="登录凭证保存在当前用户目录；密码不落盘。"):
+    def __init__(self, server="", message="登录凭证保存在当前用户目录；密码不落盘。", allow_http=False):
         super().__init__()
-        self.server, self.message = server, message
+        self.server, self.message, self.allow_http = server, message, allow_http
 
     def compose(self):
         yield Header()
-        with Vertical(id="login-panel"):
+        with VerticalScroll(id="login-panel"):
             yield Label("OrbitCluster", id="login-brand")
             yield Static("实验室计算资源 · 用户终端", classes="muted")
-            yield Label("服务器 HTTPS 地址")
-            yield Input(self.server, placeholder="https://集群地址", id="server")
+            yield Label("服务器地址（HTTP / HTTPS）")
+            yield Input(self.server, placeholder="http://或https://集群地址", id="server")
+            yield Checkbox("允许 HTTP（仅可信内网）", value=self.allow_http, id="allow-http")
+            yield Static("HTTP 会明文传输密码和令牌", id="http-warning", markup=False)
             yield Label("用户名")
             yield Input(id="username")
             yield Label("密码")
@@ -114,6 +116,17 @@ class LoginScreen(Screen):
             yield Button("登录", id="login", variant="primary")
             yield Static(self.message, id="login-status", markup=False)
         yield Footer()
+
+    def on_mount(self):
+        self.update_http_warning()
+
+    @on(Input.Changed, "#server")
+    @on(Checkbox.Changed, "#allow-http")
+    def update_http_warning(self, event=None):
+        if self.is_mounted:
+            self.query_one("#http-warning", Static).display = (
+                self.query_one("#allow-http", Checkbox).value
+                or self.query_one("#server", Input).value.lower().startswith("http://"))
 
     @on(Button.Pressed, "#login")
     @on(Input.Submitted, "#password")
@@ -127,7 +140,7 @@ class LoginScreen(Screen):
         self.query_one("#login", Button).disabled = True
         self.query_one("#password", Input).value = ""
         self.query_one("#login-status", Static).update("正在验证账号…")
-        self.app.perform_login(server, username, password)
+        self.app.perform_login(server, username, password, allow_http=self.query_one("#allow-http", Checkbox).value)
 
 
 class MainScreen(Screen):
@@ -476,11 +489,12 @@ class OrbitApp(App):
     Screen { background: #0c1424; color: #dce5f3; }
     Header { background: #17263d; }
     Footer { background: #17263d; }
-    #login-panel { width: 66; height: auto; margin: 2 0; padding: 2 3; background: #142238; border: round #31557c; align-horizontal: center; }
+    #login-panel { width: 66; max-width: 95%; height: 1fr; max-height: 38; margin: 1 0; padding: 1 3; background: #142238; border: round #31557c; align-horizontal: center; }
     LoginScreen { align: center middle; }
     #login-brand { text-style: bold; color: #69c7ff; margin-bottom: 1; }
     #login-panel Input { margin-bottom: 1; }
     #login-panel Button { width: 100%; margin-top: 1; }
+    #http-warning { height: auto; color: #e3bb73; margin-bottom: 1; }
     #login-status { margin-top: 1; color: #9cafc9; }
     #session-bar { height: 3; margin: 0 2; align-vertical: middle; }
     #identity { width: 1fr; padding-top: 1; }
@@ -517,7 +531,7 @@ class OrbitApp(App):
         self._auth_transition = False
 
     async def on_mount(self):
-        await self.push_screen(LoginScreen(self.settings.server))
+        await self.push_screen(LoginScreen(self.settings.server, allow_http=self.settings.allow_http))
         if self.settings.server:
             if self.client is None:
                 self.client = Client(self.settings)
@@ -535,10 +549,11 @@ class OrbitApp(App):
                 self.screen.query_one("#login-status", Static).update(str(exc))
 
     @work(group="session", exclusive=True)
-    async def perform_login(self, server, username, password):
+    async def perform_login(self, server, username, password, allow_http=None):
         try:
-            server = normalize_server(server, self.settings.allow_http)
-            self.settings = replace(self.settings, server=server)
+            allowed = self.settings.allow_http if allow_http is None else allow_http
+            server = normalize_server(server, allowed)
+            self.settings = replace(self.settings, server=server, allow_http=allowed)
             self.settings.save({"server": server, "allow_http": self.settings.allow_http})
             if not self._external_client:
                 if self.client:
@@ -567,7 +582,7 @@ class OrbitApp(App):
             # screen mounted. Unwind the whole user session instead.
             while len(self.screen_stack) > 1:
                 await self.pop_screen()
-            await self.push_screen(LoginScreen(self.settings.server, message))
+            await self.push_screen(LoginScreen(self.settings.server, message, allow_http=self.settings.allow_http))
         finally:
             self._auth_transition = False
 
