@@ -76,3 +76,15 @@ def test_auth_failure_has_machine_readable_stderr_and_exit_code(monkeypatch, tmp
     output = capsys.readouterr()
     assert output.out == ""
     assert json.loads(output.err)["code"] == "authentication_required"
+
+
+def test_interactive_http_server_prompt_persists_opt_in(monkeypatch, tmp_path, capsys):
+    from orbitcluster.config import Settings
+    setup(monkeypatch, tmp_path)
+    monkeypatch.delenv('ORBIT_SERVER')
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: 'http://10.71.106.251')
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt: 'TestPass123')
+    assert cli.main(['login', '--username', 'alice', '--allow-http'], client_factory=FakeClient) == 0
+    loaded = Settings.load({'config_dir': tmp_path}, environ={})
+    assert loaded.allow_http and loaded.server == 'http://10.71.106.251'

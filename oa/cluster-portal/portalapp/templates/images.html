@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ "镜像管理" if is_root else "我的镜像" }} - {{ portal_name }}{% endblock %}
+{% block title %}{{ "镜像管理" if is_root or request.endpoint == "asset_images" else "我的镜像" }} - {{ portal_name }}{% endblock %}
 
 {% block content %}
 {% set admin = is_root %}
 <div class="page-head">
-  <h1>{{ "镜像管理（root）" if admin else "我的镜像" }}</h1>
+  <h1>{{ "镜像管理（root）" if admin else ("镜像管理" if request.endpoint == "asset_images" else "我的镜像") }}</h1>
   {% if admin %}
   <p class="muted small">这里列出<b>公共镜像 + 所有人的个人镜像</b>（共 {{ images|length }} 个），
     可以改任意一个的名称、注释，或删除它。个人镜像位于

@@ -18,8 +18,9 @@ def parser():
         common.add_argument("--" + name)
     common.add_argument("--request-timeout", dest="timeout", type=float)
     common.add_argument("--poll-seconds", type=float)
-    for flag in ("json", "yes", "allow-http"):
+    for flag in ("json", "yes"):
         common.add_argument("--" + flag, action="store_true")
+    common.add_argument("--allow-http", action="store_true", help="允许明文 HTTP，仅用于可信内网")
     root = argparse.ArgumentParser(prog="orbit", description="OrbitCluster 用户终端", parents=[common])
     root.add_argument("--version", action="version", version="orbit " + __version__)
     commands = root.add_subparsers(dest="command")
@@ -224,8 +225,8 @@ def main(argv=None, *, client_factory=Client):
             OrbitApp(settings).run()
             return 0
         if args.command == "login" and not settings.server and sys.stdin.isatty():
-            server = normalize_server(input("服务器 HTTPS 地址："), settings.allow_http)
-            settings.save({"server": server})
+            server = normalize_server(input("服务器地址（HTTP / HTTPS）："), settings.allow_http)
+            settings.save({"server": server, "allow_http": settings.allow_http})
             settings = Settings.load({**values, "server": server})
         with client_factory(settings) as client:
             result = execute(args, client)

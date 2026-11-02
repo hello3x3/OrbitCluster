@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}平台使用指南 - {{ portal_name }}{% endblock %}
+{% block title %}快速入门 - {{ portal_name }}{% endblock %}
 {% block body_class %}guide-page{% endblock %}
 {% block content %}
 <div class="guide-layout">
@@ -14,13 +14,13 @@
     <a href="#faq">常见问题</a>
   </nav>
   <article class="guide-content">
-    <h1>平台使用指南</h1>
+    <h1>快速入门</h1>
     <p class="guide-intro">申请计算资源、连接容器、保存实验环境。也可以使用终端工具，让 Codex 等 agent 完成同样的用户操作。</p>
     <section class="guide-section" id="getting-started">
       <h2>首次使用</h2>
       <ol>
         <li>向管理员获取账号和初始密码，连接实验室网络后<a href="{{ url_for('login') }}">登录平台</a>。</li>
-        <li>打开“个人资料”，修改初始密码。</li>
+        <li>点击右上角头像，进入“个人资料”，修改初始密码。</li>
         <li>添加连接容器的电脑上的 SSH 公钥：复制 <code>.pub</code> 文件的整行内容。<strong>只上传公钥，私钥留在自己电脑上。</strong></li>
       </ol>
       <p>还没有密钥时，在本机终端生成：</p>
@@ -28,7 +28,7 @@
 cat ~/.ssh/id_ed25519.pub</code></pre>
       <p>如果提示已有同名密钥，保留原文件或换一个文件名。添加公钥后即可申请资源，SSH 端口由平台自动分配。</p>
       <figure class="guide-figure">
-        <a href="{{ url_for('static', filename='guide/ssh-public-key.png') }}" target="_blank" rel="noopener" aria-label="放大添加公钥操作示意图"><img src="{{ url_for('static', filename='guide/ssh-public-key.png') }}" width="922" height="217" loading="lazy" alt="个人资料中的公钥输入框和添加公钥按钮，以红框标出"></a>
+        <a href="{{ url_for('static', filename='guide/ssh-public-key.png') }}" target="_blank" rel="noopener" aria-label="放大添加公钥操作示意图"><img src="{{ url_for('static', filename='guide/ssh-public-key.png') }}" width="910" height="230" loading="lazy" alt="个人资料中的公钥输入框和添加公钥按钮，以红框标出"></a>
         <figcaption>粘贴你自己的公钥，再点击“添加公钥”。图片可点击放大。</figcaption>
       </figure>
     </section>
@@ -44,7 +44,7 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
         <tr><td>节点</td><td>一般保留“自动分配”；需要指定机器时再选择</td></tr>
       </tbody></table></div>
       <figure class="guide-figure">
-        <a href="{{ url_for('static', filename='guide/apply-task-image.png') }}" target="_blank" rel="noopener" aria-label="放大任务名称和镜像选择示意图"><img src="{{ url_for('static', filename='guide/apply-task-image.png') }}" width="762" height="389" loading="lazy" alt="申请资源页面中的任务名称和镜像选择框，以红框标出"></a>
+        <a href="{{ url_for('static', filename='guide/apply-task-image.png') }}" target="_blank" rel="noopener" aria-label="放大任务名称和镜像选择示意图"><img src="{{ url_for('static', filename='guide/apply-task-image.png') }}" width="750" height="420" loading="lazy" alt="申请资源页面中的任务名称和镜像选择框，以红框标出"></a>
         <figcaption>填写任务名称、选择镜像，继续向下选择套餐和时长。</figcaption>
       </figure>
       <p>提交后回到“我的资源”：</p>
@@ -55,7 +55,7 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
       </ul>
       <p>连接时使用已登记公钥对应的私钥，平台密码不用于容器 SSH 登录。连接失败先打开“日志”查看启动信息和门户操作结果。</p>
       <figure class="guide-figure" id="resource-actions-example">
-        <a href="{{ url_for('static', filename='guide/resource-actions.png') }}" target="_blank" rel="noopener" aria-label="放大任务操作位置示意图"><img src="{{ url_for('static', filename='guide/resource-actions.png') }}" width="1026" height="352" loading="lazy" alt="我的资源任务表，运行中任务右侧的连接详情、保存镜像和停机按钮以红框标出"></a>
+        <a href="{{ url_for('static', filename='guide/resource-actions.png') }}" target="_blank" rel="noopener" aria-label="放大任务操作位置示意图"><img src="{{ url_for('static', filename='guide/resource-actions.png') }}" width="1078" height="367" loading="lazy" alt="我的资源任务表，运行中任务右侧的连接详情、保存镜像和停机按钮以红框标出"></a>
         <figcaption>在运行中任务右侧连接容器或保存镜像；确认保存成功后再停机。</figcaption>
       </figure>
       <p>任务停止后名称仍被记录占用；删除已结束记录后，才可以再次使用该名称。</p>
@@ -85,48 +85,19 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
     <section class="guide-section" id="quota-profile">
       <h2>集群、额度与资料</h2>
       <ul>
-        <li><strong>集群状态</strong>：节点 CPU、内存、GPU 的空闲/总量，以及平台内活跃资源。空闲数量按调度系统口径显示。</li>
+        <li><strong>集群 → 集群占用情况</strong>：按分区和 GPU 型号查看节点 CPU、内存、GPU 的空闲/总量，采用 Slurm 调度口径。</li>
+        <li><strong>集群 → 门户内活跃资源</strong>：查看通过本门户提交的活跃任务及截止时间。</li>
         <li><strong>我的资源 → 我的配额 / 额度</strong>：磁盘用量、硬上限，以及账户的优先级和单用户 GPU 上限。</li>
         <li><strong>个人资料</strong>：管理 SSH 公钥、显示名和平台密码。修改密码后，旧终端凭证失效，需要重新登录。</li>
       </ul>
       <p>额度、套餐、账户归属和账号状态由管理员维护。上限不足或账户不可用时，请联系管理员。</p>
     </section>
-    <section class="guide-section" id="terminal">
-      <h2>安装终端工具</h2>
-      <p>支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上。使用原有平台账号登录，无需管理员权限安装。</p>
-      <p>先向管理员获取 <strong>HTTPS 服务地址</strong>。使用内部 CA 时，还需要 CA 公共证书及其本机路径；它不是 SSH 密钥。现有 HTTP 网页地址不能直接用于终端认证，服务端需先开通终端 API 与 HTTPS。</p>
-      <div id="terminal-installer" data-release-ref="{{ terminal_install_ref }}">
-        <div class="install-fields">
-          <label for="install-server">HTTPS 服务地址
-            <input id="install-server" type="url" placeholder="https://cluster.example.org" autocomplete="off" spellcheck="false" aria-describedby="install-status">
-          </label>
-          <label for="install-ca">CA 公共证书路径 <span class="muted small">（可选，本机绝对路径）</span>
-            <input id="install-ca" placeholder="/本机路径/cluster-ca.crt" autocomplete="off" spellcheck="false">
-          </label>
-        </div>
-        <label for="install-command">安装命令</label>
-        <textarea id="install-command" class="install-command" readonly rows="8" spellcheck="false" aria-describedby="install-status"></textarea>
-        <div class="install-actions"><button id="install-copy" type="button" class="btn btn-primary" disabled>复制安装命令</button><span id="install-status" class="install-status" role="status">请填写 HTTPS 服务地址</span></div>
-        <noscript><p class="alert alert-info">启用 JavaScript 后可生成安装命令；也可按仓库中的 <a href="https://github.com/hello3x3/OrbitCluster/blob/{{ terminal_install_ref }}/terminal/README.md">终端安装说明</a>操作。</p></noscript>
-      </div>
-      <p class="small muted">输入只在当前页面生成命令，不会保存到服务器。安装器来自 OrbitCluster 仓库，使用固定发布版本，独立安装在当前用户目录，不修改系统 Python。</p>
-      <h3>登录与日常使用</h3>
-      <p>安装后启动，在终端输入平台用户名和密码：</p>
-      <pre><code>~/.local/bin/orbit tui</code></pre>
-      <p>认证默认固定有效七天，以登录后显示的到期时间为准；到期重新登录，不自动续期。退出 TUI 不会停止作业。</p>
-      <h3>交给 agent 操作</h3>
-      <p>先由你完成登录，再让 agent 调用命令：</p>
-      <pre><code>orbit login --username 你的用户名
-orbit instances list --json
-orbit images list --json
-orbit --help</code></pre>
-      <p>找不到 <code>orbit</code> 时，使用 <code>~/.local/bin/orbit</code>。不要把密码或本地 <code>auth.json</code> 发给 agent 或提交到仓库。写操作超时后，先查询结果，再决定是否重新提交。</p>
-    </section>
+    {% include '_terminal_guide.html' %}
     <section class="guide-section" id="faq">
       <h2>常见问题</h2>
       <dl class="guide-faq">
         <dt>为什么不能提交申请？</dt><dd>确认已添加 SSH 公钥，任务名没有重复，时长不超过套餐上限，且所选账户仍有效。</dd>
-        <dt>为什么一直排队？</dt><dd>可能暂时没有满足套餐、节点或账户限制的资源。查看“集群状态”；不要反复提交相同任务。</dd>
+        <dt>为什么一直排队？</dt><dd>可能暂时没有满足套餐、节点或账户限制的资源。查看“集群占用情况”；不要反复提交相同任务。</dd>
         <dt>SSH 连接不上？</dt><dd>确认资源已运行，使用最新“连接/详情”里的命令，网络能访问节点，并持有对应私钥。重新启动后端口会变化。</dd>
         <dt>镜像保存失败？</dt><dd>先查资源日志和磁盘配额。确认保存成功前，不要把停机当作已保存。</dd>
         <dt>终端登录过期？</dt><dd>重新执行 <code>orbit login</code>，或在 TUI 登录界面重新认证。调整本机时间不能延长有效期。</dd>
@@ -135,4 +106,4 @@ orbit --help</code></pre>
   </article>
 </div>
 {% endblock %}
-{% block scripts %}<script type="module" src="{{ url_for('static', filename='guide.js') }}?v=1"></script>{% endblock %}
+{% block scripts %}<script type="module" src="{{ url_for('static', filename='guide.js') }}?v=2"></script>{% endblock %}

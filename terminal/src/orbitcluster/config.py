@@ -1,6 +1,5 @@
 """Client configuration: explicit flags > environment > JSON file > defaults."""
 from dataclasses import dataclass
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -23,14 +22,9 @@ def normalize_server(value, allow_http=False):
         raise ConfigError("服务器地址格式不正确") from None
     if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
             or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in value)):
-        raise ConfigError("服务器地址需为 HTTPS 地址，不能包含账号、密码、查询参数或片段")
-    if parsed.scheme == "http":
-        try:
-            loopback = ipaddress.ip_address(parsed.hostname).is_loopback
-        except ValueError:
-            loopback = parsed.hostname == "localhost"
-        if not (allow_http and loopback):
-            raise ConfigError("请使用 HTTPS；--allow-http 仅用于本机 loopback 开发")
+        raise ConfigError("服务器地址需为 HTTP 或 HTTPS，不能包含账号、密码、查询参数或片段")
+    if parsed.scheme == "http" and not allow_http:
+        raise ConfigError("HTTP 连接需明确开启 allow_http；仅在可信内网使用 --allow-http 或在 TUI 勾选允许 HTTP")
     return urlunsplit((parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
 
 

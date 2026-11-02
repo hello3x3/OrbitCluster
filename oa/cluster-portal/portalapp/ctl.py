@@ -71,6 +71,10 @@ def sinfo():
     return run(["sinfo"], timeout=60)
 
 
+def cluster_status():
+    return run(["cluster-status"], timeout=90)
+
+
 def provision_user(username, quota, skip_os=False, accounts=None, default_account=None):
     args = ["provision-user", username, quota]
     if skip_os:
@@ -271,7 +275,8 @@ def user_accounts(user):
 class NodeCache:
     """sinfo 结果短缓存，避免每个请求都跑 sinfo。"""
 
-    def __init__(self, ttl=5):
+    def __init__(self, ttl=5, fetcher=None):
+        self.fetcher = fetcher
         self.ttl = ttl
         self._data = None
         self._at = 0.0
@@ -280,7 +285,7 @@ class NodeCache:
         now = time.time()
         if self._data is None or now - self._at > self.ttl:
             try:
-                self._data = sinfo()
+                self._data = self.fetcher() if self.fetcher else sinfo()
                 self._at = now
             except CtlError:
                 self._data = {"ok": False, "error": "无法获取节点状态"}

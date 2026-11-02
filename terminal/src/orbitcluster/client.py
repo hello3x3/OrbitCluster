@@ -34,10 +34,10 @@ class Client:
     def __init__(self, settings, *, transport=None, store=None):
         self.settings = settings
         if not settings.server:
-            raise ConfigError("请设置服务器地址：orbit config set server https://服务器地址")
+            raise ConfigError("请设置服务器地址：orbit config set server 服务地址")
         self.store = store or CredentialStore(settings.config_dir)
         try:
-            verify = ssl.create_default_context(cafile=settings.ca_bundle)
+            verify = ssl.create_default_context(cafile=settings.ca_bundle if settings.server.startswith("https://") else None)
         except (OSError, ssl.SSLError):
             raise ConfigError("无法读取 CA 证书，请检查 ca_bundle 配置") from None
         self.http = httpx.Client(verify=verify, timeout=settings.timeout, follow_redirects=False,
@@ -72,11 +72,11 @@ class Client:
             suffix = "；操作结果尚不确定，请先核实资源状态再重试" if method != "GET" else ""
             raise NetworkError("无法连接服务器，请检查地址、网络和 CA 证书" + suffix) from None
         if 300 <= response.status_code < 400:
-            raise ApiError("服务器返回重定向，请配置最终 HTTPS 地址；客户端未转发凭证", "unexpected_redirect")
+            raise ApiError("服务器返回重定向，请配置最终服务地址；客户端未转发凭证", "unexpected_redirect")
         try:
             payload = response.json()
         except ValueError:
-            raise ApiError("服务器未返回终端 API 数据，请确认已部署终端接口及 HTTPS 入口", "invalid_response") from None
+            raise ApiError("服务器未返回终端 API 数据，请确认该地址已部署终端 API", "invalid_response") from None
         if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
             raise ApiError("服务器响应格式不符合终端 API 协议", "invalid_response")
         if response.status_code == 401 and authenticated:

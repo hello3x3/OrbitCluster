@@ -334,7 +334,7 @@ def _secret():
 
 
 # Published user-terminal release used by the public installation guide.
-TERMINAL_INSTALL_REF = "344116330a2568d5c909c5fcc07b54a682e9b944"
+TERMINAL_INSTALL_REF = "8b0990ebf469a575636760de3ad177d56cd40645"
 
 
 def create_app(testing=False):
@@ -354,6 +354,7 @@ def create_app(testing=False):
     if os.environ.get("PORTAL_COOKIE_SECURE", "0") == "1":
         app.config["SESSION_COOKIE_SECURE"] = True
     app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
+    app.cluster_node_cache = ctl.NodeCache(ttl=8, fetcher=lambda: ctl.cluster_status())
     app.node_cache = ctl.NodeCache(ttl=5)
     app.quota_cache = {}          # username -> (ts, ctx)，见 _quota_ctx
     app.quota_ttl = 8             # 秒：配额/QoS 变化很慢，页面别每次都重新问 OS
@@ -445,6 +446,14 @@ def create_app(testing=False):
     @app.route("/guide")
     def guide_page():
         return render_template("guide.html", terminal_install_ref=TERMINAL_INSTALL_REF)
+
+    @app.route("/guide/development")
+    def development_guide():
+        return render_template("development_guide.html")
+
+    @app.route("/guide/terminal")
+    def terminal_guide():
+        return render_template("terminal_guide.html", terminal_install_ref=TERMINAL_INSTALL_REF)
 
     # ------------------------------------------------------------------ 认证
     @app.route("/login", methods=["GET", "POST"])
@@ -1839,17 +1848,29 @@ def create_app(testing=False):
     @app.route("/status")
     @login_required
     def status_page():
-        u = get_user_row()
-        db = get_db()
-        data = app.node_cache.get()
-        active = []
-        for inst in db.instances_all_active():
-            active.append(enrich_instance(inst))
-        mine = [enrich_instance(i) for i in db.instances_for(u["id"])]
-        return render_template("status.html", nodes=data.get("nodes", []),
-                               partition=data.get("partition", "gpu"),
-                               active=active, mine=mine,
-                               is_admin=u["role"] == "admin")
+        from .cluster_views import cluster_context
+        return render_template("status.html", **cluster_context(app.cluster_node_cache.get()))
+
+    @app.route("/status/active")
+    @login_required
+    def active_resources():
+        active = [enrich_instance(inst) for inst in get_db().instances_all_active()]
+        return render_template("active_resources.html", active=active)
+
+    @app.route("/assets/datasets")
+    @login_required
+    def asset_datasets():
+        return render_template("asset_placeholder.html", asset_title="数据集", asset_description="共有数据集目录与空间占用")
+
+    @app.route("/assets/models")
+    @login_required
+    def asset_models():
+        return render_template("asset_placeholder.html", asset_title="模型仓库", asset_description="共有模型版本与空间占用")
+
+    @app.route("/assets/images")
+    @login_required
+    def asset_images():
+        return images_page()
 
     # ------------------------------------------------------------------ 管理员：用户
     @app.route("/admin")

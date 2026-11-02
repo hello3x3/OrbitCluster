@@ -1,0 +1,40 @@
+    <section class="guide-section" id="terminal">
+      <h2>安装终端工具</h2>
+      <p>支持 macOS、Linux 和 WSL，需要 Python 3.10 或以上。使用原有平台账号登录，无需管理员权限安装。</p>
+      <p>使用管理员提供的 <strong>HTTP 或 HTTPS 服务地址</strong>，服务器需已部署终端 API。仅有 HTTP 时，管理员在 <code>/etc/cluster-portal/site.conf</code> 设置 <code>TERMINAL_REQUIRE_HTTPS=0</code> 并重启门户，用户在下方勾选允许 HTTP。使用 HTTPS 内部 CA 时，填写 CA 公共证书的本机路径；它不是 SSH 密钥。</p>
+      <div id="terminal-installer" data-release-ref="{{ terminal_install_ref }}">
+        <div class="install-fields">
+          <label for="install-server">服务地址（HTTP / HTTPS）
+            <input id="install-server" type="url" placeholder="http://集群地址 或 https://集群地址" autocomplete="off" spellcheck="false" aria-describedby="install-status">
+          </label>
+          <label class="install-http-option" for="install-allow-http"><input id="install-allow-http" type="checkbox"> 允许 HTTP（仅可信内网）</label>
+          <p id="install-http-notice" class="alert alert-info" hidden>HTTP 会明文传输密码和令牌。确认当前网络可信后再开启；认证仍固定七天有效，不自动续期。</p>
+          <label for="install-ca">CA 公共证书路径 <span class="muted small">（可选，本机绝对路径）</span>
+            <input id="install-ca" placeholder="/本机路径/cluster-ca.crt" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <label for="install-command">安装命令</label>
+        <textarea id="install-command" class="install-command" readonly rows="8" spellcheck="false" aria-describedby="install-status"></textarea>
+        <div class="install-actions"><button id="install-copy" type="button" class="btn btn-primary" disabled>复制安装命令</button><span id="install-status" class="install-status" role="status">请填写服务地址</span></div>
+        <noscript><p class="alert alert-info">启用 JavaScript 后可生成安装命令；也可按仓库中的 <a href="https://github.com/hello3x3/OrbitCluster/blob/{{ terminal_install_ref }}/terminal/README.md">终端安装说明</a>操作。</p></noscript>
+      </div>
+      <p class="small muted">输入只在当前页面生成命令，不会保存到服务器。安装器来自 OrbitCluster 仓库，使用固定发布版本，独立安装在当前用户目录，不修改系统 Python。</p>
+      <h3>登录与日常使用</h3>
+      <p>安装后启动，在终端输入平台用户名和密码：</p>
+      <pre><code>~/.local/bin/orbit tui</code></pre>
+      <p>认证默认固定有效七天，以登录后显示的到期时间为准；到期重新登录，不自动续期。退出 TUI 不会停止作业。</p>
+      <h3>交给 agent 操作</h3>
+      <p>先由你完成登录，再让 agent 调用命令：</p>
+      <pre><code>orbit login --username 你的用户名
+orbit instances list --json
+orbit images list --json
+orbit --help</code></pre>
+      <p>找不到 <code>orbit</code> 时，使用 <code>~/.local/bin/orbit</code>。不要把密码或本地 <code>auth.json</code> 发给 agent 或提交到仓库。写操作超时后，先查询结果，再决定是否重新提交。</p>
+      <h3>给 Codex 安装 OrbitCluster skill</h3>
+      <p>skill 告诉 agent 如何使用用户端命令；平台账号仍由你在终端登录。将下面命令复制到本机终端，安装后重启 Codex。</p>
+      <pre><code>mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/orbitcluster"
+curl -fsSL 'https://raw.githubusercontent.com/hello3x3/OrbitCluster/codex/frontend-optimization/skills/orbitcluster/SKILL.md' \
+  -o "${CODEX_HOME:-$HOME/.codex}/skills/orbitcluster/SKILL.md"</code></pre>
+      <p>接着可让 Codex“使用 $orbitcluster 查看我的资源”或按你的要求申请任务。</p>
+      <p><a href="{{ url_for('static', filename='docs/orbitcluster-SKILL.md') }}" download="SKILL.md">下载 SKILL.md</a> <span class="muted small">也可手动放到上述目录</span></p>
+    </section>

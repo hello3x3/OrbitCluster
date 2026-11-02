@@ -5,11 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildInstallCommand } from '../portalapp/static/guide-install.mjs';
-const ref='344116330a2568d5c909c5fcc07b54a682e9b944';
+const ref='8b0990ebf469a575636760de3ad177d56cd40645';
 for(const bad of ['', 'http://cluster.test', 'https:/cluster.test', 'https://u:p@cluster.test', 'https://cluster.test?x=1', 'https://cluster.test#x', 'https://cluster.test\n;echo bad', 'file:///tmp/x']) {
   assert.throws(()=>buildInstallCommand(bad,'',ref), undefined, bad);
 }
 assert.throws(()=>buildInstallCommand('https://cluster.test','','main'));
+assert.throws(()=>buildInstallCommand('http://cluster.test','/tmp/ca.crt',ref,true));
+for(const bad of ['file:///tmp/x','http://u:p@cluster.test','http://cluster.test?x=1','http://cluster.test#x']) {
+  assert.throws(()=>buildInstallCommand(bad,'',ref,true));
+}
+
 const dir=mkdtempSync(join(tmpdir(),'orbit-guide-'));
 try {
   writeFileSync(join(dir,'curl'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$GUIDE_TEST_CURL"\n', {mode:0o700});
@@ -25,11 +30,17 @@ try {
   assert.ok(readFileSync(join(dir,'curl-args'),'utf8').includes('https://raw.githubusercontent.com/hello3x3/OrbitCluster/'+ref+'/terminal/install.sh\n'));
   const noCa=buildInstallCommand('https://cluster.test','',ref);
   assert.ok(!noCa.includes('--ca-bundle'));
+  const httpCommand=buildInstallCommand('http://10.71.106.251/','',ref,true);
+  const httpResult=spawnSync('/bin/bash',['-c',httpCommand],{env:{...process.env,PATH:dir+':'+process.env.PATH,GUIDE_TEST_CURL:join(dir,'curl-args'),GUIDE_TEST_BASH:join(dir,'bash-args')},encoding:'utf8'});
+  assert.equal(httpResult.status,0,httpResult.stderr);
+  assert.deepEqual(readFileSync(join(dir,'bash-args'),'utf8').trimEnd().split('\n').slice(1),
+    ['--ref',ref,'--server','http://10.71.106.251','--allow-http']);
+  assert.ok(!noCa.includes('--allow-http'));
   // A failed download must not run even an old or empty installer.
   rmSync(join(dir,'bash-args'));
   writeFileSync(join(dir,'curl'),'#!/bin/sh\nexit 22\n',{mode:0o700});
   const failed=spawnSync('/bin/bash',['-c',noCa],{env:{...process.env,PATH:dir+':'+process.env.PATH,GUIDE_TEST_BASH:join(dir,'bash-args')}});
   assert.notEqual(failed.status,0);
   assert.equal(existsSync(join(dir,'bash-args')),false);
-  console.log('Guide command checks passed: HTTPS validation, quoting, fixed release, cleanup, failed download.');
+  console.log('Guide command checks passed: HTTP opt-in, HTTPS validation, quoting, fixed release, cleanup, failed download.');
 } finally { rmSync(dir,{recursive:true,force:true}); }

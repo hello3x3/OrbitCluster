@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from textual.widgets import Input, DataTable, TabbedContent, Button
+from textual.widgets import Input, DataTable, TabbedContent, Button, Checkbox
 
 from orbitcluster.client import AuthenticationRequired
 from orbitcluster.config import Settings
@@ -170,4 +170,33 @@ def test_expiry_under_confirmation_unmounts_old_main_before_relogin(tmp_path):
             await pilot.click("#login")
             await settle(app, pilot)
             assert sum(isinstance(screen, MainScreen) for screen in app.screen_stack) == 1
+    asyncio.run(scenario())
+
+
+def test_http_login_checkbox_persists_choice(tmp_path):
+    async def scenario():
+        app, client = make_app(tmp_path, False)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await settle(app, pilot)
+            app.screen.query_one('#server', Input).value = 'http://10.71.106.251'
+            app.screen.query_one('#username', Input).value = 'alice'
+            app.screen.query_one('#password', Input).value = 'secret'
+            # Refuse HTTP before the human explicitly checks the option.
+            await pilot.pause()  # Let the HTTP notice change the scrollable layout.
+            app.screen.query_one('#login', Button).scroll_visible(immediate=True)
+            await pilot.pause()
+            await pilot.click('#login')
+            await settle(app, pilot)
+            assert isinstance(app.screen, LoginScreen)
+            assert not client.logged_in
+            app.screen.query_one('#password', Input).value = 'secret'
+            app.screen.query_one('#allow-http', Checkbox).value = True
+            await pilot.pause()
+            app.screen.query_one('#login', Button).scroll_visible(immediate=True)
+            await pilot.pause()
+            await pilot.click('#login')
+            await settle(app, pilot)
+            assert isinstance(app.screen, MainScreen)
+            loaded = Settings.load({'config_dir': tmp_path}, environ={})
+            assert loaded.server == 'http://10.71.106.251' and loaded.allow_http
     asyncio.run(scenario())
