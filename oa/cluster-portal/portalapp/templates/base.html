@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ portal_name }}{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=42">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=43">
 <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='brand/nebula-favicon-32.png') }}?v=1">
 <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='brand/nebula-favicon-16.png') }}?v=1">
 <link rel="shortcut icon" href="{{ url_for('static', filename='brand/nebula-favicon.ico') }}?v=1">
@@ -16,6 +16,7 @@
 {% macro menu(endpoint, text, emoji, selected=false) -%}
 <a class="sidebar-link{% if selected %} active{% endif %}" href="{{ url_for(endpoint) }}"{% if selected %} aria-current="page"{% endif %}><span class="nav-emoji" aria-hidden="true">{{ emoji }}</span><span>{{ text }}</span></a>
 {%- endmacro %}
+{% if ep != 'login' %}
 <div class="app-shell">
   <aside class="sidebar" id="sidebar" aria-label="主导航">
     <div class="sidebar-brand"><a href="{{ url_for('home') }}"><img class="brand-mark" src="{{ url_for('static', filename='brand/orbitcluster-nebula-mark.png') }}" width="48" height="48" alt=""><span>{{ portal_name }}</span></a><button class="sidebar-close" type="button" data-sidebar-close aria-label="关闭导航">×</button></div>
@@ -67,6 +68,7 @@
       {% else %}<a class="btn btn-ghost btn-sm" href="{{ url_for('login') }}">登录</a>{% endif %}
       </div>
     </div></header>
+{% else %}<div class="auth-workspace">{% endif %}
 {% with msgs = get_flashed_messages(with_categories=true) %}
   {% if msgs %}
   <div class="flash-wrap">
@@ -84,7 +86,7 @@
 
 <footer class="foot">{{ portal_name }}</footer>
   </div>
-</div>
+{% if ep != 'login' %}</div>{% endif %}
 
 <!-- 通用输入 / 确认弹窗（站内样式，替代浏览器自带的 prompt / confirm） -->
 <div class="modal-mask" id="dlg-mask" hidden>
@@ -111,7 +113,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='app.js') }}?v=40"></script>
-<script src="{{ url_for('static', filename='navigation.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='navigation.js') }}?v=2"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

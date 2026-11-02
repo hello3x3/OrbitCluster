@@ -268,7 +268,11 @@ func uninstall(a arguments) (any, error) {
 	if a.Bool["purge"] {
 		cr := m.Config
 		if a.Val["config-dir"] != "" {
-			cr = a.Val["config-dir"]
+			override, err := canonicalPath(a.Val["config-dir"])
+			if err != nil || override != m.Config {
+				return nil, configError("卸载清理仅限此安装记录的配置目录，拒绝删除其它目录")
+			}
+			cr = override
 		}
 		if e = safeDirectory(cr); e != nil {
 			return nil, e

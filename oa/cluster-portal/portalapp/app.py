@@ -334,13 +334,15 @@ def _secret():
 
 
 # Published user-terminal release used by the public installation guide.
-TERMINAL_INSTALL_REF = "8b0990ebf469a575636760de3ad177d56cd40645"
+TERMINAL_INSTALL_REF = "0.2.0"
 
 
 def create_app(testing=False):
     app = Flask(__name__, template_folder=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "templates"),
         static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
+    from .terminal_downloads import register_downloads
+    register_downloads(app)
     app.secret_key = _secret()
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"

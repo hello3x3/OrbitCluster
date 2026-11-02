@@ -1,4 +1,4 @@
-# Native Windows OrbitCluster CLI bootstrap. No Python/Git/WSL prerequisite.
+﻿# Native Windows OrbitCluster CLI bootstrap. No Python/Git/WSL prerequisite.
 param(
  [Parameter(Mandatory=$true)][string]$Server,
  [string]$InstallDir, [string]$BinDir, [string]$ConfigDir,

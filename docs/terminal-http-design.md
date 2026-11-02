@@ -1,3 +1,5 @@
+> Historical 0.1.1 record. Superseded by [native CLI feedback implementation](cli-feedback-and-validation.md): HTTP is now the default and the client has no Python/TUI.
+
 # Explicit HTTP support for the user terminal
 
 2026-11-02: user has only an HTTP laboratory portal and requests a working HTTP terminal flow.
