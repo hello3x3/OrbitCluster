@@ -84,7 +84,6 @@
     <thead><tr>
       <th>用户名</th><th>显示名</th><th style="min-width:84px">角色</th><th>状态</th>
       <th title="该用户在“个人资料”里登记的 SSH 公钥条数（写入其 ~/.ssh/authorized_keys，供容器 sshd 认证；未完善则不能申请资源）">SSH密钥</th>
-      <th title="该用户端口池中登记的端口数（10000-65535，全门户唯一，用于容器 sshd 监听）">端口数</th>
       <th>活跃资源</th>
       <th title="/share 实际磁盘配额（OS repquota 实读）：已用 / 硬上限">配额（OS 实读）</th>
       <th>上次登录</th><th>操作</th>
@@ -96,7 +95,7 @@
         <td>{{ u.display_name }}</td>
         <td>{% if u.role == 'admin' %}<span class="badge-admin">管理员</span>{% else %}普通用户{% endif %}</td>
         <td>{% if u.is_active %}<span class="st st-running">正常</span>{% else %}<span class="st st-cancelled">已停用</span>{% endif %}</td>
-        <td title="SSH 公钥数">{{ u.key_cnt }}</td><td title="端口池登记数">{{ u.port_cnt }}</td><td>{{ u.active_cnt }}</td>
+        <td title="SSH 公钥数">{{ u.key_cnt }}</td><td>{{ u.active_cnt }}</td>
         <td class="mono small">{% if u.quota_os_present %}{{ u.quota_used }} / {{ u.quota_hard }}{% else %}—{% endif %}{% if u.quota_mismatch %}<span class="badge-warn" title="门户库里记录的是 {{ u.quota_portal }}，但 OS 实际硬限是 {{ u.quota_hard }}（说明额度没有真正落到 OS）。用这行的「改配额」按钮重设一次即可对齐。">门户记 {{ u.quota_portal }} ≠ OS</span>{% endif %}</td>
         <td class="small">{{ u.last_login }}</td>
         <td class="ops">
@@ -135,8 +134,7 @@
     </tbody>
   </table>
   <p class="muted small">列含义：<b>SSH密钥</b>＝该用户在个人资料里登记的公钥条数（写入其
-    <code>~/.ssh/authorized_keys</code>，容器 sshd 用它认证登录）；<b>端口数</b>＝其端口池登记数
-    （10000-65535，全门户唯一）；<b>活跃资源</b>＝当前排队/运行中的实例数；
+    <code>~/.ssh/authorized_keys</code>，容器 sshd 用它认证登录）；<b>活跃资源</b>＝当前排队/运行中的实例数；
     <b>配额（OS 实读）</b>＝<code>repquota</code> 读出的「已用 / 硬上限」，软=硬即时生效
     （— 表示该账号在 OS 无配额记录/无同名 OS 账号）；「改配额」对普通用户任何管理员可用，
     管理员行仅 root 或本人可用，写入即改 OS 配额（非仅门户记录）。

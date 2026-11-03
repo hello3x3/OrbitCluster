@@ -196,9 +196,6 @@ class DB:
     def del_port(self, uid, pid):
         self.exec("DELETE FROM user_ports WHERE id=? AND user_id=?", (pid, uid))
 
-    def port_count(self, uid):
-        return self.q1("SELECT COUNT(*) n FROM user_ports WHERE user_id=?", (uid,))["n"]
-
     def port_stopped_within(self, uid, port, seconds):
         """该端口是不是"刚停机不到 N 秒"：停机后门户立刻标空闲，但容器还要几秒才真正退出。
 

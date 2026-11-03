@@ -1896,7 +1896,6 @@ def create_app(testing=False):
             d = dict(u)
             # 注意：避免用 keys/ports 等与 dict 内置方法同名的键（Jinja 会优先取方法对象）
             d["key_cnt"] = db.key_count(u["id"])
-            d["port_cnt"] = db.port_count(u["id"])
             d["active_cnt"] = db.q1(
                 "SELECT COUNT(*) n FROM instances WHERE user_id=? AND state IN (%s)"
                 % ",".join("?" * len(ACTIVE_STATES)),
