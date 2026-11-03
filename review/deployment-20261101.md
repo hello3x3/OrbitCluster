@@ -648,6 +648,35 @@ https://10.71.106.251 {
   `(21474836480, 20)`；
 - `make test`：SMOKE_OK。
 
+### 2.31 配置以 /etc 为准
+
+**盘点**：系统原来有两类环境变量：
+
+- systemd 注入：`PORTAL_DATA`、`PORTAL_CTL`、`PORTAL_PORT`；
+- 运行/测试兜底：`PORTAL_*`（SAVE_SYNC、EXPIRY_*、PASSWD_*、COOKIE_SECURE）以及
+  `PORTAL_SITE_CONF`、`PORTAL_DIRECT_CTL` 等调试开关。
+
+**调整**：
+
+- `siteconf` 优先级改为 **`/etc/cluster-portal/site.conf` > 同名环境变量 > 内置默认值**；
+- 在 `/etc/cluster-portal/site.conf` 写入运行参数：
+  `PORTAL_DATA`、`PORTAL_CTL`、`PORTAL_PORT`、`PORTAL_HOST`、`PORTAL_THREADS`、
+  `PORTAL_PASSWD_FILE`、`PORTAL_PASSWD_SYNC`、`PORTAL_PASSWD_SYNC_SECONDS`、
+  `PORTAL_SAVE_SYNC`、`PORTAL_EXPIRY_DISABLE`、`PORTAL_EXPIRY_POLL`、
+  `PORTAL_EXPIRE_BUFFER_MIN`、`PORTAL_PORT_COOLDOWN_S`、`PORTAL_COOKIE_SECURE`；
+- app/run/ctl/pwfile/portal-ctl 改为先读站点配置，再读同名环境变量；
+- systemd 的 `PORTAL_DATA/PORTAL_CTL/PORTAL_PORT` 保留为兼容兜底，但已不是权威值；
+- 仍保留少量环境变量作为**引导/测试专用**：`PORTAL_SITE_CONF`（选择配置文件）、
+  `PORTAL_DIRECT_CTL`（排障）、`PORTAL_SECRET`（密钥文件优先于环境变量）。
+
+**验证**：
+
+- 真机 site.conf 与 runtime 读取结果一致；
+- 设置 `PORTAL_DATA=/tmp/from-env` 后，runtime 仍返回 site 的
+  `/var/lib/cluster-portal`；
+- `make test`：`CTL_SECURITY_OK`、`SMOKE_OK`；
+- `cluster-portal`/`caddy` active。
+
 ## 3. 最终验收
 
 ### Slurm

@@ -20,6 +20,8 @@ import re
 import threading
 import time
 
+from . import siteconf
+
 log = logging.getLogger("portal.pwfile")
 
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -28,7 +30,7 @@ DEFAULT_PATH = "/etc/cluster-portal/users.passwd"
 
 
 def file_path():
-    return os.environ.get("PORTAL_PASSWD_FILE", DEFAULT_PATH)
+    return siteconf.runtime("PORTAL_PASSWD_FILE", DEFAULT_PATH)
 
 
 HEADER = """# 平台(门户)登录密码（全部账号的明文密码统一存放于此）
@@ -243,10 +245,10 @@ class PwFileWatcher:
 
 def start(db_path):
     """在 create_app 时启动监视线程；PORTAL_PASSWD_SYNC=0 可禁用。"""
-    if os.environ.get("PORTAL_PASSWD_SYNC", "1") == "0":
+    if siteconf.runtime("PORTAL_PASSWD_SYNC", "1") == "0":
         return None
     try:
-        interval = max(5, int(os.environ.get("PORTAL_PASSWD_SYNC_SECONDS", "20")))
+        interval = max(5, int(siteconf.runtime("PORTAL_PASSWD_SYNC_SECONDS", "20")))
     except ValueError:
         interval = 20
     w = PwFileWatcher(db_path, interval)

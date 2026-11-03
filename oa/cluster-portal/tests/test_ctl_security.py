@@ -238,8 +238,8 @@ def main():
               _m2.IMAGES_ROOT == os.path.join(_tmp, "imgs"), _m2.IMAGES_ROOT)
         os.environ["PORTAL_IMAGES_DIR"] = os.path.join(_tmp, "envdir")
         _m3 = load_mod()
-        check("PORTAL_IMAGES_DIR 环境变量优先于 site.conf",
-              _m3.IMAGES_ROOT == os.path.join(_tmp, "envdir"), _m3.IMAGES_ROOT)
+        check("site.conf 的 IMAGES_MOUNT 优先于 PORTAL_IMAGES_DIR",
+              _m3.IMAGES_ROOT == os.path.join(_tmp, "imgs"), _m3.IMAGES_ROOT)
     finally:
         os.environ.pop("PORTAL_IMAGES_DIR", None)
         if _old_id is not None:

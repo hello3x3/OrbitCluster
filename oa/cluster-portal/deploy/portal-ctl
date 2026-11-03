@@ -164,7 +164,8 @@ def _load_site_conf(path):
 
 SITE = _load_site_conf(SITE_CONF)
 # 节点间 ssh 端口：环境变量 > 站点配置 > 默认 2180
-SSH_PORT = str(os.environ.get("PORTAL_SSH_PORT") or SITE.get("SSH_PORT") or "2180")
+# 站点配置优先；环境变量只作测试/兜底（sudo 调起时环境通常也会被清掉）。
+SSH_PORT = str(SITE.get("SSH_PORT") or os.environ.get("PORTAL_SSH_PORT") or "2180")
 
 # ----------------------------------------------------------------------------
 # 额外透传给容器的宿主机路径（NAS / 数据集共享盘）
@@ -177,7 +178,7 @@ SSH_PORT = str(os.environ.get("PORTAL_SSH_PORT") or SITE.get("SSH_PORT") or "218
 #   EXTRA_MOUNTS=/data:/data:ro;/mnt/nas219:/mnt/nas219:ro
 # 环境变量 PORTAL_EXTRA_MOUNTS 优先（便于测试/临时启用）。
 # ----------------------------------------------------------------------------
-EXTRA_MOUNTS_RAW = os.environ.get("PORTAL_EXTRA_MOUNTS") or SITE.get("EXTRA_MOUNTS") or ""
+EXTRA_MOUNTS_RAW = SITE.get("EXTRA_MOUNTS") or os.environ.get("PORTAL_EXTRA_MOUNTS") or ""
 
 # 绝不允许透传的前缀：门户自己的数据/配置、以及宿主机系统目录。
 # 站点配置是 root 维护的，这里再拦一道是防"手滑写错一行就把门户 DB 挂给用户"。
@@ -258,9 +259,9 @@ def user_home(username):
         return parts[5]
     return os.path.join(SHARE_HOME, username)
 CTL = "portal-ctl"
-# 镜像目录，与门户 app 的 PORTAL_IMAGES_DIR 同一套取值：环境变量 > site.conf > 默认
-IMAGES_ROOT = (os.environ.get("PORTAL_IMAGES_DIR")
-               or SITE.get("IMAGES_MOUNT") or "/share/images")
+# 镜像目录：site.conf 的 IMAGES_MOUNT 优先；PORTAL_IMAGES_DIR 仅供测试/兜底。
+IMAGES_ROOT = (SITE.get("IMAGES_MOUNT")
+               or os.environ.get("PORTAL_IMAGES_DIR") or "/share/images")
 
 # 单镜像硬上限（GiB）：环境变量 > site.conf > 默认 20。
 # 保存前检查容器 rootfs，导出后再检查 .sqsh 文件；超限一律放弃，不留下半成品。
@@ -268,8 +269,9 @@ IMAGE_MAX_GB_DEFAULT = 20
 
 
 def image_max_bytes():
-    raw = (os.environ.get("PORTAL_IMAGE_MAX_GB")
-           or SITE.get("IMAGE_MAX_GB") or str(IMAGE_MAX_GB_DEFAULT)).strip()
+    raw = (SITE.get("IMAGE_MAX_GB")
+           or os.environ.get("PORTAL_IMAGE_MAX_GB")
+           or str(IMAGE_MAX_GB_DEFAULT)).strip()
     try:
         gb = int(raw)
     except ValueError:
@@ -634,8 +636,8 @@ def partition_name():
 
 def gpu_light_feature():
     """1/2 卡调试作业优先尝试的 Slurm node feature（软偏好，节点忙时仍可回退）。"""
-    raw = (os.environ.get("PORTAL_GPU_LIGHT_FEATURE")
-           or SITE.get("GPU_LIGHT_FEATURE") or "").strip()
+    raw = (SITE.get("GPU_LIGHT_FEATURE")
+           or os.environ.get("PORTAL_GPU_LIGHT_FEATURE") or "").strip()
     if not raw:
         return ""
     if not re.match(r"^[A-Za-z0-9_,.-]+$", raw):

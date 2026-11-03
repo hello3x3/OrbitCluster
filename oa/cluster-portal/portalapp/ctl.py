@@ -5,13 +5,15 @@ import os
 import subprocess
 import time
 
+from . import siteconf
+
 
 class CtlError(Exception):
     pass
 
 
 def _helper_path():
-    return os.environ.get("PORTAL_CTL", "/usr/local/sbin/portal-ctl")
+    return siteconf.runtime("PORTAL_CTL", "/usr/local/sbin/portal-ctl")
 
 
 def _error_detail(r):

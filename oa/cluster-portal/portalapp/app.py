@@ -85,22 +85,28 @@ def _img_name_ok(name, owner="", creating=False):
         return bool(PUBLIC_IMG_NAME_RE.match(name or ""))
     return bool((IMG_NAME_RE if creating else PUBLIC_IMG_NAME_RE).match(name or ""))
 
-# 镜像目录：PORTAL_IMAGES_DIR 环境变量 > site.conf 的 IMAGES_MOUNT > 默认
-IMAGES_DIR = (os.environ.get("PORTAL_IMAGES_DIR")
+def _runtime(name, default):
+    """站点配置优先；同名环境变量只作兜底（生产改 /etc/cluster-portal/site.conf）。"""
+    return siteconf.runtime(name, default)
+
+
+# 镜像目录：site.conf 显式 IMAGES_MOUNT > 环境变量 PORTAL_IMAGES_DIR > 默认
+IMAGES_DIR = (siteconf.SITE.get("IMAGES_MOUNT")
+              or os.environ.get("PORTAL_IMAGES_DIR")
               or siteconf.get("IMAGES_MOUNT") or "/share/images")
 # 到期自动保存：提交给 Slurm 的时长 = 用户所选时长 + 该缓冲（分钟），
 # 确保“先自动保存镜像、再停机”期间容器不被 Slurm 到点强杀。
-EXPIRE_SAVE_BUFFER_MIN = int(os.environ.get("PORTAL_EXPIRE_BUFFER_MIN", "15"))
+EXPIRE_SAVE_BUFFER_MIN = int(_runtime("PORTAL_EXPIRE_BUFFER_MIN", "15"))
 # 测试/调试开关
-SAVE_SYNC = os.environ.get("PORTAL_SAVE_SYNC", "0") == "1"     # 保存同步执行（冒烟测试）
-EXPIRY_POLL_S = int(os.environ.get("PORTAL_EXPIRY_POLL", "25"))
-EXPIRY_DISABLED = os.environ.get("PORTAL_EXPIRY_DISABLE", "0") == "1"
+SAVE_SYNC = _runtime("PORTAL_SAVE_SYNC", "0") == "1"     # 保存同步执行（冒烟测试）
+EXPIRY_POLL_S = int(_runtime("PORTAL_EXPIRY_POLL", "25"))
+EXPIRY_DISABLED = _runtime("PORTAL_EXPIRY_DISABLE", "0") == "1"
 
-DATA_DIR = os.environ.get("PORTAL_DATA", os.path.join(
+DATA_DIR = _runtime("PORTAL_DATA", os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var"))
 DB_PATH = os.path.join(DATA_DIR, "portal.db")
 SECRET_FILE = os.path.join(DATA_DIR, "secret")
-CTL_PATH = os.environ.get("PORTAL_CTL", "/usr/local/sbin/portal-ctl")
+CTL_PATH = _runtime("PORTAL_CTL", "/usr/local/sbin/portal-ctl")
 
 NODE_IP = {}
 
@@ -177,7 +183,7 @@ STARTUP_ERR_FAILED = "启动失败：容器里的 sshd 没能监听端口，详�
 STARTUP_ERR_TEXTS = (STARTUP_ERR_CONFLICT, STARTUP_ERR_FAILED)
 
 try:
-    PORT_COOLDOWN_S = int(os.environ.get("PORTAL_PORT_COOLDOWN_S") or 15)
+    PORT_COOLDOWN_S = int(_runtime("PORTAL_PORT_COOLDOWN_S", "15"))
 except ValueError:
     PORT_COOLDOWN_S = 15
 
@@ -321,8 +327,9 @@ def rollback_submit(username, job_id):
 
 
 def _secret():
-    if os.environ.get("PORTAL_SECRET"):
-        return os.environ["PORTAL_SECRET"]
+    configured = siteconf.runtime("PORTAL_SECRET", "") or os.environ.get("PORTAL_SECRET")
+    if configured:
+        return configured
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(SECRET_FILE):
         import secrets
@@ -353,7 +360,7 @@ def create_app(testing=False):
     app.config["SESSION_REFRESH_EACH_REQUEST"] = False
     # 门户默认跑在明文 HTTP 上，所以 Secure 默认关闭；一旦前面架了 TLS，
     # 用 PORTAL_COOKIE_SECURE=1 打开（否则浏览器不会回传 Cookie，登录会坏）。
-    if os.environ.get("PORTAL_COOKIE_SECURE", "0") == "1":
+    if _runtime("PORTAL_COOKIE_SECURE", "0") == "1":
         app.config["SESSION_COOKIE_SECURE"] = True
     app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
     app.cluster_node_cache = ctl.NodeCache(ttl=8, fetcher=lambda: ctl.cluster_status())

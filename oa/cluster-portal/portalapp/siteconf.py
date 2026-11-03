@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """站点配置 —— 让同一份门户代码适配不同集群（ssh 端口 / GPU 型号 / 套餐种子）。
 
-优先级：**环境变量 > 站点配置文件 > 内置默认值**。
+优先级：**站点配置文件 > 环境变量 > 内置默认值**。
+生产配置以 `/etc/cluster-portal/site.conf` 为准；环境变量只用于引导、测试或临时兜底。
 
 站点配置文件默认 `/etc/cluster-portal/site.conf`（可用 `PORTAL_SITE_CONF` 覆盖），
 格式为每行 `KEY=VALUE`，`#` 起注释，键名大小写不敏感。识别的键：
@@ -17,7 +18,9 @@
   IMAGE_MAX_GB        单个个人镜像大小上限（GiB）                    默认 20
   PARTITION           预留：覆盖分区名（默认按 sinfo 自动探测）
 
-环境变量覆盖形式为 `PORTAL_<KEY>`，例如 `PORTAL_SSH_PORT=2022`。
+环境变量兜底形式为 `PORTAL_<KEY>`，例如 `PORTAL_SSH_PORT=2022`；同名的站点配置文件键优先。
+
+运行参数（`PORTAL_DATA`、`PORTAL_CTL`、`PORTAL_PORT`、`PORTAL_PASSWD_FILE` 等）也可以直接写进本文件；生产环境以本文件为准，systemd 的环境变量只作兼容兜底。
 
 节点名**不在此配置**：节点列表与分区名一律经 sinfo 运行时探测
 （见 deploy/portal-ctl 的 compute_nodes()/partition_name()），
@@ -67,21 +70,47 @@ def _read_file(path):
     return cfg
 
 
+SITE = _read_file(SITE_CONF)
 CONF = dict(DEFAULTS)
-CONF.update(_read_file(SITE_CONF))
-for _k in list(DEFAULTS):                      # 环境变量优先级最高
-    _env = os.environ.get("PORTAL_" + _k)
-    if _env:
-        CONF[_k] = _env
+CONF.update(SITE)
+
+
+def has_site(key):
+    """该键是否由 /etc 站点配置文件显式设置（用于区分默认值与真实配置）。"""
+    return key.upper() in SITE
 
 
 def get(key, default=None):
+    """站点配置优先；环境变量 PORTAL_<KEY> 仅作兜底。"""
     k = key.upper()
     if CONF.get(k, "") != "":
         return CONF[k]
+    _env = os.environ.get("PORTAL_" + k)
+    if _env not in (None, ""):
+        return _env
     if default is not None:
         return default
     return DEFAULTS.get(k, "")
+
+
+def runtime(key, default=None):
+    """运行参数：site.conf 优先，其次是同名环境变量，最后才是默认值。
+
+    与 get() 的区别：key 本身就带 PORTAL_ 前缀时，环境变量按原名读取；
+    这样 /etc 配置可以覆盖 systemd 里的 PORTAL_DATA/PORTAL_PORT 等。
+    """
+    k = key.upper()
+    if CONF.get(k, "") != "":
+        return CONF[k]
+    if k.startswith("PORTAL_"):
+        _env = os.environ.get(k)
+    else:
+        _env = os.environ.get("PORTAL_" + k)
+    if _env not in (None, ""):
+        return _env
+    if default is not None:
+        return default
+    return ""
 
 
 def parse_gpu_map(text):
@@ -98,11 +127,11 @@ def parse_gpu_map(text):
     return out
 
 
-GPU_MODEL_MAP = parse_gpu_map(CONF.get("GPU_MODEL_MAP", ""))
-SSH_PORT = str(CONF.get("SSH_PORT", "2180"))
-DEFAULT_GPU_MODEL = CONF.get("DEFAULT_GPU_MODEL", "RTX 3060")
-SEED_PLANS = CONF.get("SEED_PLANS", "")
-PARTITION = CONF.get("PARTITION", "")
+GPU_MODEL_MAP = parse_gpu_map(get("GPU_MODEL_MAP", ""))
+SSH_PORT = str(get("SSH_PORT", "2180"))
+DEFAULT_GPU_MODEL = get("DEFAULT_GPU_MODEL", "RTX 3060")
+SEED_PLANS = get("SEED_PLANS", "")
+PARTITION = get("PARTITION", "")
 
 
 def parse_accounts(text):
@@ -118,12 +147,12 @@ def parse_accounts(text):
 # ---- 多账户（契约第 5 节）----
 # ACCOUNT 保留兼容旧单账户站点；ACCOUNTS 缺省时它就是唯一账户
 # （ACCOUNT 也显式配成空时 ACCOUNTS=[]，DEFAULT_ACCOUNT=""）。
-ACCOUNT = CONF.get("ACCOUNT", "lab") or ""
-ACCOUNTS = parse_accounts(CONF.get("ACCOUNTS", ""))
+ACCOUNT = get("ACCOUNT", "lab") or ""
+ACCOUNTS = parse_accounts(get("ACCOUNTS", ""))
 if not ACCOUNTS and ACCOUNT:
     ACCOUNTS = [ACCOUNT]
 # DEFAULT_ACCOUNT 缺省取第一个账户；所有配置都空时为空串。
-DEFAULT_ACCOUNT = (CONF.get("DEFAULT_ACCOUNT", "") or "").strip()
+DEFAULT_ACCOUNT = (get("DEFAULT_ACCOUNT", "") or "").strip()
 if not DEFAULT_ACCOUNT and ACCOUNTS:
     DEFAULT_ACCOUNT = ACCOUNTS[0]
 

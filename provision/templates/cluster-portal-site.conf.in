@@ -2,9 +2,26 @@
 # /etc/cluster-portal/site.conf —— 由 provision/render.sh 从 cluster.conf 生成
 #   读取方：portalapp/siteconf.py（门户进程）与 deploy/portal-ctl（root 助手）
 #   格式：每行 KEY=VALUE，# 起注释，键名大小写不敏感；值不要加引号、行尾不要写 ;
-#   优先级：环境变量 PORTAL_<KEY> > 本文件 > 代码内置默认值
+#   优先级：本文件 > 同名环境变量 PORTAL_<KEY> > 代码内置默认值
 #   本文件**不含密钥**，只描述这套集群的形状。
 # ============================================================================
+
+# ---- 门户运行参数（本文件优先于 systemd 环境变量）----
+# 修改后重启 cluster-portal；环境变量只作兜底/测试。
+# PORTAL_DATA=/var/lib/cluster-portal
+# PORTAL_CTL=/usr/local/sbin/portal-ctl
+# PORTAL_PORT=80
+# PORTAL_HOST=0.0.0.0
+# PORTAL_THREADS=32
+# PORTAL_PASSWD_FILE=/etc/cluster-portal/users.passwd
+# PORTAL_PASSWD_SYNC=1
+# PORTAL_PASSWD_SYNC_SECONDS=20
+# PORTAL_SAVE_SYNC=0
+# PORTAL_EXPIRY_DISABLE=0
+# PORTAL_EXPIRY_POLL=25
+# PORTAL_EXPIRE_BUFFER_MIN=15
+# PORTAL_PORT_COOLDOWN_S=15
+# PORTAL_COOKIE_SECURE=0
 
 # ---- 站点参数（在本文件生效，全部可改）----
 
