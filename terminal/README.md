@@ -30,7 +30,7 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 基础容器已预装 Miniconda：`/opt/miniconda3`。进入容器后 `source /opt/miniconda3/etc/profile.d/conda.sh` 即可使用 conda；不需要在 home 再安装一份。
 
 `/share/home/<用户名>` 只建议存放代码和小型配置，不要放大型数据集、conda 环境、checkpoint 或大量结果（NFS + 配额）。数据从只读 NAS `/mnt/nas/...` 读取，容器环境需要长期保留时保存个人镜像。
-单个个人镜像上限 **20 GiB**；保存前检查容器 rootfs，导出后再检查镜像文件，超限会拒绝。不要把 ckpt/大数据放在容器根目录；到期自动保存失败会放弃保存并停机。
+单个个人镜像上限 **20 GiB**；保存前检查容器 rootfs，导出后再检查镜像文件，超限会拒绝。不要把 ckpt/大数据放在容器根目录。**到期自动保存默认关闭，到期直接停机**；需要保留环境请提前手动保存。
 
 ## 登录与 agent
 

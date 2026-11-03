@@ -41,6 +41,8 @@ DEFAULTS = {
     "SEED_PLANS": "",
     "IMAGES_MOUNT": "/share/images",
     "IMAGE_MAX_GB": "20",
+    # 到期自动保存：0=关闭（默认，直接停机）；1=先保存 auto_*.sqsh 再停机。
+    "AUTO_SAVE_ON_EXPIRE": "0",
     "PARTITION": "",
     "TERMINAL_DOWNLOAD_DIR": "",
     "TERMINAL_PUBLIC_URL": "",
@@ -100,8 +102,9 @@ def runtime(key, default=None):
     这样 /etc 配置可以覆盖 systemd 里的 PORTAL_DATA/PORTAL_PORT 等。
     """
     k = key.upper()
-    if CONF.get(k, "") != "":
-        return CONF[k]
+    # 只有站点文件显式写出的键才算“配置优先”；内置默认值不能遮蔽环境变量/测试兜底。
+    if SITE.get(k, "") != "":
+        return SITE[k]
     if k.startswith("PORTAL_"):
         _env = os.environ.get(k)
     else:

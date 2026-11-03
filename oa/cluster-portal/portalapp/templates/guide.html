@@ -90,7 +90,7 @@ conda activate myenv</code></pre>
         <tr><td>重新启动</td><td>按原参数和原镜像重新提交，端口重新分配；不恢复未保存的修改</td></tr>
         <tr><td>删除</td><td>删除已结束资源记录和对应作业日志，不等同于删除个人镜像</td></tr>
       </tbody></table></div>
-      <p>到期时平台会尝试保存一次 <code>auto_</code> 开头的镜像再停机，结果可在资源行和日志查看。自动保存可能因服务或空间问题失败，重要环境请提前主动保存。被抢占的作业不会先自动保存。</p>
+      <p><strong>到期自动保存默认关闭</strong>：资源到期后会直接停机，不生成 <code>auto_</code> 镜像；需要保留环境请在到期前手动「保存镜像」。管理员可在 <code>/etc/cluster-portal/site.conf</code> 设置 <code>AUTO_SAVE_ON_EXPIRE=1</code> 开启。被抢占的作业不会自动保存。</p>
     </section>
     <section class="guide-section" id="images">
       <h2>管理镜像</h2>

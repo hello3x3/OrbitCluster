@@ -677,6 +677,19 @@ https://10.71.106.251 {
 - `make test`：`CTL_SECURITY_OK`、`SMOKE_OK`；
 - `cluster-portal`/`caddy` active。
 
+### 2.32 到期自动保存默认关闭
+
+- 新配置项 `AUTO_SAVE_ON_EXPIRE`，默认 `0`；
+- 线上 `/etc/cluster-portal/site.conf` 显式设置：
+  ```ini
+  AUTO_SAVE_ON_EXPIRE=0
+  ```
+- 到期扫描仍保留：资源到期后直接停机，**不再导出 `auto_*.sqsh`**；
+- 手动「保存镜像」不受影响；
+- 需要恢复自动保存时改为 `1` 并重启 `cluster-portal`；
+- 已有 `auto_*` 镜像不会被删除；
+- `make test`：`CTL_SECURITY_OK`、`SMOKE_OK`（测试显式开启 auto-save 覆盖该分支）。
+
 ## 3. 最终验收
 
 ### Slurm

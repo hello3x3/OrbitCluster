@@ -101,6 +101,8 @@ EXPIRE_SAVE_BUFFER_MIN = int(_runtime("PORTAL_EXPIRE_BUFFER_MIN", "15"))
 SAVE_SYNC = _runtime("PORTAL_SAVE_SYNC", "0") == "1"     # 保存同步执行（冒烟测试）
 EXPIRY_POLL_S = int(_runtime("PORTAL_EXPIRY_POLL", "25"))
 EXPIRY_DISABLED = _runtime("PORTAL_EXPIRY_DISABLE", "0") == "1"
+# 到期自动保存开关：默认关闭，到期只停机；设为 1 才导出 auto_*.sqsh。
+AUTO_SAVE_ON_EXPIRE = _runtime("AUTO_SAVE_ON_EXPIRE", "0") == "1"
 
 DATA_DIR = _runtime("PORTAL_DATA", os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var"))
@@ -2904,8 +2906,8 @@ def _save_worker(iid, username, job_id, name, force, kind):
             pass
 
 
-def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg):
-    """到期自动保存完成后停机（先尽力 scancel；作业若已被 Slurm 收走则按实际状态落库）。"""
+def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg, save_skipped=False):
+    """到期处理完成后停机（先尽力 scancel；作业若已被 Slurm 收走则按实际状态落库）。"""
     note = ""
     state, sl = "CANCELLED", "CANCELLED"
     try:
@@ -2918,8 +2920,12 @@ def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg):
         note = "；自动停机失败：%s" % str(e)[:120]
     db.set_instance_state(iid, state, slurm_state=sl, stopped_at=_now_iso())
     db.add_event(iid, "stop", "到期自动停机：作业 #%s 已取消%s" % (job_id, note))
-    tail = "资源已到期并自动停机%s" % note if saved_ok else \
-        "资源已到期，自动保存失败、已放弃保存并停机%s" % note
+    if saved_ok:
+        tail = "资源已到期并自动停机%s" % note
+    elif save_skipped:
+        tail = "资源已到期，自动保存已关闭，直接停机%s" % note
+    else:
+        tail = "资源已到期，自动保存失败、已放弃保存并停机%s" % note
     db.set_last_save(iid, (save_msg + "；" if save_msg else "") + tail)
     db.set_saving(iid, 0)
 
@@ -2987,7 +2993,8 @@ def expiry_tick(now=None):
     """到期自动保存扫描（每 EXPIRY_POLL_S 秒由后台线程执行；测试可直接调用）。
 
     命中条件：RUNNING、已记录开始时刻、超过到期时刻、尚未自动保存过、当前无保存动作。
-    命中后：原子抢占(auto_saved_at) → 后台线程先导出镜像(带时间戳文件名) → 自动停机。
+    命中后：原子抢占(auto_saved_at) → 若 AUTO_SAVE_ON_EXPIRE=1，后台线程先导出镜像
+    （带时间戳文件名）再自动停机；默认关闭时直接停机，不保存镜像。
     """
     db = DB(DB_PATH)
     try:
@@ -3000,6 +3007,15 @@ def expiry_tick(now=None):
             if not urow:
                 continue
             if not db.claim_auto_save(inst["id"], _now_iso()):
+                continue
+            if not AUTO_SAVE_ON_EXPIRE:
+                db.set_saving(inst["id"], 1)
+                db.set_last_save(inst["id"], "资源已到期：自动保存已关闭，直接停机…")
+                db.add_event(inst["id"], "expire",
+                             "资源已到期（所选时长 %s 已用完），自动保存已关闭，直接停机"
+                             % inst["walltime"])
+                _stop_after_expiry(db, inst["id"], urow["username"], inst["job_id"],
+                                   False, "到期自动保存已关闭", save_skipped=True)
                 continue
             db.set_saving(inst["id"], 1)
             db.set_last_save(inst["id"], "资源已到期：开始自动保存镜像…")

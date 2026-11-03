@@ -15,6 +15,7 @@ os.environ["PORTAL_PASSWD_SYNC"] = "0"          # 测试里手动触发同步，
 os.environ["PORTAL_PASSWD_FILE"] = os.path.join(TMP, "users.passwd")
 os.environ["PORTAL_SAVE_SYNC"] = "1"            # 保存镜像同步执行（便于断言结果）
 os.environ["PORTAL_EXPIRY_DISABLE"] = "1"       # 到期扫描由测试显式触发
+os.environ["PORTAL_AUTO_SAVE_ON_EXPIRE"] = "1"  # 生产默认关闭；测试显式开启自动保存
 IMGDIR = os.path.join(TMP, "images")
 os.makedirs(IMGDIR, exist_ok=True)
 open(os.path.join(IMGDIR, "cuda12.8.0-devel-ubuntu24.04.sqsh"), "w").close()
