@@ -152,6 +152,7 @@ User=portal
 Group=portal
 $BIND_CAP
 WorkingDirectory=$APP_DIR
+# 兼容兜底：生产优先读取 /etc/cluster-portal/site.conf 的同名键。
 Environment=PORTAL_DATA=$DATA_DIR
 Environment=PORTAL_CTL=$CTL
 Environment=PORTAL_PORT=$PORT
