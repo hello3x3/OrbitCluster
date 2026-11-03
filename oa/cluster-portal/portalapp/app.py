@@ -2912,7 +2912,7 @@ def _stop_after_expiry(db, iid, username, job_id, saved_ok, save_msg):
     db.set_instance_state(iid, state, slurm_state=sl, stopped_at=_now_iso())
     db.add_event(iid, "stop", "到期自动停机：作业 #%s 已取消%s" % (job_id, note))
     tail = "资源已到期并自动停机%s" % note if saved_ok else \
-        "资源已到期，自动保存失败、已停机%s" % note
+        "资源已到期，自动保存失败、已放弃保存并停机%s" % note
     db.set_last_save(iid, (save_msg + "；" if save_msg else "") + tail)
     db.set_saving(iid, 0)
 

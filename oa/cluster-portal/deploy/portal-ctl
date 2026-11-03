@@ -262,6 +262,91 @@ CTL = "portal-ctl"
 IMAGES_ROOT = (os.environ.get("PORTAL_IMAGES_DIR")
                or SITE.get("IMAGES_MOUNT") or "/share/images")
 
+# 单镜像硬上限（GiB）：环境变量 > site.conf > 默认 20。
+# 保存前检查容器 rootfs，导出后再检查 .sqsh 文件；超限一律放弃，不留下半成品。
+IMAGE_MAX_GB_DEFAULT = 20
+
+
+def image_max_bytes():
+    raw = (os.environ.get("PORTAL_IMAGE_MAX_GB")
+           or SITE.get("IMAGE_MAX_GB") or str(IMAGE_MAX_GB_DEFAULT)).strip()
+    try:
+        gb = int(raw)
+    except ValueError:
+        die("IMAGE_MAX_GB 必须为正整数（当前值：%s）" % raw)
+    if gb < 1:
+        die("IMAGE_MAX_GB 必须大于 0（当前值：%s）" % raw)
+    return gb * 1024 ** 3, gb
+
+
+def _fmt_gib(n):
+    try:
+        return "%.2f GiB" % (float(n) / (1024 ** 3))
+    except (TypeError, ValueError):
+        return "未知大小"
+
+
+def _enroot_data_root(uid):
+    """解析 enroot data 根目录；site 使用 ENROOT_DATA_PATH /scratch/enroot-data/user-$(id -u)。"""
+    raw = os.environ.get("ENROOT_DATA_PATH") or ""
+    if not raw:
+        try:
+            for line in open("/etc/enroot/enroot.conf", encoding="utf-8"):
+                line = line.strip()
+                if line.startswith("ENROOT_DATA_PATH"):
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        raw = parts[1].strip()
+                    break
+        except OSError:
+            pass
+    raw = raw or "/scratch/enroot-data/user-%s" % uid
+    raw = raw.replace("$(id -u)", str(uid)).replace("$(id -g)", str(uid))
+    raw = raw.replace("${UID}", str(uid)).replace("$UID", str(uid))
+    return raw
+
+
+def _container_rootfs_path(username, job_id):
+    uid = user_uid(username)
+    if uid is None:
+        return None
+    return os.path.join(_enroot_data_root(uid), "pyxis_%d_portal" % int(job_id))
+
+
+def _container_rootfs_bytes(node, username, job_id):
+    """读取容器可写 rootfs 的 apparent size；路径不可读时返回 None（不阻断最终镜像检查）。"""
+    path = _container_rootfs_path(username, job_id)
+    if not path:
+        return None
+    if node == node_hostname():
+        r = run(["du", "-sb", path], timeout=120)
+    else:
+        r = ssh_node(node, ["du", "-sb", path], timeout=120)
+    if r.returncode != 0:
+        return None
+    first = (r.stdout or "").strip().split()
+    if not first:
+        return None
+    try:
+        return int(first[0])
+    except ValueError:
+        return None
+
+
+def _check_export_size(path, max_bytes, max_gb):
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    if size > max_bytes:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        die("导出的镜像为 %s，超过单镜像上限 %d GiB；本次保存已放弃。"
+            "请删除容器根目录中的 ckpt/大文件后重试（容器 rootfs 不是长期存储）。"
+            % (_fmt_gib(size), max_gb))
+
 
 def user_uid(username):
     """该账号的 OS uid；不存在时返回 None。"""
@@ -2878,6 +2963,7 @@ def cmd_save_image(username, job_id, name, force, note=None):
     if job_id <= 0:
         die("非法 jobid")
     force = str(force) in ("1", "True", "true")
+    max_bytes, max_gb = image_max_bytes()
 
     sq = sh_out(["squeue", "-h", "-j", str(job_id), "-o", "%u|%T|%N"], timeout=30)
     if not sq:
@@ -2901,6 +2987,11 @@ def cmd_save_image(username, job_id, name, force, note=None):
     home, herr = checked_home(username)
     if herr:
         die(herr)
+    rootfs_bytes = _container_rootfs_bytes(node, username, job_id)
+    if rootfs_bytes is not None and rootfs_bytes > max_bytes:
+        die("容器 rootfs 约 %s，超过单镜像上限 %d GiB；本次保存已放弃。"
+            "请删除容器根目录中的 ckpt/大文件后再保存（ckpt 不是长期存储，"
+            "不要把大数据写进容器根目录）。" % (_fmt_gib(rootfs_bytes), max_gb))
     tdir = os.path.join(IMAGES_ROOT, username)
     # 不用 install -d：改为显式拒绝软链后 mkdir/chown/chmod（/share/images 本身 root 755，
     # 正常不会被外人写，这里是纵深防御）
@@ -2929,6 +3020,7 @@ def cmd_save_image(username, job_id, name, force, note=None):
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+        _check_export_size(tmp_target, max_bytes, max_gb)
         _replace_partial_checked(tmp_target, target)
     elif uid == "0":
         # 用户名 root：计算节点写 NFS 被 root_squash，先导出到节点本地再 scp 回 admin
@@ -2947,6 +3039,7 @@ def cmd_save_image(username, job_id, name, force, note=None):
         if r1.returncode != 0:
             _cleanup_partial(target)
             die("镜像回传 admin 失败: %s" % (r1.stderr.strip()[-300:] or r1.stdout.strip()[-300:]))
+        _check_export_size(tmp_target, max_bytes, max_gb)
         _replace_partial_checked(tmp_target, target)
     else:
         r = ssh_node(node, _as_user_argv(username, home, export_argv), timeout=timeout)
@@ -2954,6 +3047,7 @@ def cmd_save_image(username, job_id, name, force, note=None):
         if r.returncode != 0:
             _cleanup_partial(target)
             die("镜像导出失败: %s" % (r.stderr.strip()[-300:] or r.stdout.strip()[-300:]))
+        _check_export_size(tmp_target, max_bytes, max_gb)
         _replace_partial_checked(tmp_target, target)
 
     try:

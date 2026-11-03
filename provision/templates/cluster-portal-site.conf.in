@@ -41,6 +41,8 @@ SEED_PLANS=/etc/cluster-portal/plans.json
 
 # 镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描；root 助手也在这里读写个人镜像）。
 IMAGES_MOUNT=@@IMAGES_MOUNT@@
+# 单个个人镜像最大大小（GiB）。保存前检查容器 rootfs，导出后再次检查 .sqsh；超限放弃。
+IMAGE_MAX_GB=20
 
 # 分区名。预留：当前代码按 sinfo 自动探测，填了也不改调度行为。
 PARTITION=@@PARTITION@@

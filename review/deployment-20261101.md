@@ -629,6 +629,25 @@ https://10.71.106.251 {
 > 注意：当前 `provision/render.sh` 生成器仍按 cluster.conf 把 3090-00 标为 4 卡；
 > 下次重新渲染会恢复 GPU 配置。若要长期保留，需要在生成器中增加“离线 GPU 节点”支持。
 
+### 2.30 个人镜像大小上限 20 GiB
+
+- 新增站点配置 `IMAGE_MAX_GB=20`（`PORTAL_IMAGE_MAX_GB` 环境变量优先）；
+- `portal-ctl save-image` 在导出前检查容器可写 rootfs 大小，导出后再检查生成的
+  `.sqsh` 文件；任一超过 20 GiB 即删除半成品并拒绝保存；
+- 覆盖保存时旧镜像不会被删除；
+- 到期自动保存失败（包括超限、导出超时/失败）后直接停机并放弃保存；`claim_auto_save`
+  已先抢占，不会重复重试；
+- 本站 `/images` 是独立盘，单镜像上限不等于 `/share` 配额；该盘总量仍需监控；
+- 门户保存提示、`/guide`、用户/管理手册和 skill 已同步说明：不要将 ckpt/大数据放在
+  容器根目录，rootfs 不是长期存储。
+
+**验证**：
+
+- 本机用 21 GiB 稀疏文件验证 `_check_export_size` 会拒绝并删除半成品；
+- 真机 `/etc/cluster-portal/site.conf` 为 `IMAGE_MAX_GB=20`，helper 读回
+  `(21474836480, 20)`；
+- `make test`：SMOKE_OK。
+
 ## 3. 最终验收
 
 ### Slurm
