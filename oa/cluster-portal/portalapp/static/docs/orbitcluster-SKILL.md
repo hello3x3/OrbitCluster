@@ -30,7 +30,7 @@ HTTP 默认支持，适用于用户的实验室内网；HTTP 会明文传输凭�
 
 ## 容器环境与存储
 
-- **本系统以容器为核心**：每个资源是独立容器；容器拥有完整 root 权限，容器内 `su -` 的 root 密码是 `218`（仅容器内，不是宿主机 root）。日常用普通用户，只有安装系统包/改系统配置时才切换。
+- **本系统以容器为核心**：每个资源是独立容器；容器默认以普通用户身份运行。需要系统包/ CUDA toolkit 时，在容器内用 `unshare -Ur --map-root-user bash` 获得用户命名空间 root（`whoami` 为 root，仅限容器，不是宿主机 root）；`su` 在展开后的 rootfs 中没有 setuid 位，不能切换 root。
 - 基础容器已预装 Miniconda，路径 `/opt/miniconda3`；执行 `source /opt/miniconda3/etc/profile.d/conda.sh` 后使用 `conda`。不要建议用户在家目录重复安装 Miniconda。
 - 家目录 `/share/home/<用户名>` 只放代码和小型配置；提醒用户不要把大型数据集、conda 环境、checkpoint 或大量结果放在 home（NFS + 配额）。
 - 单个个人镜像上限 **20 GiB**；保存前检查容器 rootfs，导出后再检查镜像文件，超限保存会被拒绝。**到期自动保存默认关闭，到期直接停机**；需要保留环境时提示用户提前手动保存，或由管理员在 `/etc/cluster-portal/site.conf` 设置 `AUTO_SAVE_ON_EXPIRE=1`。不要建议用户把 ckpt 写进容器根目录。

@@ -25,7 +25,7 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 
 ## 容器环境与存储
 
-本系统以容器为核心，每个资源是独立容器。容器拥有完整 root 权限：在容器内执行 `su -`，root 密码是 `218`；日常用普通用户，只有安装系统包或修改系统配置时才切换（该 root 仅限容器内，不是宿主机 root）。
+本系统以容器为核心，每个资源是独立容器；容器默认以普通用户身份运行。需要安装系统包/CUDA toolkit 时，在容器内执行 `unshare -Ur --map-root-user bash`，获得仅限容器的用户命名空间 root（不是宿主机 root）。`su` 在展开后的 rootfs 中没有 setuid 位，不能切换 root。
 
 基础容器已预装 Miniconda：`/opt/miniconda3`。进入容器后 `source /opt/miniconda3/etc/profile.d/conda.sh` 即可使用 conda；不需要在 home 再安装一份。
 

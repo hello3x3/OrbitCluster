@@ -690,6 +690,33 @@ https://10.71.106.251 {
 - 已有 `auto_*` 镜像不会被删除；
 - `make test`：`CTL_SECURITY_OK`、`SMOKE_OK`（测试显式开启 auto-save 覆盖该分支）。
 
+### 2.33 容器 root/su 行为修正
+
+**实测问题**：用户在容器内 `su` 输入文档中的 root 密码后，`whoami` 仍是本人。
+
+**原因**：
+
+- 镜像里的 `/usr/bin/su` 原本是 `4755 root:root`；
+- enroot 当前 `ENROOT_REMAP_ROOT=n`，以提交者身份展开 rootfs，容器内文件被 chown 给用户，setuid 位也被去掉；
+- 因此 `su` 没有权限 setuid(0)，即使 root shadow hash 与 218 匹配也无法切换；
+- 这不是密码错误，而是 rootless 容器的设计限制。
+
+**修正**：
+
+- 使用用户命名空间 root 安装系统包/CUDA toolkit：
+  ```bash
+  unshare -Ur --map-root-user bash
+  whoami   # root
+  apt-get update
+  ```
+- 已在当前容器实测：可写 `/usr`，apt 安装模拟通过；
+- 该 root 只限容器内，不是宿主机 root；
+- 文档中删除“su + 218”的说明，改为上述方式；
+- 未修改 enroot 全局配置，也未修改当前容器。
+
+若未来确实需要容器启动即为 root，需要单独评审 `ENROOT_REMAP_ROOT=y` / `--container-remap-root`，
+并处理 root 模式 sshd 的登录问题，不能只改一个参数。
+
 ## 3. 最终验收
 
 ### Slurm

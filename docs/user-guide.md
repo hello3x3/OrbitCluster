@@ -50,7 +50,16 @@ cat ~/.ssh/id_ed25519.pub
 
 **本系统以容器为核心**：每个资源都是一个独立容器，代码、训练和调试都在容器内进行；镜像决定环境，保存镜像用于保留修改。
 
-分发给用户的容器拥有**完整的 root 权限**。在容器内执行 `su -`，输入 root 密码 `218` 即可切换到 root。日常操作建议先用普通用户，只有安装系统包、修改系统配置等需要时才切换；该 root 仅限容器内，不是宿主机 root。
+容器默认以你的普通用户身份运行。需要安装系统包/CUDA toolkit 时，可在容器内使用用户命名空间 root：
+
+```bash
+unshare -Ur --map-root-user bash
+whoami          # root
+apt-get update
+apt-get install -y ...
+```
+
+这个 root 仅限容器内的用户命名空间，不是宿主机 root；镜像 rootfs 展开后 `su` 没有 setuid 位，不能用来切换 root，也没有可用的 `su` root 密码。日常仍建议用普通用户，只有装系统包时才进入这个 root shell。
 
 基础容器已预装 Miniconda，路径为 `/opt/miniconda3`。进入容器后使用：
 
