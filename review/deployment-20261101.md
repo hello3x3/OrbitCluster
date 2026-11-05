@@ -752,6 +752,32 @@ https://10.71.106.251 {
 - 已更新 guide、用户/管理员手册、SKILL、terminal README；
 - 未修改 enroot 全局配置或当前运行容器。
 
+### 2.37 修复保存镜像 `/images` 只读
+
+用户保存镜像报：
+
+```text
+/images/luyichen 创建/校正失败：[Errno 30] Read-only file system: 'luyichen'
+```
+
+**原因**：portal systemd 单元使用 `ProtectSystem=strict`，但
+`ReadWritePaths` 只列了 `/var/lib/cluster-portal /etc /share`，没有列本站的独立镜像盘
+`/images`；root 助手（sudo 继承服务 mount namespace）因此也无法写 `/images`。
+
+**修复**：
+
+- 线上 unit 的 `ReadWritePaths` 增加 `/images`；
+- `daemon-reload` + 重启 `cluster-portal`；
+- `deploy/install.sh` 改为从 site.conf 读取 `IMAGES_MOUNT` 并写入
+  `ReadWritePaths`，避免以后部署再漏；
+- 未放宽 `/images` 对普通用户的 Unix 权限，未改成 777。
+
+**验证**：
+
+- `systemctl show cluster-portal -p ReadWritePaths` 包含 `/images`；
+- `cluster-portal`/`caddy` active；
+- `make test`：SMOKE_OK。
+
 ## 3. 最终验收
 
 ### Slurm

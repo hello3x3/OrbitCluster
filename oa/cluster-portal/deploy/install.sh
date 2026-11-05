@@ -26,6 +26,12 @@ APP_DIR=/opt/cluster-portal
 DATA_DIR=/var/lib/cluster-portal
 CTL=/usr/local/sbin/portal-ctl
 SERVICE=cluster-portal
+# 镜像目录可能不在 /share 下（本站 /images 是独立盘）；从 site.conf 读取，缺省 /share/images。
+IMAGES_MOUNT="$(awk -F= '$1=="IMAGES_MOUNT"{print $2; exit}' "${SITE_DIR:+$SITE_DIR}/site.conf" 2>/dev/null || true)"
+if [ -z "$IMAGES_MOUNT" ] && [ -f /etc/cluster-portal/site.conf ]; then
+  IMAGES_MOUNT="$(awk -F= '$1=="IMAGES_MOUNT"{print $2; exit}' /etc/cluster-portal/site.conf)"
+fi
+IMAGES_MOUNT="${IMAGES_MOUNT:-/share/images}"
 
 [ "$(id -u)" = 0 ] || { echo "必须以 root 执行"; exit 1; }
 [ -d "$SRC/portalapp" ] || { echo "代码目录无效: $SRC"; exit 1; }
@@ -167,10 +173,11 @@ PrivateTmp=true
 # 这样即使门户被攻破，也无法篡改自己的代码（与 install.sh 里的属主设置互为双保险）。
 # /run、/dev、/proc、/sys 以及 PrivateTmp 提供的 /tmp 仍可写，sudo 不受影响。
 #
-# ⚠ /share 必须列进来：ProtectSystem=strict 会把**整个层级**（含所有挂载点）挂成只读，
-#   而 portal-ctl 干的活全在 /share 上 —— 建 ~/.portal/logs 与 ~/.ssh/authorized_keys、
-#   userdel -r 删家目录、写 /share/images 个人镜像、quotactl 落地配额。少写这一项，
-#   门户就变成"只能看不能动"：提交作业报
+# ⚠ /share 与 IMAGES_MOUNT 必须列进来：ProtectSystem=strict 会把**整个层级**
+#   （含所有挂载点）挂成只读。本站 IMAGES_MOUNT=/images（独立盘），如果不列，
+#   保存镜像会报 "Read-only file system: '<用户名>'"。portal-ctl 还要在 /share 上
+#   建 ~/.portal/logs 与 ~/.ssh/authorized_keys、userdel -r 删家目录、quotactl 落地配额。
+#   少写这一项，门户就变成"只能看不能动"：提交作业报
 #   OSError: [Errno 30] Read-only file system: '/share/home/<u>/.portal/logs'
 #   注意 sudo→portal-ctl 的 root 子进程**继承同一挂载命名空间**，所以这里放宽是必须的，
 #   不是"反正 root 能写"。SHARE_HOME/IMAGES_ROOT 在 portal-ctl 里固定为 /share/*，
@@ -183,7 +190,9 @@ PrivateTmp=true
 #   "groupadd: cannot lock /etc/group; try again later."（这是实测踩过的坑）。
 #   portal 进程本身仍是非 root，写不了 /etc；只有 sudo 白名单里的 root 助手能写。
 ProtectSystem=strict
-ReadWritePaths=$DATA_DIR /etc /share
+# 镜像目录可能是独立盘（本站 /images），必须一并放开，否则「保存镜像」
+# 会在 portal 的 systemd 命名空间里报 Read-only file system: '<用户名>'。
+ReadWritePaths=$DATA_DIR /etc /share "$IMAGES_MOUNT"
 ProtectHome=read-only
 PrivateDevices=yes
 # ⚠ PrivateDevices=yes 会把 /share 对应的块设备从沙箱的 /dev 里摘掉，而
