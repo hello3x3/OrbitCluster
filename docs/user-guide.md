@@ -61,6 +61,8 @@ apt-get install -y ...
 
 这个 root 仅限容器内的用户命名空间，不是宿主机 root；镜像 rootfs 展开后 `su` 没有 setuid 位，不能用来切换 root，也没有可用的 `su` root 密码。日常仍建议用普通用户，只有装系统包时才进入这个 root shell。
 
+> 注意：enroot rootfs 展开后文件归提交者所有，所以普通用户也可能直接成功执行 `apt-get update`，很多只写文件的 `apt-get install` 也能完成。这只是“用户拥有容器文件系统”，**不等于 root**：`whoami` 仍是本人，EUID 不是 0，需要 root 身份的操作（用户管理、挂载、服务管理、setuid 等）仍会失败；需要真正 root 时用上面的 `unshare`。
+
 基础容器已预装 Miniconda，路径为 `/opt/miniconda3`。进入容器后使用：
 
 ```bash

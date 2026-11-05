@@ -717,6 +717,15 @@ https://10.71.106.251 {
 若未来确实需要容器启动即为 root，需要单独评审 `ENROOT_REMAP_ROOT=y` / `--container-remap-root`，
 并处理 root 模式 sshd 的登录问题，不能只改一个参数。
 
+### 2.34 修正 root 文档：普通用户也可写 apt 状态
+
+- enroot rootfs 展开后整个文件树归提交者所有；普通用户对 `/usr`、`/etc`、`/var/lib/apt`
+  有写权限，因此可能直接成功执行 `apt-get update`，部分 `apt-get install` 也能完成；
+- 这不等于 root：EUID 仍非 0，用户管理、挂载、服务管理、setuid 等操作仍会失败；
+- 需要真正的容器内 root 时使用 `unshare -Ur --map-root-user bash`；
+- 已更新 `/guide`、用户/管理手册、SKILL 和终端 README；
+- 未改变 enroot rootless 配置或运行中容器。
+
 ## 3. 最终验收
 
 ### Slurm
