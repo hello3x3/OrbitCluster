@@ -778,6 +778,17 @@ https://10.71.106.251 {
 - `cluster-portal`/`caddy` active；
 - `make test`：SMOKE_OK。
 
+### 2.38 终端工具默认地址改为 HTTP
+
+- 线上 `/etc/cluster-portal/site.conf`：
+  ```ini
+  TERMINAL_PUBLIC_URL=http://10.71.106.251
+  ```
+- `/guide/terminal` 的安装器默认服务地址因此预填 `http://10.71.106.251`；
+- HTTPS 仍保留，可手动填写 `https://10.71.106.251` 并配置内部 CA；
+- 终端 API 仍为 `TERMINAL_REQUIRE_HTTPS=0`（HTTP 可用）；
+- 真机登录 `/guide/terminal` 验证 data-public-url 为 HTTP。
+
 ## 3. 最终验收
 
 ### Slurm
