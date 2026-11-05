@@ -726,6 +726,16 @@ https://10.71.106.251 {
 - 已更新 `/guide`、用户/管理手册、SKILL 和终端 README；
 - 未改变 enroot rootless 配置或运行中容器。
 
+### 2.35 修正 apt install 说明
+
+- 普通用户执行 `apt-get update` 可成功（只更新索引）；
+- `apt-get install` 会调用 `dpkg`，普通用户报
+  `dpkg: error: requested operation requires superuser privilege`；
+- 实机用 `unshare -Ur --map-root-user apt-get install -y curl` 安装成功，
+  普通用户随后可直接执行 `curl`；
+- 已更新 guide/user/admin/skill/terminal 文档，删除“普通用户可直接安装”的错误表述；
+- 当前容器已实际安装 curl，其他用户资源未受影响。
+
 ## 3. 最终验收
 
 ### Slurm

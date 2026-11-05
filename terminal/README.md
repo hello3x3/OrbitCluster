@@ -25,7 +25,7 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 
 ## 容器环境与存储
 
-本系统以容器为核心，每个资源是独立容器；容器默认以普通用户身份运行。需要安装系统包/CUDA toolkit 时，在容器内执行 `unshare -Ur --map-root-user bash`，获得仅限容器的用户命名空间 root（不是宿主机 root）。`su` 在展开后的 rootfs 中没有 setuid 位，不能切换 root。rootfs 归提交者所有，普通用户也可能直接跑 `apt-get update`，但 EUID 仍非 0，不算 root。
+本系统以容器为核心，每个资源是独立容器；容器默认以普通用户身份运行。需要安装系统包/CUDA toolkit 时，在容器内执行 `unshare -Ur --map-root-user bash`，获得仅限容器的用户命名空间 root（不是宿主机 root）。`su` 在展开后的 rootfs 中没有 setuid 位，不能切换 root。普通用户可直接跑 `apt-get update`，但 `apt-get install` 的 dpkg 会报 requires superuser privilege；安装包用 `unshare` root。
 
 基础容器已预装 Miniconda：`/opt/miniconda3`。进入容器后 `source /opt/miniconda3/etc/profile.d/conda.sh` 即可使用 conda；不需要在 home 再安装一份。
 

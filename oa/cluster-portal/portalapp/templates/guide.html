@@ -70,7 +70,7 @@ cat ~/.ssh/id_ed25519.pub</code></pre>
 whoami          # root
 apt-get update</code></pre>
       <p>这个 root 仅限容器内的用户命名空间，不是宿主机 root。镜像 rootfs 展开后 <code>su</code> 没有 setuid 位，不能用来切换 root，也没有可用的 <code>su</code> root 密码；日常仍建议用普通用户，只有装系统包时才进入这个 root shell。</p>
-      <p class="small muted">enroot 展开 rootfs 后文件归提交者所有，所以普通用户也可能直接执行 <code>apt-get update</code>，很多只写文件的 <code>apt-get install</code> 也能成功。但这不等于 root：<code>whoami</code> 仍是本人，需要 root 身份的操作仍会失败；需要真正 root 时用上面的 <code>unshare</code>。</p>
+      <p class="small muted">enroot 展开 rootfs 后文件归提交者所有，所以普通用户执行 <code>apt-get update</code> 通常能成功；但 <code>apt-get install</code> 会调用 <code>dpkg</code>，普通用户会报 <code>requested operation requires superuser privilege</code>。安装包请用上面的 <code>unshare</code> root。</p>
       <p>基础容器已预装 Miniconda，位置是 <code>/opt/miniconda3</code>。进入容器后可直接使用：</p>
       <pre><code>source /opt/miniconda3/etc/profile.d/conda.sh
 conda --version
