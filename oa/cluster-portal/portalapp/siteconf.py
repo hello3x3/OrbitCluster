@@ -15,7 +15,7 @@
   ACCOUNT             兼容旧单账户配置：ACCOUNTS 缺省时作为唯一账户  默认 lab
   SEED_PLANS          首次建库时使用的套餐定义 JSON 路径（可选；缺省用内置 5 条）
   IMAGES_MOUNT        镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描）   默认 /share/images
-  IMAGE_MAX_GB        单个个人镜像大小上限（GiB）                    默认 20
+  IMAGE_MAX_GB        单个个人镜像大小上限（GiB）                    默认 30
   PARTITION           预留：覆盖分区名（默认按 sinfo 自动探测）
 
 环境变量兜底形式为 `PORTAL_<KEY>`，例如 `PORTAL_SSH_PORT=2022`；同名的站点配置文件键优先。
@@ -40,7 +40,7 @@ DEFAULTS = {
     "ACCOUNT": "lab",
     "SEED_PLANS": "",
     "IMAGES_MOUNT": "/share/images",
-    "IMAGE_MAX_GB": "20",
+    "IMAGE_MAX_GB": "30",
     # 到期自动保存：0=关闭（默认，直接停机）；1=先保存 auto_*.sqsh 再停机。
     "AUTO_SAVE_ON_EXPIRE": "0",
     "PARTITION": "",

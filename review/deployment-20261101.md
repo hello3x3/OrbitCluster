@@ -789,6 +789,14 @@ https://10.71.106.251 {
 - 终端 API 仍为 `TERMINAL_REQUIRE_HTTPS=0`（HTTP 可用）；
 - 真机登录 `/guide/terminal` 验证 data-public-url 为 HTTP。
 
+### 2.39 单镜像上限提高到 30 GiB
+
+- 线上 `/etc/cluster-portal/site.conf` 改为 `IMAGE_MAX_GB=30`；
+- helper 读回 `(32212254720, 30)`；
+- 代码默认值、生成器模板、门户/文档/skill 中的 20 GiB 同步改为 30 GiB；
+- 保存前 rootfs 检查、导出后 `.sqsh` 检查仍按新上限执行；
+- `make test`：SMOKE_OK。
+
 ## 3. 最终验收
 
 ### Slurm

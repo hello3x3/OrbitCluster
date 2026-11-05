@@ -377,7 +377,7 @@
           title: "保存为个人镜像",
           label: "镜像名（保存到 /share/images/" + (rec.username || "") + "/<名称>.sqsh）",
           value: rec.res_name ? String(rec.res_name).replace(/[^A-Za-z0-9_]/g, "_").slice(0, 32) : "",
-          hint: IMG_NAME_HINT + "；单镜像上限 20 GiB，容器根目录中的 ckpt/大文件会计入，超限会拒绝保存",
+          hint: IMG_NAME_HINT + "；单镜像上限 30 GiB，容器根目录中的 ckpt/大文件会计入，超限会拒绝保存",
           counter: v => v.length + " / 32",
           okText: "开始保存",
           validate: v => IMG_NAME_RE_JS.test(v.trim()) ? "" : "只能包含" + IMG_NAME_HINT,

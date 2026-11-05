@@ -61,7 +61,7 @@ SEED_PLANS=/etc/cluster-portal/plans.json
 # 镜像目录（.sqsh 放这里，门户按 *.sqsh 扫描；root 助手也在这里读写个人镜像）。
 IMAGES_MOUNT=@@IMAGES_MOUNT@@
 # 单个个人镜像最大大小（GiB）。保存前检查容器 rootfs，导出后再次检查 .sqsh；超限放弃。
-IMAGE_MAX_GB=20
+IMAGE_MAX_GB=30
 
 # 分区名。预留：当前代码按 sinfo 自动探测，填了也不改调度行为。
 PARTITION=@@PARTITION@@
@@ -99,7 +99,7 @@ GPU_LIGHT_FEATURE=@@GPU_LIGHT_FEATURE@@
 #   PORTAL_COOKIE_SECURE       1 = Cookie 只走 HTTPS（架了 TLS 再开）   默认 0
 #   PORTAL_PASSWD_FILE         明文口令文件路径                         默认 /etc/cluster-portal/users.passwd
 #   PORTAL_PASSWD_SYNC         0 = 关掉口令文件监视                     默认 1（开）
-#   PORTAL_PASSWD_SYNC_SECONDS 口令文件监视间隔（秒）                   默认 20
+#   PORTAL_PASSWD_SYNC_SECONDS 口令文件监视间隔（秒）                   默认 30
 #   PORTAL_SAVE_SYNC           1 = "保存镜像"同步执行（仅冒烟测试用）     默认 0
 #   PORTAL_EXPIRY_DISABLE      1 = 关掉到期自动保存/停机                 默认 0（开）
 #   PORTAL_EXPIRY_POLL         到期扫描间隔（秒）                       默认 25
