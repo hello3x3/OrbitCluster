@@ -63,6 +63,8 @@ apt-get install -y ...
 
 > 注意：enroot rootfs 展开后文件归提交者所有，所以普通用户执行 `apt-get update` 更新包索引通常能成功；但 `apt-get install` 会调用 `dpkg`，普通用户会报 `dpkg: error: requested operation requires superuser privilege`。安装包请用上面的 `unshare` root 命令。这个 root 仍只限容器命名空间，不是宿主机 root。
 
+> **不要安装/依赖 `sudo`**：即使通过 `unshare` root 装了 `sudo`，退出命名空间后 `/usr/bin/sudo` 的属主会映射回用户，setuid 也不是 root，执行会报 `sudo must be owned by uid 0 and have the setuid bit set`。需要 root 命令时直接用 `unshare -Ur --map-root-user bash`；想保留 `sudo` 写法可以定义 shell 函数：`sudo() { unshare -Ur --map-root-user "$@"; }`（不是实际 setuid sudo）。
+
 基础容器已预装 Miniconda，路径为 `/opt/miniconda3`。进入容器后使用：
 
 ```bash

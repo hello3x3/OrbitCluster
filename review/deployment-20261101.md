@@ -736,6 +736,22 @@ https://10.71.106.251 {
 - 已更新 guide/user/admin/skill/terminal 文档，删除“普通用户可直接安装”的错误表述；
 - 当前容器已实际安装 curl，其他用户资源未受影响。
 
+### 2.36 sudo 在 rootless 容器内不可用
+
+- 用户通过 `unshare` root 安装 sudo 后执行报：
+  `sudo: /etc/sudo.conf is owned by uid 1001, should be 0` /
+  `sudo must be owned by uid 0 and have the setuid bit set`；
+- 原因：enroot rootless rootfs 的文件属主和 setuid 会映射回普通用户，sudo 依赖的
+  “root 拥有的 setuid 二进制”无法成立；
+- 正确方式是直接使用 `unshare -Ur --map-root-user bash`，不要安装/依赖 sudo；
+- 需要 sudo 写法时用 shell 函数：
+  ```bash
+  sudo() { unshare -Ur --map-root-user "$@"; }
+  ```
+  这不是实际 setuid sudo，只是命名空间 root；
+- 已更新 guide、用户/管理员手册、SKILL、terminal README；
+- 未修改 enroot 全局配置或当前运行容器。
+
 ## 3. 最终验收
 
 ### Slurm
