@@ -145,6 +145,7 @@ conda activate myenv</code></pre>
         <dt>为什么不能提交申请？</dt><dd>确认已添加 SSH 公钥，任务名没有重复，时长不超过套餐上限，且所选账户仍有效。</dd>
         <dt>为什么一直排队？</dt><dd>可能暂时没有满足套餐、节点或账户限制的资源。查看“集群占用情况”；不要反复提交相同任务。</dd>
         <dt>SSH 连接不上？</dt><dd>确认资源已运行，使用最新“连接/详情”里的命令，网络能访问节点，并持有对应私钥。重新启动后端口会变化。</dd>
+        <dt>容器里可以运行 Docker 或 Podman 吗？</dt><dd>不支持。平台使用 enroot/pyxis，不是 Docker daemon；容器内没有 docker.sock，也不支持 Docker-in-Docker。需要 Docker 镜像时，由管理员用 enroot import 转成 .sqsh，再在申请资源时选择。</dd>
         <dt>镜像保存失败？</dt><dd>先查资源日志和磁盘配额。确认保存成功前，不要把停机当作已保存。</dd>
         <dt>终端登录过期？</dt><dd>重新执行 <code>orbit login --username 你的用户名</code>。调整本机时间不能延长有效期。</dd>
       </dl>

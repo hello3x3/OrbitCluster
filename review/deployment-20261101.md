@@ -797,6 +797,21 @@ https://10.71.106.251 {
 - 保存前 rootfs 检查、导出后 `.sqsh` 检查仍按新上限执行；
 - `make test`：SMOKE_OK。
 
+### 2.40 3090-00 GPU 恢复上线
+
+- 四台 `slurm.conf` 的 3090-00 节点行恢复 `Gres=gpu:3090:4`；
+- 3090-00 `gres.conf` 恢复 4 张 RTX 3090 的显式声明；
+- 重启 `slurmctld` 与 3090-00 `slurmd`；
+- 验证：`Gres=gpu:3090:4`、`CfgTRES=...gres/gpu=4`，GPU 测试作业可排到 3090-00；
+- 3090-01/02/03 上原有作业未受影响。
+
+### 2.41 Docker/Podman 支持说明
+
+- 平台运行时是 enroot/pyxis，不提供 Docker daemon、docker.sock 或 Docker-in-Docker；
+- 不支持在用户容器内运行 Docker/Podman；
+- Docker 镜像可由管理员在管理节点 `enroot import` 转成 `.sqsh` 后在门户选择；
+- 已更新 `/guide` FAQ、用户/管理手册、SKILL 和终端 README。
+
 ## 3. 最终验收
 
 ### Slurm

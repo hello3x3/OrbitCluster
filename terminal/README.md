@@ -32,6 +32,10 @@ macOS / Linux / WSL 示例（换成实际服务地址）：
 `/share/home/<用户名>` 只建议存放代码和小型配置，不要放大型数据集、conda 环境、checkpoint 或大量结果（NFS + 配额）。数据从只读 NAS `/mnt/nas/...` 读取，容器环境需要长期保留时保存个人镜像。
 单个个人镜像上限 **30 GiB**；保存前检查容器 rootfs，导出后再检查镜像文件，超限会拒绝。不要把 ckpt/大数据放在容器根目录。**到期自动保存默认关闭，到期直接停机**；需要保留环境请提前手动保存。
 
+## 容器运行时
+
+平台使用 enroot/pyxis，不支持在容器内运行 Docker 或 Podman，也没有 Docker daemon/socket。需要 Docker 镜像时，由管理员用 `enroot import` 转成 `.sqsh`，再在申请资源时选择。
+
 ## 登录与 agent
 
 ```bash
